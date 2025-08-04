@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-from dynsys.inverted_pendulum.inverted_pendulum import InvertedPendulum
+from dynsys.inverted_pendulum.inverted_pendulum import INVERTED_PENDULUM
 
 # === Parameters and Initialization ===
 dt = 0.01
@@ -17,15 +17,15 @@ params = {
     "b": 0.01,   # friction [s*Nm/rad]
     "u_max": 7.0,
     "u_min": -7.0,
-    "Kp": 6,
+    "Kp": 8,
     "Kd": 5,
-    "clf": {"rate": 2.0},
+    "clf": {"rate": 0.5},
     "weight": {"slack": 1e5}
 }
 params["I"] = params["m"] * params["l"]**2 / 3
 
 # === Inverted Pendulum System Setup ===
-ip_sys = InvertedPendulum(params)
+ip_sys = INVERTED_PENDULUM(params)
 
 # === Simulation ===
 total_steps = int(np.ceil(sim_T / dt))
@@ -51,16 +51,16 @@ for k in range(total_steps - 1):
     Vs[k] = V
 
     dx = ip_sys.dynamics(x, u)
-    x = x + dx.reshape(-1) * dt
+    x = x + dx.reshape(-1) * dt # WARNING: must not use x += dx.reshape(-1) * dt
     xs[k + 1, :] = x
 
 # === Plotting Results ===
 plt.figure(figsize=(10, 12))
-plt.subplot(3, 1, 1)
+plt.subplot(2, 1, 1)
 plt.plot(tt, 180 * xs[:, 0] / np.pi, linewidth=1.5)
 plt.ylabel("theta (deg)")
 plt.grid(True)
-plt.subplot(3, 1, 2)
+plt.subplot(2, 1, 2)
 plt.plot(tt, 180 * xs[:, 1] / np.pi, linewidth=1.5)
 plt.ylabel("theta dot (deg/s)")
 plt.xlabel("Time (s)")

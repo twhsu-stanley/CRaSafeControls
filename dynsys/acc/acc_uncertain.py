@@ -35,11 +35,8 @@ class ACC_UNCERTAIN(CtrlAffineSys):
     def define_cbf_symbolic(self, params, x):
         v = x[1]
         z = x[2]
-        #v0 = params['v0']
         T = params['T']
-        #cd = params['cd']
-        #g = params['g']
-        return z - T * v #- 0.5 * (v0 - v)**2 / (cd * g)
+        return z - T * v
 
     def ctrl_nominal(self, x):
         v = x[1]

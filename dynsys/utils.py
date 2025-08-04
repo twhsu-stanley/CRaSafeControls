@@ -64,3 +64,7 @@ def projection_operator(a_hat, y, a_hat_norm_max, epsilon):
         return y - correction
     else:
         return y
+
+def wrapToPi(angle):
+    """Wrap angle to (-pi, pi]."""
+    return (angle + np.pi) % (2 * np.pi) - np.pi

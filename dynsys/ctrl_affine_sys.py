@@ -368,7 +368,7 @@ class CtrlAffineSys:
 
         if with_slack:
             # Constraints : A[u; slack] <= b
-            A = np.array([LgV, -1])
+            A = np.hstack([LgV, np.array([[-1]])])
             b = -LfV - cp_bound - self.params["clf"]["rate"] * V
             if "u_max" in self.params:
                 A = np.vstack([A, np.hstack([np.eye(self.udim), np.zeros((self.udim, 1))])])
@@ -516,7 +516,7 @@ class CtrlAffineSys:
 
         if with_slack:
             # Constraints : A[u; slack] <= b
-            A = np.array([LgV, -1])
+            A = np.hstack([LgV, np.array([[-1]])])
             b = (
             -LfV 
             - cp_bound

@@ -18,8 +18,8 @@ n_features = len(feature_names)
 for i in range(n_features):
     feature_names[i] = feature_names[i].replace(" ", "*")
     feature_names[i] = feature_names[i].replace("^", "**")
-    feature_names[i] = feature_names[i].replace("sin", "torch.sin")
-    feature_names[i] = feature_names[i].replace("cos", "torch.cos")
+    feature_names[i] = feature_names[i].replace("sin", "np.sin")
+    feature_names[i] = feature_names[i].replace("cos", "np.cos")
 
 coefficients = model["coefficients"]
 

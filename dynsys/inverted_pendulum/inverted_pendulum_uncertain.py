@@ -4,9 +4,12 @@ from scipy.linalg import solve_continuous_lyapunov as lyap
 from scipy.linalg import solve_continuous_are
 from dynsys.ctrl_affine_sys import CtrlAffineSys
 
-class INVERTED_PENDULUM(CtrlAffineSys):
+class INVERTED_PENDULUM_UNCERTAIN(CtrlAffineSys):
     def __init__(self, params=None):
         super().__init__(params)
+
+        self.A = None # Placeholder for the linearized system matrix
+        self.B = None # Placeholder for the linearized input matrix
 
     def define_system_symbolic(self, params):
         # Symbolic states
@@ -28,6 +31,11 @@ class INVERTED_PENDULUM(CtrlAffineSys):
             [0],
             [-1 / I]
         ])
+
+        # True uncertainty term: Y(x)a(Theta)
+        Y = sp.Matrix([[0, 0], [sp.sin(theta), theta_dot]]) # true Y(x)
+        a = np.array([[(m*g*l/2/I)*0.5], [-b/I*0.5]]) # true a(Theta)
+        f += Y @ a  # Adding the true uncertainty to the system dynamics
 
         return x, f, g
 
@@ -69,4 +77,4 @@ class INVERTED_PENDULUM(CtrlAffineSys):
         return clf
 
     def ctrl_nominal(self, x):
-        return np.zeros((self.udim, 1))
+        return np.array([0])
