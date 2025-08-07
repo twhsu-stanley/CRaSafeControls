@@ -77,18 +77,17 @@ x0 = np.vstack([
 
 # History arrays
 x_hist = np.zeros((N, len(tt), 3))
-u_hist = np.zeros((N, len(tt)-1))
-h_hist = np.zeros((N, len(tt)-1))
+u_hist = np.zeros((N, len(tt)))
+h_hist = np.zeros((N, len(tt)))
 
 Sigma_score = 0
 
 for n in range(N):
-    for k in range(len(tt)-1):
-        if k == 0:
-            x_hist[n, 0, :] = x0[:, n]
+    x = np.copy(x0[:, n])
 
+    for k in range(len(tt)):
         t = tt[k]
-        x = x_hist[n, k, :]
+        x_hist[n, k, :] = x
 
         # Control
         u_ref = acc_learned.ctrl_nominal(x)
@@ -106,10 +105,10 @@ for n in range(N):
 
         # Propagate dynamics
         dx = acc_true.dynamics(x, u)
-        x_hist[n, k+1, :] = x + dx.reshape(-1) * dt
+        x = x + dx.reshape(-1) * dt
 
 # Violation score
-Sigma_score = Sigma_score / (N * len(tt) - 1) * 100
+Sigma_score = Sigma_score / (N * len(tt)) * 100
 print(f"Sigma_score = {Sigma_score:.3f} percent")
 
 # === Plots ===
@@ -127,13 +126,13 @@ plt.ylabel("z (m)")
 plt.grid(True)
 
 plt.figure()
-plt.plot(tt[:-1], u_hist.T)
+plt.plot(tt, u_hist.T)
 plt.ylabel("Control Input: u (N)")
 plt.grid(True)
 
 plt.figure()
 for n in range(N):
-    h_plot = plt.plot(tt[:-1], h_hist[n, :], alpha=0.9)
+    h_plot = plt.plot(tt, h_hist[n, :], alpha=0.9)
 plt.axhline(0, color='r', linewidth=2)
 plt.ylabel("h(x_t)")
 plt.xlabel("Time (s)")

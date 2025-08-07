@@ -4,7 +4,7 @@ from scipy.linalg import solve_continuous_lyapunov as lyap
 from dynsys.ctrl_affine_sys import CtrlAffineSys
 from dynsys.utils import sindy_prediction_symbolic
 
-class INVERTED_PENDULUM_UNCERTAIN_SINDY(CtrlAffineSys):
+class IP_UNCERTAIN_SINDY(CtrlAffineSys):
     def __init__(self, params=None):
         super().__init__(params)
 
@@ -46,6 +46,22 @@ class INVERTED_PENDULUM_UNCERTAIN_SINDY(CtrlAffineSys):
         return sp.Matrix([a0, a1])
 
     def define_aclf_symbolic(self, params, x, a_L_hat=None):
+        # x: symbolic states
+
+        # Linearized Dynamics with state feedback : u0 = params.Kp * x0 + params.Kd * x1
+        A_cl = self.A + self.B @ np.array([[params["Kp"], params["Kd"]]])
+        Q = params['clf']['rate'] * np.eye(self.A.shape[0])
+        P = lyap(A_cl.T, -Q) # Cost Matrix for quadratic CLF. (V = e'*P*e)
+        clf = (x.T @ P @ x)[0,0]
+        
+        # Find c1: c1*||x||^2 <= V(x) = x'Px <= c2*||x||^2
+        # TODO: iniitialize c1 and c2 in the superclass constructor
+        self.c1 = np.min(np.linalg.eigvals(P))
+        self.c2 = np.max(np.linalg.eigvals(P))
+
+        return clf
+    
+    def define_clf_symbolic(self, params, x, a_L_hat=None):
         # x: symbolic states
 
         # Linearized Dynamics with state feedback : u0 = params.Kp * x0 + params.Kd * x1

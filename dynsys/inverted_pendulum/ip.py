@@ -4,7 +4,7 @@ from scipy.linalg import solve_continuous_lyapunov as lyap
 from scipy.linalg import solve_continuous_are
 from dynsys.ctrl_affine_sys import CtrlAffineSys
 
-class INVERTED_PENDULUM(CtrlAffineSys):
+class IP(CtrlAffineSys):
     def __init__(self, params=None):
         super().__init__(params)
 

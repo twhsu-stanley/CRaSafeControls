@@ -22,7 +22,7 @@ class ACC_UNCERTAIN(CtrlAffineSys):
 
         # True uncertainty term: Y(x)a(theta) = [0; f0 + f1 * v + f2 * v**2; 0]
         Y = sp.Matrix([[0, 0, 0], [1, v, v**2], [0, 0, 0]]) # true Y(x)
-        a = np.array([[-f0/m], [-f1/m], [-f2/m]]) # true a(theta)
+        a = np.copy(params["a_true"]) # true a(Theta)
         f += Y @ a  # Adding the true uncertainty to the system dynamics
 
         return x, f, g

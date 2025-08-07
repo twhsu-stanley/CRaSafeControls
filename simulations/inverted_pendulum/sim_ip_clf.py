@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-from dynsys.inverted_pendulum.inverted_pendulum import INVERTED_PENDULUM
+from dynsys.inverted_pendulum.ip import IP
 
 # === Parameters and Initialization ===
 dt = 0.01
@@ -25,21 +25,20 @@ params = {
 params["I"] = params["m"] * params["l"]**2 / 3
 
 # === Inverted Pendulum System Setup ===
-ip_sys = INVERTED_PENDULUM(params)
+ip_sys = IP(params)
 
 # === Simulation ===
-total_steps = int(np.ceil(sim_T / dt))
 x0 = np.array([0.76, 0.05])
 x = x0.copy()
-t = 0.0
 
-xs = np.zeros((total_steps, 2))
-us = np.zeros(total_steps - 1)
-Vs = np.zeros(total_steps - 1)
+xs = np.zeros((len(tt), 2))
+us = np.zeros(len(tt))
+Vs = np.zeros(len(tt))
 
-xs[0, :] = x0
+for k in range(len(tt)):
+    t = tt[k]
+    xs[k, :] = x
 
-for k in range(total_steps - 1):
     u, V, slack_val, feas = ip_sys.ctrl_clf_qp(x, u_ref=None, with_slack=True)
 
     if not feas:
@@ -52,7 +51,6 @@ for k in range(total_steps - 1):
 
     dx = ip_sys.dynamics(x, u)
     x = x + dx.reshape(-1) * dt # WARNING: must not use x += dx.reshape(-1) * dt
-    xs[k + 1, :] = x
 
 # === Plotting Results ===
 plt.figure(figsize=(10, 12))
@@ -67,16 +65,16 @@ plt.xlabel("Time (s)")
 plt.grid(True)
 
 plt.figure(figsize=(10, 6))
-plt.plot(tt[:-1], Vs)
+plt.plot(tt, Vs)
 plt.ylabel("V (CLF)")
 plt.xlabel("Time (s)")
 plt.title("CLF Value")
 plt.grid(True)
 
 plt.figure(figsize=(10, 6))
-plt.plot(tt[:-1], us, linewidth=1.5)
-plt.plot(tt[:-1], np.ones_like(us) * params["u_max"], 'k--')
-plt.plot(tt[:-1], np.ones_like(us) * params["u_min"], 'k--')
+plt.plot(tt, us, linewidth=1.5)
+plt.plot(tt, np.ones_like(us) * params["u_max"], 'k--')
+plt.plot(tt, np.ones_like(us) * params["u_min"], 'k--')
 plt.ylabel("u (N.m)")
 plt.title("Control Input")
 plt.xlabel("Time (s)")

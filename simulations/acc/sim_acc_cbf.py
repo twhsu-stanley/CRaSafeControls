@@ -39,18 +39,17 @@ params["Kp"] = 100  # P gain for the nominal controller
 acc_sys = ACC(params)
 
 # === Simulation ===
-total_steps = int(np.ceil(sim_T / dt))
 x0 = np.array([0, 20, 100])
 x = x0.copy()
-t = 0.0
 
-xs = np.zeros((total_steps, 3))
-us = np.zeros(total_steps - 1)
-hs = np.zeros(total_steps - 1)
+xs = np.zeros((len(tt), 3))
+us = np.zeros(len(tt))
+hs = np.zeros(len(tt))
 
-xs[0,:] = x0
+for k in range(len(tt)):
+    t = tt[k]
+    xs[k, :] = x
 
-for k in range(total_steps - 1):
     u_ref = acc_sys.ctrl_nominal(x)
     u, h,_ = acc_sys.ctrl_cbf_qp(x, u_ref)
     us[k] = u.item()
@@ -58,8 +57,6 @@ for k in range(total_steps - 1):
 
     dx = acc_sys.dynamics(x, u)
     x = x + dx.reshape(-1) * dt
-
-    xs[k+1, :] = x
 
 # === Plotting Results ===
 def plot_results(ts, xs, us, hs, params):
@@ -78,15 +75,15 @@ def plot_results(ts, xs, us, hs, params):
     plt.grid(True)
 
     plt.subplot(4, 1, 3)
-    plt.plot(ts[:-1], us, color='orange', linewidth=1.5)
-    plt.plot(ts[:-1], np.ones_like(us) * params['u_max'], 'k--')
-    plt.plot(ts[:-1], np.ones_like(us) * params['u_min'], 'k--')
+    plt.plot(ts, us, color='orange', linewidth=1.5)
+    plt.plot(ts, np.ones_like(us) * params['u_max'], 'k--')
+    plt.plot(ts, np.ones_like(us) * params['u_min'], 'k--')
     plt.ylabel("u(N)")
     plt.title("Control Input - Wheel Force")
     plt.grid(True)
 
     plt.subplot(4, 1, 4)
-    plt.plot(ts[:-1], hs, color='navy', linewidth=1.5)
+    plt.plot(ts, hs, color='navy', linewidth=1.5)
     plt.ylabel("CBF (h(x))")
     plt.title("CBF")
     plt.grid(True)

@@ -4,7 +4,7 @@ from scipy.linalg import solve_continuous_lyapunov as lyap
 from scipy.linalg import solve_continuous_are
 from dynsys.ctrl_affine_sys import CtrlAffineSys
 
-class INVERTED_PENDULUM_UNCERTAIN(CtrlAffineSys):
+class IP_UNCERTAIN(CtrlAffineSys):
     def __init__(self, params=None):
         super().__init__(params)
 
@@ -34,7 +34,7 @@ class INVERTED_PENDULUM_UNCERTAIN(CtrlAffineSys):
 
         # True uncertainty term: Y(x)a(Theta)
         Y = sp.Matrix([[0, 0], [sp.sin(theta), theta_dot]]) # true Y(x)
-        a = np.array([[(m*grav*l/2/I)*0.2], [-b/I*0.2]]) # true a(Theta)
+        a = np.copy(params["a_true"]) # true a(Theta)
         f += Y @ a  # Adding the true uncertainty to the system dynamics
 
         return x, f, g

@@ -51,10 +51,15 @@ params = {
     "f1": 5.0,
     "f2": 1.0,
     "T": 1.0,
-    "cbf": {"rate": 20},
+    "cbf": {"rate": 2},
     "weight": {"input": 2 / (2000**2)},#2 / (2000**2)
     "Kp": 10,  # P gain for the nominal controller
 }
+params["a_true"] = np.array([
+    [-params['f0']/params['m']],
+    [-params['f1']/params['m']], 
+    [-params['f2']/params['m']]
+]) # true a(Theta)
 
 # True system
 acc_true = ACC_UNCERTAIN(params)
@@ -65,17 +70,17 @@ params["idx_x"] = idx_x
 params["idx_u"] = idx_u
 params["use_adaptive"] = USE_ADAPTIVE
 params["Gamma_b"] = np.diag([1,1,1]) * 1e-4 # adaptive gain matrix for CRaCBF
-params["Gamma_L"] = np.eye(3) * 0.01 # adaptive gain matrix for CRaCLF
+#params["Gamma_L"] = np.eye(3) * 0.01 # adaptive gain matrix for CRaCLF
 # True a: -np.array([[0.5], [5.0], [1.0]]) / 2000 * 1.5
 params["a_hat_norm_max"] = np.linalg.norm(np.array([[0.5], [5.0], [1.0]])/2000 * 2.0, 2) # max norm of a_hat
-params["a_0"] = np.array([[0.0], [0.0], [0.0]])# initial guess for a_hat
+params["a_0"] = np.array([[0.0], [0.0], [0.0]]) # initial guess for a_hat
 params["epsilon"] = 1e-3 # small value for numerical stability of projection operator
 
 # Learned mode
 acc_learned = ACC_UNCERTAIN_SINDY(params)
 
 # Initial conditions
-N = 1
+N = 2
 rand_temp = np.random.rand(N)
 x0 = np.vstack([
     rand_temp * 0,
@@ -85,8 +90,8 @@ x0 = np.vstack([
 
 # History arrays
 x_hist = np.zeros((N, len(tt), 3))
-u_hist = np.zeros((N, len(tt)-1))
-h_hist = np.zeros((N, len(tt)-1))
+u_hist = np.zeros((N, len(tt)))
+h_hist = np.zeros((N, len(tt)))
 if USE_ADAPTIVE:
     a_hat = np.zeros((N, len(tt), 3))
 Sigma_score = 0
@@ -98,19 +103,22 @@ if USE_ADAPTIVE:
         raise RuntimeError("Gamma_b is not valid: minimal eigenvalue is too small")
 
 for n in range(N):
+
+    x = np.copy(x0[:, n])
+
     if USE_ADAPTIVE:
+        # Reset a_hat for each new trajectory
+        acc_learned.a_b_hat = np.copy(params["a_0"])
+
         if acc_learned.acbf(x0[:, n], acc_learned.a_b_hat) - set_tightening <= 0:
             raise RuntimeError("Initial condition unsafe: h(x0, a_hat_0) < 0")
     else:
         if acc_learned.cbf(x0[:, n]) <= 0:
             raise RuntimeError("Initial condition unsafe: h(x0) < 0")
 
-    for k in range(len(tt)-1):
-        if k == 0:
-            x_hist[n, 0, :] = x0[:, n]
-
+    for k in range(len(tt)):
         t = tt[k]
-        x = x_hist[n, k, :]
+        x_hist[n, k, :] = x
 
         # Control
         u_ref = acc_learned.ctrl_nominal(x)
@@ -133,10 +141,10 @@ for n in range(N):
 
         # Propagate dynamics
         dx = acc_true.dynamics(x, u)
-        x_hist[n, k+1, :] = x + dx.reshape(-1) * dt
+        x = x + dx.reshape(-1) * dt
 
 # Violation score
-Sigma_score = Sigma_score / (N * len(tt) - 1) * 100
+Sigma_score = Sigma_score / (N * len(tt)) * 100
 print(f"Sigma_score = {Sigma_score:.3f} percent")
 
 # Save results
@@ -168,7 +176,7 @@ plt.ylabel("z (m)")
 plt.grid(True)
 
 plt.figure()
-plt.plot(tt[:-1], u_hist.T)
+plt.plot(tt, u_hist.T)
 plt.ylabel("Control Input: u (N)")
 plt.grid(True)
 
@@ -200,19 +208,19 @@ if USE_ADAPTIVE:
 
     #plt.figure()
     plt.subplot(4, 2, 2)
-    plt.plot(tt, a_hat[:, :, 0].T + params["f0"]/params["m"])
+    plt.plot(tt, a_hat[:, :, 0].T - params["a_true"][0,0])
     plt.axhline(acc_learned.a_err_max[0,0], color='r', linewidth=2)
     plt.axhline(-acc_learned.a_err_max[0,0], color='r', linewidth=2)
     plt.ylabel("a0 error")
     plt.grid(True)
     plt.subplot(4, 2, 4)
-    plt.plot(tt, a_hat[:, :, 1].T + params["f1"]/params["m"])
+    plt.plot(tt, a_hat[:, :, 1].T - params["a_true"][1,0])
     plt.axhline(acc_learned.a_err_max[1,0], color='r', linewidth=2)
     plt.axhline(-acc_learned.a_err_max[1,0], color='r', linewidth=2)
     plt.ylabel("a1 error")
     plt.grid(True)
     plt.subplot(4, 2, 6)
-    plt.plot(tt, a_hat[:, :, 2].T + params["f2"]/params["m"])
+    plt.plot(tt, a_hat[:, :, 2].T - params["a_true"][2,0])
     plt.axhline(acc_learned.a_err_max[2,0], color='r', linewidth=2)
     plt.axhline(-acc_learned.a_err_max[2,0], color='r', linewidth=2)
     plt.ylabel("a2 error")
@@ -220,7 +228,7 @@ if USE_ADAPTIVE:
 
 plt.figure()
 for n in range(N):
-    h_plot = plt.plot(tt[:-1], h_hist[n, :], alpha=0.9)
+    h_plot = plt.plot(tt, h_hist[n, :], alpha=0.9)
 if USE_ADAPTIVE:
     plt.axhline(set_tightening, color='r', linewidth=2)
 else:

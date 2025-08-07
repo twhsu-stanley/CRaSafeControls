@@ -3,8 +3,8 @@ import matplotlib.pyplot as plt
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-from dynsys.inverted_pendulum.inverted_pendulum import INVERTED_PENDULUM
-from dynsys.inverted_pendulum.inverted_pendulum_sindy import INVERTED_PENDULUM_SINDY
+from dynsys.inverted_pendulum.ip import IP
+from dynsys.inverted_pendulum.ip_sindy import IP_SINDY
 from dynsys.utils import wrapToPi
 import pickle
 
@@ -62,9 +62,9 @@ params = {
 params["I"] = params["m"] * params["l"]**2 / 3
 
 # Instantiate models (must be provided elsewhere)
-ip_learned = INVERTED_PENDULUM_SINDY(params)
+ip_learned = IP_SINDY(params)
 
-ip_true = INVERTED_PENDULUM(params)
+ip_true = IP(params)
 
 # Sample initial states from a level set of the CLF
 # Create a grid of states
@@ -122,16 +122,11 @@ tt = np.arange(0, T + dt/2, dt)  # include T
 
 # Time histories
 xdim = ip_true.xdim
-x_hist = np.zeros((N, len(tt) - 1, xdim))
-x_norm_hist = np.zeros((N, len(tt) - 1))
-u_hist = np.zeros((N, len(tt) - 1))
-V_hist = np.zeros((N, len(tt) - 1))
-slack_hist = np.zeros((N, len(tt) - 1))
-#p_hist = np.zeros((N, len(tt) - 1))
-#p_hat_hist = np.zeros((N, len(tt) - 1))
-#p_cp_hist = np.zeros((N, len(tt) - 1))
-#p_err_hist = np.zeros((N, len(tt) - 1))
-#cp_bound_hist = np.zeros((N, len(tt) - 1))
+x_hist = np.zeros((N, len(tt), xdim))
+x_norm_hist = np.zeros((N, len(tt)))
+u_hist = np.zeros((N, len(tt)))
+V_hist = np.zeros((N, len(tt)))
+slack_hist = np.zeros((N, len(tt)))
 
 Sigma_score = 0  # violation score
 
@@ -139,7 +134,7 @@ Sigma_score = 0  # violation score
 for n in range(N):
     x = np.copy(x0[n, :])
 
-    for k in range(len(tt) - 1):
+    for k in range(len(tt)):
         # Log time hisotry
         x_hist[n, k, :] = x
         x_hist[n, k, 0] = wrapToPi(x_hist[n, k, 0]) # Crucial
@@ -163,39 +158,25 @@ for n in range(N):
         if V > V0 * np.exp(-params['clf']['rate'] * tt[k]):
             Sigma_score += 1
 
-        # p, p_hat, p_cp, p_err, cp_bound
-        """
-        dV = ip_learned.dclfdx(x)
-        f_true, g_true = ip_true.f(x), ip_true.g(x)
-        f_hat, g_hat = ip_learned.f(x), ip_learned.g(x)
-
-        p_hist[n, k] = dV @ (f_true + g_true * u) + params['clf']['rate'] * V
-        p_hat_hist[n, k] = dV @ (f_hat + g_hat * u) + params['clf']['rate'] * V
-        p_cp_hist[n, k] = dV @ (f_hat + g_hat * u) + params['clf']['rate'] * V \
-                          + cp_quantile * np.linalg.norm(dV, 2)
-        p_err_hist[n, k] = dV @ (f_true + g_true * u - f_hat - g_hat * u)
-        cp_bound_hist[n, k] = cp_quantile * np.linalg.norm(dV, 2)
-        """
-
         # Propagate dynamics
         dx = ip_true.dynamics(x, u)
         x = x + dx.reshape(-1) * dt
 
 # Violation score
-Sigma_score = Sigma_score / (N * len(tt) - 1) * 100.0
+Sigma_score = Sigma_score / (N * len(tt)) * 100.0
 print(f"Sigma_score = {Sigma_score:6.3f} percent")
 
 # ========= Plots =========
 # States
 plt.figure()
 plt.subplot(2, 1, 1)
-plt.plot(tt[:-1], x_hist[:, :, 0].T)
+plt.plot(tt, x_hist[:, :, 0].T)
 plt.ylabel(r"$\theta$ (rad)")
 plt.xlabel("Time (s)")
 plt.grid(True)
 plt.gca().tick_params(labelsize=18)
 plt.subplot(2, 1, 2)
-plt.plot(tt[:-1], x_hist[:, :, 1].T)
+plt.plot(tt, x_hist[:, :, 1].T)
 plt.xlabel("Time (s)")
 plt.ylabel(r"$\dot{\theta}$ (rad/s)")
 plt.grid(True)
@@ -211,28 +192,28 @@ plt.ylabel("theta dot (rad/s)")
 
 # Control and slack histories
 plt.figure()
-plt.plot(tt[:-1], u_hist.T)
+plt.plot(tt, u_hist.T)
 plt.xlabel("Time (s)")
 plt.ylabel("Control: ut")
 plt.grid(True)
 
 plt.figure()
-plt.plot(tt[:-1], slack_hist.T)
+plt.plot(tt, slack_hist.T)
 plt.xlabel("Time (s)")
 plt.ylabel("QP slack")
 plt.grid(True)
 
 # State norm
 plt.figure()
-plt.plot(tt[:-1], x_norm_hist.T)
+plt.plot(tt, x_norm_hist.T)
 plt.xlabel("Time (s)")
 plt.ylabel("State norm: ||x||")
 plt.grid(True)
 
 # V(x) over time with exponential bound
 plt.figure()
-plt.plot(tt[:-1], V_hist.T)
-plt.plot(tt[:-1], V0 * np.exp(-params['clf']['rate'] * tt[:-1]), 'r--', linewidth=1.5)
+plt.plot(tt, V_hist.T)
+plt.plot(tt, V0 * np.exp(-params['clf']['rate'] * tt), 'r--', linewidth=1.5)
 plt.xlabel("Time (s)")
 plt.ylabel("V(x_t)")
 plt.grid(True)
