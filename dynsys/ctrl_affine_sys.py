@@ -76,8 +76,8 @@ class CtrlAffineSys:
             # WARNING: a_b_hat and a_L_hat should be initialized by copying, otherwise they will be references to the same array.
             self.epsilon = self.params.get("epsilon", 1e-3)  # Small value for numerical stability of projection operator
 
-            self.Gamma_b = self.params["Gamma_b"]  # adaptive gain matrix for CRaCBF
-            self.Gamma_L = self.params["Gamma_L"]  # adaptive gain matrix for CRaCLF
+            self.Gamma_b = self.params.get("Gamma_b", None)  # adaptive gain matrix for CRaCBF
+            self.Gamma_L = self.params.get("Gamma_L", None)  # adaptive gain matrix for CRaCLF
 
             Y_sym = self.define_Y_symbolic(x_sym) # Y(x)
             a_hat_sym = self.define_a_symbolic()  # a(theta)
@@ -421,7 +421,7 @@ class CtrlAffineSys:
                 else:
                     raise ValueError("params['u_min'] should be either a scalar or an (udim, 1) array")
             f = -W @ u_ref.flatten()
-            u = cvxpy.Variable(self.udim)
+            u = cvxpy.Variable((self.udim, 1))
             prob = cvxpy.Problem(cvxpy.Minimize(0.5 * cvxpy.quad_form(u, W) + f @ u), [A @ u <= b])
             prob.solve()
             feas = prob.status == cvxpy.OPTIMAL
@@ -518,10 +518,10 @@ class CtrlAffineSys:
             # Constraints : A[u; slack] <= b
             A = np.hstack([LgV, np.array([[-1]])])
             b = (
-            -LfV 
-            - cp_bound
-            -LYV @ (a_L_hat + self.Gamma_L @ daclfda) #TODO: check sign
-            - self.params["clf"]["rate"] * V
+                -LfV 
+                -cp_bound
+                -LYV @ (a_L_hat + self.Gamma_L @ daclfda) #TODO: check sign
+                - self.params["clf"]["rate"] * V
             )
             if "u_max" in self.params:
                 A = np.vstack([A, np.hstack([np.eye(self.udim), np.zeros((self.udim, 1))])])
@@ -555,10 +555,10 @@ class CtrlAffineSys:
         else:
             A = LgV
             b = (
-            -LfV
-            -LYV @ (a_L_hat + self.Gamma_L @ daclfda) #TODO: check sign
-            - cp_bound 
-            - self.params["clf"]["rate"] * V
+                -LfV
+                -LYV @ (a_L_hat + self.Gamma_L @ daclfda) #TODO: check sign
+                -cp_bound 
+                -self.params["clf"]["rate"] * V
             )
             if "u_max" in self.params:
                 A = np.vstack([A, np.eye(self.udim)])
@@ -579,12 +579,12 @@ class CtrlAffineSys:
                 else:
                     raise ValueError("params['u_min'] should be either a scalar or an (udim, 1) array")
             f = -W @ u_ref.flatten()
-            u = cvxpy.Variable(self.udim)
+            u = cvxpy.Variable((self.udim, 1))
             prob = cvxpy.Problem(cvxpy.Minimize(0.5 * cvxpy.quad_form(u, W) + f @ u), [A @ u <= b])
             prob.solve()
             feas = prob.status == cvxpy.OPTIMAL
             u_val = u.value if feas else np.array([self.params["u_min"] if LgV[i] > 0 else self.params["u_max"] for i in range(self.udim)])
-            slack_val = []
+            slack_val = None
         
         # Update a_L_hat
         self.update_a_L_hat(x, dt)
@@ -612,4 +612,5 @@ class CtrlAffineSys:
 
         # Projection operator to enforce bounds on a_L_hat
         #TODO: check sign
+        #self.a_L_hat += self.Gamma_L @ (daclfdx.T @ self.Y(x)).T, self.a_hat_norm_max
         self.a_L_hat += projection_operator(self.a_L_hat, self.Gamma_L @ (daclfdx.T @ self.Y(x)).T, self.a_hat_norm_max, self.epsilon) * dt

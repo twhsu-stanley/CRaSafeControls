@@ -18,14 +18,14 @@ class INVERTED_PENDULUM_UNCERTAIN(CtrlAffineSys):
         
         l = params['l']    # length of pendulum (m)
         m = params['m']    # mass of pendulum (kg)
-        g = params['g']    # gravity (m/s^2)
+        grav = params['g']    # gravity (m/s^2)
         b = params['b']    # friction coefficient (s*Nm/rad)
         I = params['I']    # moment of inertia (kg*m^2)
         assert I == m * l**2 / 3, "I = m*l^2/3"
 
         f = sp.Matrix([
             [x[1]],
-            [(-b * x[1] + m * g * l * sp.sin(x[0]) / 2) / I]
+            [(-b * x[1] + m * grav * l * sp.sin(x[0]) / 2) / I]
         ])
         g = sp.Matrix([
             [0],
@@ -34,7 +34,7 @@ class INVERTED_PENDULUM_UNCERTAIN(CtrlAffineSys):
 
         # True uncertainty term: Y(x)a(Theta)
         Y = sp.Matrix([[0, 0], [sp.sin(theta), theta_dot]]) # true Y(x)
-        a = np.array([[(m*g*l/2/I)*0.5], [-b/I*0.5]]) # true a(Theta)
+        a = np.array([[(m*grav*l/2/I)*0.2], [-b/I*0.2]]) # true a(Theta)
         f += Y @ a  # Adding the true uncertainty to the system dynamics
 
         return x, f, g

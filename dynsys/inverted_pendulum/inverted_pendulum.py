@@ -15,14 +15,14 @@ class INVERTED_PENDULUM(CtrlAffineSys):
         
         l = params['l']    # length of pendulum (m)
         m = params['m']    # mass of pendulum (kg)
-        g = params['g']    # gravity (m/s^2)
+        grav = params['g']    # gravity (m/s^2)
         b = params['b']    # friction coefficient (s*Nm/rad)
         I = params['I']    # moment of inertia (kg*m^2)
         assert I == m * l**2 / 3, "I = m*l^2/3"
 
         f = sp.Matrix([
             [x[1]],
-            [(-b * x[1] + m * g * l * sp.sin(x[0]) / 2) / I]
+            [(-b * x[1] + m * grav * l * sp.sin(x[0]) / 2) / I]
         ])
         g = sp.Matrix([
             [0],
