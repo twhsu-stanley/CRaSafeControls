@@ -139,8 +139,6 @@ if USE_ADAPTIVE:
     a_hat = np.zeros((N, len(tt), 2))
 slack_hist = np.zeros((N, len(tt)))
 
-Sigma_score = 0  # violation score
-
 # Main simulation loops
 for n in range(N):
     x = np.copy(x0[n, :])
@@ -172,21 +170,9 @@ for n in range(N):
             slack_val = 0.0
         slack_hist[n, k] = slack_val
 
-        # Compute Sigma_score
-        if USE_ADAPTIVE:
-            #TODO: determine the violation condition
-            pass
-        else:
-            if V > V0 * np.exp(-params['clf']['rate'] * tt[k]):
-                Sigma_score += 1
-
         # Propagate dynamics
         dx = ip_true.dynamics(x, u)
         x = x + dx.reshape(-1) * dt
-
-# Violation score
-Sigma_score = Sigma_score / (N * len(tt)) * 100.0
-print(f"Sigma_score = {Sigma_score:6.3f} percent")
 
 # ========= Plots =========
 # States
