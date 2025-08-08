@@ -1,39 +1,39 @@
 import sympy as sp
 import numpy as np
 from dynsys.ctrl_affine_sys import CtrlAffineSys
-from dynsys.utils import wrapToPi
+from dynsys.utils import sindy_prediction_symbolic, wrapToPi
 
-class DUBINS_UNCERTAIN(CtrlAffineSys):
+class DUBINS_UNCERTAIN_SINDY(CtrlAffineSys):
     def __init__(self, params=None):
         super().__init__(params)
 
     def define_system_symbolic(self):
         # Symbolic states
-        p_x, p_y, theta = sp.symbols('p_x p_y theta')
-        x = sp.Matrix([p_x, p_y, theta])
+        x0, x1, x2 = sp.symbols('x0 x1 x2')
+        x = sp.Matrix([x0, x1, x2])
 
-        v = self.params['v']
+        feature_names = self.params["feature_names"]
+        coefficients = self.params["coefficients"]
+        idx_x = self.params["idx_x"]
+        idx_u = self.params["idx_u"]
 
-        # System dynamics based on MATLAB code
-        f = sp.Matrix([
-            [v * sp.cos(theta)],
-            [v * sp.sin(theta)],
-            [0]
-        ])
-        g = sp.Matrix([
-            [0],
-            [0],
-            [1]
-        ])
-
-        # True uncertainty term: Y(x)a(theta)
-        Y = sp.Matrix([[sp.cos(theta), 0, 0], [0, sp.sin(theta), 0], [0, 0, theta]]) # true Y(x)
-        a = np.copy(self.params["a_true"]) # true a(Theta)
-        f += Y @ a  # Adding the true uncertainty to the system dynamics
-
+        f = sindy_prediction_symbolic(x, np.array([0.0]), feature_names, coefficients, idx_x)
+        g = sindy_prediction_symbolic(x, np.array([1.0]), feature_names, coefficients, idx_u)
+        
         return x, f, g
+    
+    def define_Y_symbolic(self, x):
+        # Define the symbolic uncertainty term Y(x)
+        # TODO: this should be given by some neural network
+        theta = x[2]
+        return sp.Matrix([[sp.cos(theta), 0, 0], [0, sp.sin(theta), 0], [0, 0, theta]])
+    
+    def define_a_symbolic(self):
+        # Symbolic states
+        a0, a1, a2 = sp.symbols('a0 a1 a2')
+        return sp.Matrix([a0, a1, a2])
 
-    def define_clf_symbolic(self, x):
+    def define_aclf_symbolic(self, x, a_L_hat=None):
         p_x = x[0]
         p_y = x[1]
         theta = x[2]
@@ -43,8 +43,8 @@ class DUBINS_UNCERTAIN(CtrlAffineSys):
 
         clf = (sp.cos(theta) * (p_y - y_target) - sp.sin(theta) * (p_x - x_target))**2
         return clf
-
-    def define_cbf_symbolic(self, x):
+    
+    def define_acbf_symbolic(self, x, a_b_hat=None):
         p_x = x[0]
         p_y = x[1]
         theta = x[2]

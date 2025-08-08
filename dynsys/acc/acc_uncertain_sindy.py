@@ -9,7 +9,6 @@ class ACC_UNCERTAIN_SINDY(CtrlAffineSys):
 
     def define_system_symbolic(self):
         # Symbolic states
-        
         x0, x1, x2 = sp.symbols('x0 x1 x2')
         x = sp.Matrix([x0, x1, x2])
 
@@ -20,14 +19,6 @@ class ACC_UNCERTAIN_SINDY(CtrlAffineSys):
 
         f = sindy_prediction_symbolic(x, np.array([0.0]), feature_names, coefficients, idx_x)
         g = sindy_prediction_symbolic(x, np.array([1.0]), feature_names, coefficients, idx_u)
-        
-        #p, v, z = sp.symbols('p v z')
-        #x = sp.Matrix([p, v, z])
-        #v0 = params['v0']
-        #m = params['m']
-
-        #f = sp.Matrix([[v], [0], [v0 - v]])
-        #g = sp.Matrix([[0], [1/m], [0]])
 
         return x, f, g
     

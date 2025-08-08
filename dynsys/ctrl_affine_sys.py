@@ -176,13 +176,13 @@ class CtrlAffineSys:
     # Controllers
     def ctrl_cra_tracking(self, x, x_d, x_d_dot, cp_quantile, dt):
         #TODO: Set K_track matirx
-        K = self.K.track # x_dim-by-x_dim PSD matrix
+        K = self.params["K_track"] # x_dim-by-x_dim PSD matrix
 
         # Compute tracking error: e
         e = x - x_d
 
         # Compute auxilliary control input: u_tilde
-        cond = e.T @ K @e - np.linalg.norm(e, 2) * cp_quantile
+        cond = e.T @ K @ e - np.linalg.norm(e, 2) * cp_quantile
         if cond >= 0:
             u_tilde = 0
         else:
