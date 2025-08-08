@@ -7,30 +7,30 @@ class ACC_SINDY(CtrlAffineSys):
     def __init__(self, params=None):
         super().__init__(params)
 
-    def define_system_symbolic(self, params):
+    def define_system_symbolic(self):
         # Symbolic states
         x0, x1, x2 = sp.symbols('x0 x1 x2')
         x = sp.Matrix([x0, x1, x2])
 
-        feature_names = params["feature_names"]
-        coefficients = params["coefficients"]
-        idx_x = params["idx_x"]
-        idx_u = params["idx_u"]
+        feature_names = self.params["feature_names"]
+        coefficients = self.params["coefficients"]
+        idx_x = self.params["idx_x"]
+        idx_u = self.params["idx_u"]
 
         f = sindy_prediction_symbolic(x, np.array([0.0]), feature_names, coefficients, idx_x)
         g = sindy_prediction_symbolic(x, np.array([1.0]), feature_names, coefficients, idx_u)
         
         return x, f, g
 
-    def define_clf_symbolic(self, params, x):
+    def define_clf_symbolic(self, x):
         v = x[1]
-        vd = params['vd']
+        vd = self.params['vd']
         return (v - vd)**2
 
-    def define_cbf_symbolic(self, params, x):
+    def define_cbf_symbolic(self, x):
         v = x[1]
         z = x[2]
-        T = params['T']
+        T = self.params['T']
         return z - T * v
 
     def ctrl_nominal(self, x):

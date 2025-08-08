@@ -56,12 +56,12 @@ class CtrlAffineSys:
         self.Y = None
 
         # Let subclass define symbolic system
-        x_sym, f_sym, g_sym = self.define_system_symbolic(self.params)
+        x_sym, f_sym, g_sym = self.define_system_symbolic()
         self.xdim = x_sym.shape[0]
         self.udim = g_sym.shape[1]
 
-        clf_sym = self.define_clf_symbolic(self.params, x_sym)
-        cbf_sym = self.define_cbf_symbolic(self.params, x_sym)
+        clf_sym = self.define_clf_symbolic(x_sym)
+        cbf_sym = self.define_cbf_symbolic(x_sym)
         aclf_sym = None
         acbf_sym = None
         Y_sym = None
@@ -81,8 +81,8 @@ class CtrlAffineSys:
 
             Y_sym = self.define_Y_symbolic(x_sym) # Y(x)
             a_hat_sym = self.define_a_symbolic()  # a(theta)
-            aclf_sym = self.define_aclf_symbolic(self.params, x_sym, a_hat_sym)
-            acbf_sym = self.define_acbf_symbolic(self.params, x_sym, a_hat_sym)
+            aclf_sym = self.define_aclf_symbolic(x_sym, a_hat_sym)
+            acbf_sym = self.define_acbf_symbolic(x_sym, a_hat_sym)
 
         self.lambdify_symbolic_funcs(x_sym, f_sym, g_sym, clf_sym, cbf_sym, aclf_sym, acbf_sym, Y_sym, a_hat_sym)
 
@@ -92,13 +92,13 @@ class CtrlAffineSys:
     def ctrl_nominal(self, x):
         raise NotImplementedError("Nominal control not implemented.")
 
-    def define_system_symbolic(self, params):
+    def define_system_symbolic(self):
         raise NotImplementedError("System definition not implemented.")
 
-    def define_clf_symbolic(self, params, x_sym):
+    def define_clf_symbolic(self, x_sym):
         pass
 
-    def define_cbf_symbolic(self, params, x_sym):
+    def define_cbf_symbolic(self, x_sym):
         pass
     
     def define_Y_symbolic(self, x_sym):
@@ -107,10 +107,10 @@ class CtrlAffineSys:
     def define_a_symbolic(self):
         pass
 
-    def define_aclf_symbolic(self, params, x_sym, a_L_hat=None):
+    def define_aclf_symbolic(self, x_sym, a_L_hat=None):
         pass
 
-    def define_acbf_symbolic(self, params, x_sym, a_b_hat=None):
+    def define_acbf_symbolic(self, x_sym, a_b_hat=None):
         pass
 
     def lambdify_symbolic_funcs(self, x_sym, f_sym, g_sym, clf_sym=None, cbf_sym=None, 
@@ -174,6 +174,27 @@ class CtrlAffineSys:
             self.Y = sp.lambdify([x_sym], Y_sym, modules='numpy')
 
     # Controllers
+    def ctrl_cra_tracking(self, x, x_d, x_d_dot, cp_quantile, dt):
+        #TODO: Set K_track matirx
+        K = self.K.track # x_dim-by-x_dim PSD matrix
+
+        # Compute tracking error: e
+        e = x - x_d
+
+        # Compute auxilliary control input: u_tilde
+        cond = e.T @ K @e - np.linalg.norm(e, 2) * cp_quantile
+        if cond >= 0:
+            u_tilde = 0
+        else:
+            u_tilde = e / np.linalg.norm(e, 2) * cond
+
+        # Conpute control
+        u = np.linalg.pinv(self.g(x)) @ (-self.f(x) + x_d_dot - K @ e - u_tilde - self.Y(x) @ self.a_t_hat)
+
+        # Update a_t_hat using projection operator
+
+        return u
+        
     def ctrl_clf_qp(self, x, u_ref=None, with_slack=True):
         """CLF-QP Controller"""
         if self.clf is None:

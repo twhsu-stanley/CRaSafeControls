@@ -11,15 +11,15 @@ class IP_UNCERTAIN_SINDY(CtrlAffineSys):
         self.A = None # Placeholder for the linearized system matrix
         self.B = None # Placeholder for the linearized input matrix
 
-    def define_system_symbolic(self, params):
+    def define_system_symbolic(self):
         # Symbolic states
         x0, x1 = sp.symbols('x0 x1')
         x = sp.Matrix([x0, x1])
 
-        feature_names = params["feature_names"]
-        coefficients = params["coefficients"]
-        idx_x = params["idx_x"]
-        idx_u = params["idx_u"]
+        feature_names = self.params["feature_names"]
+        coefficients = self.params["coefficients"]
+        idx_x = self.params["idx_x"]
+        idx_u = self.params["idx_u"]
 
         f = sindy_prediction_symbolic(x, np.array([0.0]), feature_names, coefficients, idx_x)
         g = sindy_prediction_symbolic(x, np.array([1.0]), feature_names, coefficients, idx_u)
@@ -45,12 +45,12 @@ class IP_UNCERTAIN_SINDY(CtrlAffineSys):
         a0, a1 = sp.symbols('a0 a1')
         return sp.Matrix([a0, a1])
 
-    def define_aclf_symbolic(self, params, x, a_L_hat=None):
+    def define_aclf_symbolic(self, x, a_L_hat=None):
         # x: symbolic states
 
         # Linearized Dynamics with state feedback : u0 = params.Kp * x0 + params.Kd * x1
-        A_cl = self.A + self.B @ np.array([[params["Kp"], params["Kd"]]])
-        Q = params['clf']['rate'] * np.eye(self.A.shape[0])
+        A_cl = self.A + self.B @ np.array([[self.params["Kp"], self.params["Kd"]]])
+        Q = self.params['clf']['rate'] * np.eye(self.A.shape[0])
         P = lyap(A_cl.T, -Q) # Cost Matrix for quadratic CLF. (V = e'*P*e)
         clf = (x.T @ P @ x)[0,0]
         
@@ -61,12 +61,12 @@ class IP_UNCERTAIN_SINDY(CtrlAffineSys):
 
         return clf
     
-    def define_clf_symbolic(self, params, x, a_L_hat=None):
+    def define_clf_symbolic(self, x):
         # x: symbolic states
 
         # Linearized Dynamics with state feedback : u0 = params.Kp * x0 + params.Kd * x1
-        A_cl = self.A + self.B @ np.array([[params["Kp"], params["Kd"]]])
-        Q = params['clf']['rate'] * np.eye(self.A.shape[0])
+        A_cl = self.A + self.B @ np.array([[self.params["Kp"], self.params["Kd"]]])
+        Q = self.params['clf']['rate'] * np.eye(self.A.shape[0])
         P = lyap(A_cl.T, -Q) # Cost Matrix for quadratic CLF. (V = e'*P*e)
         clf = (x.T @ P @ x)[0,0]
         
