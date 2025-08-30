@@ -52,9 +52,9 @@ params = {
     "Kp": 10,  # P gain for the nominal controller
 }
 params["a_true"] = np.array([
-    [0.08],
-    [0.08], 
-    [-0.08]
+    [0.05],
+    [0.05], 
+    [-0.05]
 ]) # true a(Theta)
 
 # True system
@@ -67,7 +67,7 @@ params["idx_u"] = idx_u
 params["use_adaptive"] = USE_ADAPTIVE
 params["Gamma_b"] = np.eye(3) * 0.01 # adaptive gain matrix for CRaCBF
 #params["Gamma_L"] = np.eye(3) * 0.01 # adaptive gain matrix for CRaCLF
-params["a_hat_norm_max"] = np.linalg.norm(np.array([[0.1], [0.1], [0.1]]), 2) # max norm of a_hat
+params["a_hat_norm_max"] = np.linalg.norm(np.array([[0.05], [0.05], [0.05]]), 2) # max norm of a_hat
 params["a_0"] = np.array([[0.0], [0.0], [0.0]]) # initial guess for a_hat
 params["epsilon"] = 1e-3 # small value for numerical stability of projection operator
 
@@ -75,9 +75,9 @@ params["epsilon"] = 1e-3 # small value for numerical stability of projection ope
 Dubins_learned = DUBINS_UNCERTAIN_SINDY(params)
 
 # Sample initial states outside the obstacle
-N = 3  # number of trajectories
+N = 10  # number of trajectories
 x0 = np.vstack([
-    np.random.rand(N) * 7 + 3,                  # x in [3, 10]
+    np.random.rand(N) * 3 + 7,                  # x in [3, 10]
     np.random.rand(N) * 6 + 1,                  # y in [1, 7]
     np.random.rand(N) * 2 * np.pi - np.pi       # theta in [-pi, pi]
 ])

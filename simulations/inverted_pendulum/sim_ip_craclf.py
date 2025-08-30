@@ -40,7 +40,7 @@ cp_quantile = cp_quantile * USE_CP # setting cp_quantile = 0 is equivalent to us
 
 # Time setup
 dt = 0.01
-sim_T = 5
+sim_T = 10
 tt = np.arange(0, sim_T, dt)
 
 # ========= Set up the learned and true models =========

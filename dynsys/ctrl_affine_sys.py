@@ -35,6 +35,7 @@ class CtrlAffineSys:
         self.a_err_max = None
         self.a_L_hat = None  # Adaptive parameter for aCLF
         self.a_b_hat = None  # Adaptive parameter for aCBF
+        self.a_t_hat = None  # Adaptive parameter for tracking
         self.epsilon = None  # Small value for numerical stability of projection operator
         self.Gamma_b = None  # Adaptive gain matrix for CRaCBF
         self.Gamma_L = None  # Adaptive gain matrix for CRaCLF
@@ -73,11 +74,13 @@ class CtrlAffineSys:
             self.a_err_max = np.ones((self.params["a_0"].shape[0], 1)) * self.a_hat_norm_max * 2 #TODO: check correctness
             self.a_b_hat = np.copy(self.params["a_0"])  # Initial guess for a_b_hat
             self.a_L_hat = np.copy(self.params["a_0"])  # Initial guess for a_L_hat
-            # WARNING: a_b_hat and a_L_hat should be initialized by copying, otherwise they will be references to the same array.
+            self.a_t_hat = np.copy(self.params["a_0"])  # Initial guess for a_t_hat
+            # WARNING: a_b_hat, a_L_hat, and a_t_hat should be initialized by copying, otherwise they will be references to the same array.
             self.epsilon = self.params.get("epsilon", 1e-3)  # Small value for numerical stability of projection operator
 
             self.Gamma_b = self.params.get("Gamma_b", None)  # adaptive gain matrix for CRaCBF
             self.Gamma_L = self.params.get("Gamma_L", None)  # adaptive gain matrix for CRaCLF
+            self.Gamma_t = self.params.get("Gamma_t", None)  # adaptive gain matrix for CRaTracking
 
             Y_sym = self.define_Y_symbolic(x_sym) # Y(x)
             a_hat_sym = self.define_a_symbolic()  # a(theta)
@@ -174,26 +177,42 @@ class CtrlAffineSys:
             self.Y = sp.lambdify([x_sym], Y_sym, modules='numpy')
 
     # Controllers
-    def ctrl_cra_tracking(self, x, x_d, x_d_dot, cp_quantile, dt):
-        #TODO: Set K_track matirx
+    def ctrl_cra_tracking(self, x, e, xd_dot, cp_quantile, dt):
         K = self.params["K_track"] # x_dim-by-x_dim PSD matrix
 
-        # Compute tracking error: e
-        e = x - x_d
-
         # Compute auxilliary control input: u_tilde
-        cond = e.T @ K @ e - np.linalg.norm(e, 2) * cp_quantile
-        if cond >= 0:
-            u_tilde = 0
+        eta = self.g(x) @ np.linalg.pinv(self.g(x)) - np.eye(self.xdim)
+        e_u = eta @ (-self.f(x) + xd_dot.reshape(-1,1) - K @ e - self.Y(x) @ self.a_t_hat) # error induced by underactuation
+        M = -(e.T @ e_u).item() - np.linalg.norm(e, 2) * cp_quantile
+        if M >= 0:
+            u_tilde = np.zeros((self.xdim, 1))
         else:
-            u_tilde = e / np.linalg.norm(e, 2) * cond
-
-        # Conpute control
-        u = np.linalg.pinv(self.g(x)) @ (-self.f(x) + x_d_dot - K @ e - u_tilde - self.Y(x) @ self.a_t_hat)
+            ee  = (np.eye(self.xdim) + eta).T @ e
+            if np.linalg.norm(ee, ord=2) > 1e-1:
+                u_tilde = -ee / ((np.linalg.norm(ee, 2))**2) * (np.abs(M)*1.25)
+            else:
+                #TODO: this numerical issue needs to be addressed
+                u_tilde = -ee / ((np.linalg.norm(ee, 2))**2 + 1e-2) * (np.abs(M)*1.5)
+        
+        # Compute control
+        u = np.linalg.pinv(self.g(x)) @ (-self.f(x) + xd_dot.reshape(-1,1) - K @ e + u_tilde - self.Y(x) @ self.a_t_hat)
+        
+        a_tilde = self.a_t_hat - self.params["a_true"]
+        V = (e.T @ e + a_tilde.T @ self.Gamma_t @ a_tilde).item()
+        a_t_hat_dot = projection_operator(self.a_t_hat, np.linalg.inv(self.Gamma_t) @ self.Y(x).T @ e, self.a_hat_norm_max, self.epsilon)
+        V_dot = (-2*e.T @ K @ e 
+                 + 2* a_tilde.T @ (-self.Y(x).T @ e + self.Gamma_t @ a_t_hat_dot)
+                 + 2*e.T @ (np.eye(self.xdim) + eta) @ u_tilde 
+                 + 2*e.T @ e_u 
+                 + 2* np.linalg.norm(e, 2) * cp_quantile
+        ).item()
+        #if V_dot > 0:
+        #    raise ValueError("V_dot > 0")
 
         # Update a_t_hat using projection operator
+        self.update_a_t_hat(x, e, dt)
 
-        return u
+        return u, V, V_dot
         
     def ctrl_clf_qp(self, x, u_ref=None, with_slack=True):
         """CLF-QP Controller"""
@@ -635,3 +654,11 @@ class CtrlAffineSys:
         #TODO: check sign
         #self.a_L_hat += self.Gamma_L @ (daclfdx.T @ self.Y(x)).T, self.a_hat_norm_max
         self.a_L_hat += projection_operator(self.a_L_hat, self.Gamma_L @ (daclfdx.T @ self.Y(x)).T, self.a_hat_norm_max, self.epsilon) * dt
+
+    def update_a_t_hat(self, x, e,dt):
+        """Update adaptive parameter a_t_hat for tracking."""
+        if self.Y is None or self.a_L_hat is None or self.a_b_hat is None:
+            raise ValueError("Adaptive control parameters not defined.")
+            
+        self.a_t_hat += projection_operator(self.a_t_hat, np.linalg.inv(self.Gamma_t) @ self.Y(x).T @ e, self.a_hat_norm_max, self.epsilon) * dt
+        #self.a_t_hat += (np.linalg.inv(self.Gamma_t) @ self.Y(x).T @ e) * dt
