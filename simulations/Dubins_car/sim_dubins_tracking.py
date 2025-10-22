@@ -57,7 +57,9 @@ params["a_true"] = np.array([
     [0.05], 
     [0.05]
 ]) # true a(Theta)
-params["K_track"] = np.eye(3) * 10
+params["K_track"] = np.array([[10, 0, 0],
+                               [0, 20, 0],
+                               [0, 0, 10]])
 
 # True system
 Dubins_true = DUBINS_UNCERTAIN(params)
@@ -77,16 +79,18 @@ params["epsilon"] = 1e-2 # small value for numerical stability of projection ope
 # Learned mode
 Dubins_learned = DUBINS_UNCERTAIN_SINDY(params)
 
-# Generate straight-line desired trajectory from x0 to target
-x0 = np.array([-10, 1, -3.0])
+# Generate xd by simulation
+xd0 = np.array([-10, 1, -3.0])
 xd = np.zeros((len(tt), 3))
-delta_x = params["target"]["x"] - x0[0]
-delta_y = params["target"]["y"] - x0[1]
-heading = np.arctan2(delta_y, delta_x)
+ud = np.sin(2*np.pi*0.2*tt)
+x = np.copy(xd0)
 for k in range(len(tt)):
-    xd[k, 0] = x0[0] + params["v"] * np.cos(heading) * k * dt
-    xd[k, 1] = x0[1] + params["v"] * np.sin(heading) * k * dt
-    xd[k, 2] = heading
+    x[2] = wrapToPi(x[2])
+    xd[k, :] = x
+
+    # Propagate dynamics
+    dx = Dubins_true.dynamics(x, ud[k].reshape(-1, 1))
+    x = x + dx.reshape(-1) * dt
 xd_dot = np.diff(xd, axis=0) / dt
 xd_dot = np.vstack((xd_dot, xd_dot[-1,:]))
 xd_dot[:, 2] = wrapToPi(xd_dot[:, 2])
@@ -98,10 +102,10 @@ a_hat = np.zeros((len(tt), 3))
 V_hist = np.zeros((len(tt)))
 V_dot_hist = np.zeros((len(tt)))
 
+x0 = np.array([-11, 2, 0.0])
 x = np.copy(x0)
 
 for k in range(len(tt)):
-    t = tt[k]
     x[2] = wrapToPi(x[2])
     x_hist[k, :] = x
 
@@ -138,7 +142,6 @@ plt.ylabel("theta")
 plt.grid(True)
 
 plt.figure()
-plt.plot(params["target"]["x"], params["target"]["y"], 'go', markersize=10)
 plt.plot(x0[0], x0[1], 'ro', markersize=10)
 plt.plot(xd[:,0], xd[:,1], 'r')
 plt.plot(x_hist[:, 0], x_hist[:, 1])
@@ -157,8 +160,8 @@ plt.grid(True)
 
 plt.figure()
 plt.plot(tt, V_dot_hist.T, 'r--')
-plt.plot(tt[:-1], np.diff(V_hist) / dt)
-plt.ylabel("V_dot")
+#plt.plot(tt[:-1], np.diff(V_hist) / dt)
+plt.ylabel("V_dot Upper Bound")
 plt.grid(True)
 
 plt.figure()

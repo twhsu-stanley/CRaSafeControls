@@ -34,9 +34,9 @@ class DUBINS_UNCERTAIN_SINDY(CtrlAffineSys):
             [0]
         ])
         g = sp.Matrix([
-            [0, 0, 0],
-            [0, 0, 0],
-            [0, 0, 1]
+            [0],
+            [0],
+            [1]
         ])
         """
 

@@ -1,6 +1,7 @@
 import numpy as np
 import sympy as sp
 import cvxpy
+from dynsys.geodesic_opt import GeodesicSolver
 from dynsys.utils import *
 
 class CtrlAffineSys:
@@ -177,6 +178,64 @@ class CtrlAffineSys:
             self.Y = sp.lambdify([x_sym], Y_sym, modules='numpy')
 
     # Controllers
+    def ctrl_ccm(self, x, x_d, u_d, cp_quantile = 0.0):
+        # x_d: Start point
+        # x: End point
+
+        N = self.params["geodesic"]["N"]
+        D = self.params["geodesic"]["D"]
+        n = self.xdim
+
+        solver = GeodesicSolver(n, D, N, self.W_fcn, self.dW_dxi_fcn)
+
+        # Initialize optimization variables and constraints internally
+        c0, beq = solver.initialize_conditions(x_d, x)
+        # Solve the geodesic optimization problem
+        c_opt, Erem = solver.solve_geodesic(c0, beq)
+        gamma, gamma_s_0, gamma_s_1 = solver.get_trajectory(c_opt)
+
+        weight_input = 1
+        weight_slack = 10
+        H = np.block([
+            [weight_input * np.eye(self.udim), np.zeros((self.udim, 1))],
+            [np.zeros((1, self.udim)), weight_slack]
+        ])
+    
+        # Formulate it as a min-norm CLF QP problem
+        # min [u' slack] H [u; slack]
+        # Constraints : A[u; slack] + B <= 0
+
+        W_x = self.W_fcn(x)
+
+        u_d = u_d.reshape(-1, 1)
+
+        Theta = np.linalg.cholesky(np.linalg.inv(W_x))
+        sigma_max = np.max(np.linalg.svd(Theta, compute_uv=False))  # maximum singular value
+
+        gamma_s1_Mx = gamma_s_1.reshape(-1, 1).T @ np.linalg.inv(W_x)
+        A = np.hstack((gamma_s1_Mx @ self.g(x), [[-1]]))
+        B = (gamma_s1_Mx @ (self.f(x) + self.g(x) @ u_d)
+            - gamma_s_0.reshape(-1, 1).T @ np.linalg.inv(self.W_fcn(x_d)) @ (self.f(x_d) + self.g(x_d) @ u_d)
+            + self.params["ccm"]["rate"] * Erem
+            + sigma_max * cp_quantile * np.sqrt(Erem))
+        B = B.item()
+
+        # Analytic solution
+        if B <= 0:
+            Lambda = 0
+        else:
+            denom = A @ np.linalg.inv(H) @ A.T
+            if denom < 1e-9:
+                Lambda = 0
+            else:
+                Lambda = 2 * B / denom
+
+        u = -0.5 * Lambda * (np.linalg.inv(H).T @ A.T)
+        uc = u_d + u[:self.udim]
+        slack = u[-1]
+
+        return uc, slack, Erem.item()
+
     def ctrl_cra_tracking(self, x, e, xd_dot, cp_quantile, dt):
         K = self.params["K_track"] # x_dim-by-x_dim PSD matrix
 
@@ -192,10 +251,10 @@ class CtrlAffineSys:
                 u_tilde = -ee / ((np.linalg.norm(ee, 2))**2) * (np.abs(M)*1.25)
             else:
                 #TODO: this numerical issue needs to be addressed
-                u_tilde = -ee / ((np.linalg.norm(ee, 2))**2 + 1e-2) * (np.abs(M)*1.5)
+                u_tilde = -ee / ((np.linalg.norm(ee, 2))**2 + 1e-1) * (np.abs(M)*1.25)
         
         # Compute control
-        u = np.linalg.pinv(self.g(x)) @ (-self.f(x) + xd_dot.reshape(-1,1) - K @ e + u_tilde - self.Y(x) @ self.a_t_hat)
+        u = np.linalg.pinv(self.g(x)) @ (-self.f(x) + xd_dot.reshape(-1,1) - K @ e - self.Y(x) @ self.a_t_hat + u_tilde)
         
         a_tilde = self.a_t_hat - self.params["a_true"]
         V = (e.T @ e + a_tilde.T @ self.Gamma_t @ a_tilde).item()
