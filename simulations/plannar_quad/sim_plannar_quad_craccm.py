@@ -4,7 +4,7 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 from scipy.integrate import solve_ivp
-from dynsys.plannar_quad.plannar_quad import PLANNAR_QUAD
+from dynsys.plannar_quad.plannar_quad_uncertain import PLANNAR_QUAD_UNCERTAIN
 from scipy.io import loadmat
 from scipy.interpolate import interp1d
 
@@ -30,8 +30,8 @@ x_d_fcn = lambda t: interp_x(t)
 u_d_fcn = lambda t: interp_u(t)
 
 # Time setup
-dt = 0.005
-sim_T = np.floor(t_d_data[-1]) # Simulation time
+dt = 0.001
+sim_T = 3#np.floor(t_d_data[-1]) # Simulation time
 tt = np.arange(0, sim_T, dt)
 T_steps = len(tt)
 
@@ -44,8 +44,14 @@ params = {
     "ccm": {"rate": 0.8},
     "geodesic": {"N": 8, "D": 2},
 }
+params["use_adaptive"] = USE_ADAPTIVE
+params["Gamma_ccm"] = np.eye(3) * 50 # adaptive gain matrix for CRaCCM
+params["a_true"] = np.array([[-0.02], [-0.02], [-0.02]]) # true a(Theta)
+params["a_hat_norm_max"] = np.linalg.norm(np.array([[0.02], [0.02], [0.02]]), 2) # max norm of a_hat
+params["a_0"] = np.array([[0.0], [0.0], [0.0]]) # initial guess for a_hat
+params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 
-plannar_quad = PLANNAR_QUAD(params)
+plannar_quad = PLANNAR_QUAD_UNCERTAIN(params)
 
 # Disturbance
 dist_config = {}
@@ -91,7 +97,7 @@ for i in range(T_steps):
     energy_hist[i] = plannar_quad.Erem
 
     # Log controller inputs
-    uc, slack = plannar_quad.ctrl_ccm(x, x_d, u_d)
+    uc, slack = plannar_quad.ctrl_cra_ccm(x, x_d, u_d)
     u_hist[:, i] = uc.ravel()
     slack_hist[i] = slack
 
@@ -99,8 +105,9 @@ for i in range(T_steps):
     if i < T_steps - 1:
         t_span = (tt[i], tt[i + 1])
         
+        # TODO: consider all cases of USE_ADAPTIVE and USE_CP
         sol = solve_ivp(
-            lambda t, y: plannar_quad.ccm_closed_loop_dyn(t, y, x_d_fcn, u_d_fcn, dist_config),
+            lambda t, y: plannar_quad.cra_ccm_closed_loop_dyn(t, y, x_d_fcn, u_d_fcn, dist_config),
             t_span,
             x,
             method = "Radau",  # stiff solver comparable to ode23s
@@ -109,6 +116,10 @@ for i in range(T_steps):
             t_eval = [tt[i + 1]],
         )
         x = sol.y[:, -1]
+    
+    # Update adaptive parameter
+    #if USE_ADAPTIVE:
+    plannar_quad.update_a_ccm_hat(x, dt)
 
 # Plot results
 # x vs. x_d

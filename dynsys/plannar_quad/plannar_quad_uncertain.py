@@ -2,7 +2,7 @@ import sympy as sp
 import numpy as np
 from dynsys.ctrl_affine_sys import CtrlAffineSys
 
-class PLANNAR_QUAD(CtrlAffineSys):
+class PLANNAR_QUAD_UNCERTAIN(CtrlAffineSys):
     def __init__(self, params=None):
         super().__init__(params)
     
@@ -34,7 +34,28 @@ class PLANNAR_QUAD(CtrlAffineSys):
             [l/J,           -l/J]
         ])
 
+        # True uncertainty term: Y(x)a(theta)
+        Y = sp.Matrix([[vx, vz, 0], [0, 0, phi]])
+        a = np.copy(self.params["a_true"]) # true a(Theta)
+
+        # x_dot = f(x) + g(x) ( u + Y(x) a(Theta) )
+        f += g @ Y @ a  # Adding the true uncertainty to the system dynamics
+
         return x, f, g
+    
+    def define_Y_symbolic(self, x):
+        # Define the symbolic uncertainty term Y(x)
+        # TODO: this should be given by some neural network
+        vx = x[3]
+        vz = x[4]
+        phi = x[2]
+        Y = sp.Matrix([[vx, vz, 0], [0, 0, phi]])
+        return Y
+
+    def define_a_symbolic(self):
+        # Symbolic states
+        a0, a1, a2 = sp.symbols('a0 a1 a2')
+        return sp.Matrix([a0, a1, a2])
     
     def ccm_closed_loop_dyn(self, t, x, x_d_fcn, u_d_fcn, dist_config):
         # x is state vector length plant.n
@@ -42,6 +63,21 @@ class PLANNAR_QUAD(CtrlAffineSys):
         u_d = u_d_fcn(t)
 
         uc, slack = self.ctrl_ccm(x, x_d, u_d)
+        
+        if dist_config["include_dist"]:
+            wt = dist_config["gen_dist"](t)
+            dxdt = self.dynamics(x, uc) + wt
+        else:
+            dxdt = self.dynamics(x, uc)
+
+        return dxdt.ravel()
+
+    def cra_ccm_closed_loop_dyn(self, t, x, x_d_fcn, u_d_fcn, dist_config):
+        # x is state vector length plant.n
+        x_d = x_d_fcn(t)
+        u_d = u_d_fcn(t)
+
+        uc, slack = self.ctrl_cra_ccm(x, x_d, u_d)
         
         if dist_config["include_dist"]:
             wt = dist_config["gen_dist"](t)

@@ -31,12 +31,17 @@ class CtrlAffineSys:
         self.ddclfdx = None
         self.ddcbfdx = None
 
+        # CCM
+        self.gamma_s_0 = None
+        self.gamma_s_1 = None
+        self.Erem = None
+
         # Adaptive control parameters: Only defined if "use_adaptive" is TRUE in params
         self.a_hat_norm_max = None
         self.a_err_max = None
         self.a_L_hat = None  # Adaptive parameter for aCLF
         self.a_b_hat = None  # Adaptive parameter for aCBF
-        self.a_t_hat = None  # Adaptive parameter for tracking
+        self.a_ccm_hat = None  # Adaptive parameter for aCCM
         self.epsilon = None  # Small value for numerical stability of projection operator
         self.Gamma_b = None  # Adaptive gain matrix for CRaCBF
         self.Gamma_L = None  # Adaptive gain matrix for CRaCLF
@@ -75,13 +80,13 @@ class CtrlAffineSys:
             self.a_err_max = np.ones((self.params["a_0"].shape[0], 1)) * self.a_hat_norm_max * 2 #TODO: check correctness
             self.a_b_hat = np.copy(self.params["a_0"])  # Initial guess for a_b_hat
             self.a_L_hat = np.copy(self.params["a_0"])  # Initial guess for a_L_hat
-            self.a_t_hat = np.copy(self.params["a_0"])  # Initial guess for a_t_hat
-            # WARNING: a_b_hat, a_L_hat, and a_t_hat should be initialized by copying, otherwise they will be references to the same array.
+            self.a_ccm_hat = np.copy(self.params["a_0"])  # Initial guess for a_ccm_hat
+            # WARNING: a_b_hat, a_L_hat, and a_ccm_hat should be initialized by copying, otherwise they will be references to the same array.
             self.epsilon = self.params.get("epsilon", 1e-3)  # Small value for numerical stability of projection operator
 
             self.Gamma_b = self.params.get("Gamma_b", None)  # adaptive gain matrix for CRaCBF
             self.Gamma_L = self.params.get("Gamma_L", None)  # adaptive gain matrix for CRaCLF
-            self.Gamma_t = self.params.get("Gamma_t", None)  # adaptive gain matrix for CRaTracking
+            self.Gamma_ccm = self.params.get("Gamma_ccm", None)  # adaptive gain matrix for CRaCCM
 
             Y_sym = self.define_Y_symbolic(x_sym) # Y(x)
             a_hat_sym = self.define_a_symbolic()  # a(theta)
@@ -178,10 +183,7 @@ class CtrlAffineSys:
             self.Y = sp.lambdify([x_sym], Y_sym, modules='numpy')
 
     # Controllers
-    def ctrl_ccm(self, x, x_d, u_d, cp_quantile = 0.0):
-        # x_d: Start point
-        # x: End point
-
+    def calc_geodesic(self, x, x_d):
         N = self.params["geodesic"]["N"]
         D = self.params["geodesic"]["D"]
         n = self.xdim
@@ -193,6 +195,16 @@ class CtrlAffineSys:
         # Solve the geodesic optimization problem
         c_opt, Erem = solver.solve_geodesic(c0, beq)
         gamma, gamma_s_0, gamma_s_1 = solver.get_trajectory(c_opt)
+
+        self.gamma_s_0 = gamma_s_0
+        self.gamma_s_1 = gamma_s_1
+        self.Erem = Erem.item()
+
+        return gamma_s_0, gamma_s_1, Erem
+    
+    def ctrl_ccm(self, x, x_d, u_d, cp_quantile = 0.0):
+        # x_d: Start point
+        # x: End point
 
         weight_input = 1
         weight_slack = 10
@@ -212,12 +224,12 @@ class CtrlAffineSys:
         Theta = np.linalg.cholesky(np.linalg.inv(W_x))
         sigma_max = np.max(np.linalg.svd(Theta, compute_uv=False))  # maximum singular value
 
-        gamma_s1_Mx = gamma_s_1.reshape(-1, 1).T @ np.linalg.inv(W_x)
+        gamma_s1_Mx = self.gamma_s_1.reshape(-1, 1).T @ np.linalg.inv(W_x)
         A = np.hstack((gamma_s1_Mx @ self.g(x), [[-1]]))
         B = (gamma_s1_Mx @ (self.f(x) + self.g(x) @ u_d)
-            - gamma_s_0.reshape(-1, 1).T @ np.linalg.inv(self.W_fcn(x_d)) @ (self.f(x_d) + self.g(x_d) @ u_d)
-            + self.params["ccm"]["rate"] * Erem
-            + sigma_max * cp_quantile * np.sqrt(Erem))
+            - self.gamma_s_0.reshape(-1, 1).T @ np.linalg.inv(self.W_fcn(x_d)) @ (self.f(x_d) + self.g(x_d) @ u_d)
+            + self.params["ccm"]["rate"] * self.Erem
+            + sigma_max * cp_quantile * np.sqrt(self.Erem))
         B = B.item()
 
         # Analytic solution
@@ -234,8 +246,57 @@ class CtrlAffineSys:
         uc = u_d + u[:self.udim]
         slack = u[-1]
 
-        return uc, slack, Erem.item()
+        return uc, slack.item()
+    
+    def ctrl_cra_ccm(self, x, x_d, u_d, cp_quantile = 0.0):
+        # x_d: Start point
+        # x: End point
 
+        weight_input = 1
+        weight_slack = 10
+        H = np.block([
+            [weight_input * np.eye(self.udim), np.zeros((self.udim, 1))],
+            [np.zeros((1, self.udim)), weight_slack]
+        ])
+    
+        # Formulate it as a min-norm CLF QP problem
+        # min [u' slack] H [u; slack]
+        # Constraints : A[u; slack] + B <= 0
+
+        W_x = self.W_fcn(x)
+
+        u_d = u_d.reshape(-1, 1)
+
+        try:
+            Theta = np.linalg.cholesky(np.linalg.inv(W_x))
+            sigma_max = np.max(np.linalg.svd(Theta, compute_uv=False))  # maximum singular value
+        except:
+            sigma_max = 0
+
+        gamma_s1_Mx = self.gamma_s_1.reshape(-1, 1).T @ np.linalg.inv(W_x)
+        A = np.hstack((gamma_s1_Mx @ self.g(x), [[-1]]))
+        B = (gamma_s1_Mx @ (self.f(x) + self.g(x) @ (u_d + self.Y(x) @ self.a_ccm_hat))
+            - self.gamma_s_0.reshape(-1, 1).T @ np.linalg.inv(self.W_fcn(x_d)) @ (self.f(x_d) + self.g(x_d) @ u_d)
+            + self.params["ccm"]["rate"] * self.Erem
+            + sigma_max * cp_quantile * np.sqrt(self.Erem))
+        B = B.item()
+
+        # Analytic solution
+        if B <= 0:
+            Lambda = 0
+        else:
+            denom = A @ np.linalg.inv(H) @ A.T
+            if denom < 1e-9:
+                Lambda = 0
+            else:
+                Lambda = 2 * B / denom
+
+        u = -0.5 * Lambda * (np.linalg.inv(H).T @ A.T)
+        uc = u_d + u[:self.udim]
+        slack = u[-1]
+
+        return uc, slack.item()
+    
     def ctrl_cra_tracking(self, x, e, xd_dot, cp_quantile, dt):
         K = self.params["K_track"] # x_dim-by-x_dim PSD matrix
 
@@ -714,10 +775,11 @@ class CtrlAffineSys:
         #self.a_L_hat += self.Gamma_L @ (daclfdx.T @ self.Y(x)).T, self.a_hat_norm_max
         self.a_L_hat += projection_operator(self.a_L_hat, self.Gamma_L @ (daclfdx.T @ self.Y(x)).T, self.a_hat_norm_max, self.epsilon) * dt
 
-    def update_a_t_hat(self, x, e,dt):
-        """Update adaptive parameter a_t_hat for tracking."""
+    def update_a_ccm_hat(self, x, dt):
+        """Update adaptive parameter a_ccm_hat for tracking."""
         if self.Y is None or self.a_L_hat is None or self.a_b_hat is None:
             raise ValueError("Adaptive control parameters not defined.")
-            
-        self.a_t_hat += projection_operator(self.a_t_hat, np.linalg.inv(self.Gamma_t) @ self.Y(x).T @ e, self.a_hat_norm_max, self.epsilon) * dt
-        #self.a_t_hat += (np.linalg.inv(self.Gamma_t) @ self.Y(x).T @ e) * dt
+
+        self.a_ccm_hat += projection_operator(self.a_ccm_hat, 
+                                              np.linalg.inv(self.Gamma_ccm) @ (self.Y(x).T @ self.g(x).T @ np.linalg.inv(self.W_fcn(x)) @ self.gamma_s_1.reshape(-1, 1)), 
+                                              self.a_hat_norm_max, self.epsilon) * dt
