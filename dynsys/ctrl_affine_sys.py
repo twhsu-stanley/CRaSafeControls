@@ -19,6 +19,12 @@ class CtrlAffineSys:
         self.f = None
         self.g = None
 
+        self.use_cp = self.params.get("use_cp", 0)
+        self.use_adaptive = self.params.get("use_adaptive", 0)
+
+        # TODO: where and how to set this?
+        self.cp_quantile = self.params.get("cp_quantile", 0)
+
         # CLF and CBF functions and derivatives
         self.clf = None
         self.lf_clf = None
@@ -74,7 +80,7 @@ class CtrlAffineSys:
         Y_sym = None
         a_hat_sym = None
 
-        if "use_adaptive" in self.params and self.params["use_adaptive"] == 1:
+        if self.use_adaptive:
             # Adaptive control parameters
             self.a_hat_norm_max = self.params["a_hat_norm_max"]
             self.a_err_max = np.ones((self.params["a_0"].shape[0], 1)) * self.a_hat_norm_max * 2 #TODO: check correctness
@@ -183,12 +189,11 @@ class CtrlAffineSys:
             self.Y = sp.lambdify([x_sym], Y_sym, modules='numpy')
 
     # Controllers
-    def calc_geodesic(self, x, x_d):
-        N = self.params["geodesic"]["N"]
-        D = self.params["geodesic"]["D"]
-        n = self.xdim
-
-        solver = GeodesicSolver(n, D, N, self.W_fcn, self.dW_dxi_fcn)
+    def calc_geodesic(self, solver, x, x_d):
+        #N = self.params["geodesic"]["N"]
+        #D = self.params["geodesic"]["D"]
+        #n = self.xdim
+        #solver = GeodesicSolver(n, D, N, self.W_fcn, self.dW_dxi_fcn)
 
         # Initialize optimization variables and constraints internally
         c0, beq = solver.initialize_conditions(x_d, x)
@@ -201,92 +206,60 @@ class CtrlAffineSys:
         self.Erem = Erem.item()
 
         return gamma_s_0, gamma_s_1, Erem
-    
-    def ctrl_ccm(self, x, x_d, u_d, cp_quantile = 0.0):
+
+    def ctrl_cra_ccm(self, x, x_d, u_d):
         # x_d: Start point
         # x: End point
-
-        weight_input = 1
-        weight_slack = 10
-        H = np.block([
-            [weight_input * np.eye(self.udim), np.zeros((self.udim, 1))],
-            [np.zeros((1, self.udim)), weight_slack]
-        ])
     
         # Formulate it as a min-norm CLF QP problem
         # min [u' slack] H [u; slack]
         # Constraints : A[u; slack] + B <= 0
 
-        W_x = self.W_fcn(x)
+        M_x = np.linalg.inv(self.W_fcn(x))
 
         u_d = u_d.reshape(-1, 1)
 
-        Theta = np.linalg.cholesky(np.linalg.inv(W_x))
-        sigma_max = np.max(np.linalg.svd(Theta, compute_uv=False))  # maximum singular value
-
-        gamma_s1_Mx = self.gamma_s_1.reshape(-1, 1).T @ np.linalg.inv(W_x)
-        A = np.hstack((gamma_s1_Mx @ self.g(x), [[-1]]))
-        B = (gamma_s1_Mx @ (self.f(x) + self.g(x) @ u_d)
-            - self.gamma_s_0.reshape(-1, 1).T @ np.linalg.inv(self.W_fcn(x_d)) @ (self.f(x_d) + self.g(x_d) @ u_d)
-            + self.params["ccm"]["rate"] * self.Erem
-            + sigma_max * cp_quantile * np.sqrt(self.Erem))
-        B = B.item()
-
-        # Analytic solution
-        if B <= 0:
-            Lambda = 0
-        else:
-            denom = A @ np.linalg.inv(H) @ A.T
-            if denom < 1e-9:
-                Lambda = 0
-            else:
-                Lambda = 2 * B / denom
-
-        u = -0.5 * Lambda * (np.linalg.inv(H).T @ A.T)
-        uc = u_d + u[:self.udim]
-        slack = u[-1]
-
-        return uc, slack.item()
-    
-    def ctrl_cra_ccm(self, x, x_d, u_d, cp_quantile = 0.0):
-        # x_d: Start point
-        # x: End point
-
-        weight_input = 1
-        weight_slack = 10
-        H = np.block([
-            [weight_input * np.eye(self.udim), np.zeros((self.udim, 1))],
-            [np.zeros((1, self.udim)), weight_slack]
-        ])
-    
-        # Formulate it as a min-norm CLF QP problem
-        # min [u' slack] H [u; slack]
-        # Constraints : A[u; slack] + B <= 0
-
-        W_x = self.W_fcn(x)
-
-        u_d = u_d.reshape(-1, 1)
-
-        try:
-            Theta = np.linalg.cholesky(np.linalg.inv(W_x))
+        if self.use_cp:
+            Theta = np.linalg.cholesky(M_x)
             sigma_max = np.max(np.linalg.svd(Theta, compute_uv=False))  # maximum singular value
-        except:
-            sigma_max = 0
+            tightening = sigma_max * self.cp_quantile * np.sqrt(self.Erem)
+        else:
+            tightening = 0.0
 
-        gamma_s1_Mx = self.gamma_s_1.reshape(-1, 1).T @ np.linalg.inv(W_x)
+        if self.use_adaptive:
+            adaptation = self.Y(x) @ self.a_ccm_hat
+        else:
+            adaptation = 0.0
+
+        gamma_s1_Mx = self.gamma_s_1.reshape(-1, 1).T @ M_x
         A = np.hstack((gamma_s1_Mx @ self.g(x), [[-1]]))
-        B = (gamma_s1_Mx @ (self.f(x) + self.g(x) @ (u_d + self.Y(x) @ self.a_ccm_hat))
+        # B = (gamma_s1_Mx @ (self.f(x) + self.g(x) @ (u_d + adaptation))
+        #     - self.gamma_s_0.reshape(-1, 1).T @ np.linalg.inv(self.W_fcn(x_d)) @ (self.f(x_d) + self.g(x_d) @ u_d)
+        #     + self.params["ccm"]["rate"] * self.Erem
+        #     + tightening)
+        # B = B.item()
+        Bn = (gamma_s1_Mx @ (self.f(x) + self.g(x) @ (u_d + adaptation))
             - self.gamma_s_0.reshape(-1, 1).T @ np.linalg.inv(self.W_fcn(x_d)) @ (self.f(x_d) + self.g(x_d) @ u_d)
-            + self.params["ccm"]["rate"] * self.Erem
-            + sigma_max * cp_quantile * np.sqrt(self.Erem))
-        B = B.item()
+            + self.params["ccm"]["rate"] * self.Erem).item()
+        B = Bn + tightening
+
+        weight_input = 1
+        if self.use_cp:
+            # TODO: check this
+            weight_slack = 5 #abs(Bn * 1.5/(gamma_s1_Mx @ gamma_s1_Mx.T).item()/tightening)
+        else:
+            weight_slack = 1000
+        H = np.block([
+            [weight_input * np.eye(self.udim), np.zeros((self.udim, 1))],
+            [np.zeros((1, self.udim)), weight_slack]
+        ])
 
         # Analytic solution
         if B <= 0:
             Lambda = 0
         else:
             denom = A @ np.linalg.inv(H) @ A.T
-            if denom < 1e-9:
+            if denom < 1e-5:
                 Lambda = 0
             else:
                 Lambda = 2 * B / denom
@@ -297,43 +270,6 @@ class CtrlAffineSys:
 
         return uc, slack.item()
     
-    def ctrl_cra_tracking(self, x, e, xd_dot, cp_quantile, dt):
-        K = self.params["K_track"] # x_dim-by-x_dim PSD matrix
-
-        # Compute auxilliary control input: u_tilde
-        eta = self.g(x) @ np.linalg.pinv(self.g(x)) - np.eye(self.xdim)
-        e_u = eta @ (-self.f(x) + xd_dot.reshape(-1,1) - K @ e - self.Y(x) @ self.a_t_hat) # error induced by underactuation
-        M = -(e.T @ e_u).item() - np.linalg.norm(e, 2) * cp_quantile
-        if M >= 0:
-            u_tilde = np.zeros((self.xdim, 1))
-        else:
-            ee  = (np.eye(self.xdim) + eta).T @ e
-            if np.linalg.norm(ee, ord=2) > 1e-1:
-                u_tilde = -ee / ((np.linalg.norm(ee, 2))**2) * (np.abs(M)*1.25)
-            else:
-                #TODO: this numerical issue needs to be addressed
-                u_tilde = -ee / ((np.linalg.norm(ee, 2))**2 + 1e-1) * (np.abs(M)*1.25)
-        
-        # Compute control
-        u = np.linalg.pinv(self.g(x)) @ (-self.f(x) + xd_dot.reshape(-1,1) - K @ e - self.Y(x) @ self.a_t_hat + u_tilde)
-        
-        a_tilde = self.a_t_hat - self.params["a_true"]
-        V = (e.T @ e + a_tilde.T @ self.Gamma_t @ a_tilde).item()
-        a_t_hat_dot = projection_operator(self.a_t_hat, np.linalg.inv(self.Gamma_t) @ self.Y(x).T @ e, self.a_hat_norm_max, self.epsilon)
-        V_dot = (-2*e.T @ K @ e 
-                 + 2* a_tilde.T @ (-self.Y(x).T @ e + self.Gamma_t @ a_t_hat_dot)
-                 + 2*e.T @ (np.eye(self.xdim) + eta) @ u_tilde 
-                 + 2*e.T @ e_u 
-                 + 2* np.linalg.norm(e, 2) * cp_quantile
-        ).item()
-        #if V_dot > 0:
-        #    raise ValueError("V_dot > 0")
-
-        # Update a_t_hat using projection operator
-        self.update_a_t_hat(x, e, dt)
-
-        return u, V, V_dot
-        
     def ctrl_clf_qp(self, x, u_ref=None, with_slack=True):
         """CLF-QP Controller"""
         if self.clf is None:

@@ -5,13 +5,15 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 from scipy.integrate import solve_ivp
 from dynsys.plannar_quad.plannar_quad_uncertain import PLANNAR_QUAD_UNCERTAIN
+from dynsys.geodesic_opt import GeodesicSolver
 from scipy.io import loadmat
 from scipy.interpolate import interp1d
 
 USE_CP = 1 # 1 or 0: whether to use conformal prediction
-USE_ADAPTIVE = 1 # 1 or 0: whether to use adaptive control
+USE_ADAPTIVE = 0 # 1 or 0: whether to use adaptive control
 
-# TODO: load the desired trajectory: desired_traj
+# Load the desired trajectory
+# TODO: load a motion planner
 # x_d_fcn and u_d_fcn: functions of time
 data = loadmat("simulations/plannar_quad/nomTraj.mat")
 t_d_data = data["soln"]["grid"][0][0][0][0][0][0,:]
@@ -29,9 +31,25 @@ interp_u = interp1d(
 x_d_fcn = lambda t: interp_x(t)
 u_d_fcn = lambda t: interp_u(t)
 
+# Disturbance
+dist_config = {}
+dist_config["include_dist"] = True
+dist_config["gen_dist"] = lambda t: np.array([
+    0.0 + 0.3 * np.sin(2 * np.pi / 1 * t),
+    0.0 + 0.3 * np.cos(2 * np.pi / 2 * t + 0.03),
+    0.0 + 0.2 * np.sin(2 * np.pi / 3 * t + 0.01),
+    0.0 + 0.2 * np.cos(2 * np.pi / 1 * t + 0.04),
+    0.0 + 0.1 * np.sin(2 * np.pi / 4 * t + 0.01),
+    0.0 + 0.1 * np.cos(2 * np.pi / 5 * t + 0.05),
+], dtype=float).reshape((6,1))
+
+# compute w_max
+w_norms = [np.linalg.norm(dist_config["gen_dist"](t)) for t in np.arange(1.0, 10.0, 0.01)]
+w_max = np.max(w_norms)
+
 # Time setup
-dt = 0.001
-sim_T = 3#np.floor(t_d_data[-1]) # Simulation time
+dt = 0.01
+sim_T = 0.8#np.floor(t_d_data[-1]) # Simulation time
 tt = np.arange(0, sim_T, dt)
 T_steps = len(tt)
 
@@ -45,29 +63,15 @@ params = {
     "geodesic": {"N": 8, "D": 2},
 }
 params["use_adaptive"] = USE_ADAPTIVE
+params["use_cp"] = USE_CP
+params["cp_quantile"] = w_max * 0.8 if USE_CP else 0.0
 params["Gamma_ccm"] = np.eye(3) * 50 # adaptive gain matrix for CRaCCM
-params["a_true"] = np.array([[-0.02], [-0.02], [-0.02]]) # true a(Theta)
+params["a_true"] = np.array([[0.0], [0.0], [0.0]]) # true a(Theta)
 params["a_hat_norm_max"] = np.linalg.norm(np.array([[0.02], [0.02], [0.02]]), 2) # max norm of a_hat
 params["a_0"] = np.array([[0.0], [0.0], [0.0]]) # initial guess for a_hat
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 
 plannar_quad = PLANNAR_QUAD_UNCERTAIN(params)
-
-# Disturbance
-dist_config = {}
-dist_config["include_dist"] = False
-dist_config["gen_dist"] = lambda t: np.array([
-    -0.5 + 0.8 * np.sin(2 * np.pi / 1 * t),
-     0.5 + 0.8 * np.cos(2 * np.pi / 2 * t + 0.03),
-     0.5 + 0.4 * np.sin(2 * np.pi / 3 * t + 0.01),
-     0.5 + 0.2 * np.cos(2 * np.pi / 1 * t + 0.04),
-     0.7 + 0.1 * np.sin(2 * np.pi / 4 * t + 0.01),
-     0.2 + 0.5 * np.cos(2 * np.pi / 5 * t + 0.05),
-], dtype=float).reshape((6,1))
-
-# compute w_max
-w_norms = [np.linalg.norm(dist_config["gen_dist"](t)) for t in np.arange(1.0, 10.0, 0.01)]
-w_max = np.max(w_norms)
 
 x_hist = np.zeros((plannar_quad.xdim, T_steps))
 u_hist = np.zeros((plannar_quad.udim, T_steps))
@@ -76,9 +80,15 @@ slack_hist = np.zeros((T_steps,))
 x_d_hist = np.zeros((plannar_quad.xdim, T_steps))
 u_d_hist = np.zeros((plannar_quad.udim, T_steps))
 
-# initial state
+# Initial state
 x0 = np.zeros(plannar_quad.xdim)
-x = x0.copy() + np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])  # initial condition perturbation
+x = x0.copy() + np.array([0.1, 0.1, 0.0, 0.0, 0.0, 0.0])  # initial condition perturbation
+
+# Initialize geodesic solver
+N = plannar_quad.params["geodesic"]["N"]
+D = plannar_quad.params["geodesic"]["D"]
+n = plannar_quad.xdim
+geodesic_solver = GeodesicSolver(n, D, N, plannar_quad.W_fcn, plannar_quad.dW_dxi_fcn)
 
 # Main simulation loop
 for i in range(T_steps):
@@ -93,7 +103,7 @@ for i in range(T_steps):
     u_d_hist[:, i] = u_d
 
     # Precompute geodesic
-    plannar_quad.calc_geodesic(x, x_d)  
+    plannar_quad.calc_geodesic(geodesic_solver, x, x_d)
     energy_hist[i] = plannar_quad.Erem
 
     # Log controller inputs
@@ -107,19 +117,19 @@ for i in range(T_steps):
         
         # TODO: consider all cases of USE_ADAPTIVE and USE_CP
         sol = solve_ivp(
-            lambda t, y: plannar_quad.cra_ccm_closed_loop_dyn(t, y, x_d_fcn, u_d_fcn, dist_config),
+            lambda t, y: plannar_quad.cra_ccm_closed_loop_dyn(t, y, x_d_fcn, u_d_fcn, geodesic_solver, dist_config),
             t_span,
             x,
-            method = "Radau",  # stiff solver comparable to ode23s
-            rtol = 1e-3,
-            atol = 1e-6,
+            method = "BDF", #"LSODA", #"Radau",  # stiff solver
+            rtol = 1e-2, # 1e-6
+            atol = 1e-3, # 1e-6
             t_eval = [tt[i + 1]],
         )
         x = sol.y[:, -1]
     
     # Update adaptive parameter
-    #if USE_ADAPTIVE:
-    plannar_quad.update_a_ccm_hat(x, dt)
+    if USE_ADAPTIVE:
+        plannar_quad.update_a_ccm_hat(x, dt)
 
 # Plot results
 # x vs. x_d

@@ -72,11 +72,12 @@ class PLANNAR_QUAD_UNCERTAIN(CtrlAffineSys):
 
         return dxdt.ravel()
 
-    def cra_ccm_closed_loop_dyn(self, t, x, x_d_fcn, u_d_fcn, dist_config):
+    def cra_ccm_closed_loop_dyn(self, t, x, x_d_fcn, u_d_fcn, geodesic_solver, dist_config):
         # x is state vector length plant.n
         x_d = x_d_fcn(t)
         u_d = u_d_fcn(t)
 
+        self.calc_geodesic(geodesic_solver, x, x_d)
         uc, slack = self.ctrl_cra_ccm(x, x_d, u_d)
         
         if dist_config["include_dist"]:
