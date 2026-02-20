@@ -13,81 +13,34 @@ class CtrlAffineSys:
             raise TypeError("Parameters must be a dictionary.")
         self.params = params
 
-        # Dynamics
-        self.xdim = None
-        self.udim = None
-        self.adim = None
-        self.f = None
-        self.g = None
-        self.Y = None
-
         self.use_cp = self.params.get("use_cp", 0)
+        self.cp_quantile = self.params.get("cp_quantile", 0)
         self.use_adaptive = self.params.get("use_adaptive", 0)
 
-        # TODO: where and how to set this?
-        self.cp_quantile = self.params.get("cp_quantile", 0)
-
-        # CLF and CBF functions and derivatives
-        self.clf = None
-        self.lf_clf = None
-        self.lg_clf = None
-        self.cbf = None
-        self.lf_cbf = None
-        self.lg_cbf = None
-        self.dclfdx = None
-        self.dcbfdx = None
-        self.ddclfdx = None
-        self.ddcbfdx = None
-
-        # CCM
-        self.gamma_s_0 = None
-        self.gamma_s_1 = None
-        self.Erem = None
-
-        # Adaptive control parameters: Only defined if "use_adaptive" is TRUE in params
-        self.a_hat_norm_max = None
-        self.a_err_max = None
-        self.a_L_hat = None  # Adaptive parameter for aCLF
-        self.a_b_hat = None  # Adaptive parameter for aCBF
-        self.a_ccm_hat = None  # Adaptive parameter for aCCM
-        self.epsilon = None  # Small value for numerical stability of projection operator
-        self.Gamma_b = None  # Adaptive gain matrix for CRaCBF
-        self.Gamma_L = None  # Adaptive gain matrix for CRaCLF
-
-        self.acbf = None
-        self.dacbfdx = None
-        self.lf_acbf = None
-        self.lg_acbf = None
-        self.lY_acbf = None
-        self.dacbfda = None
-
-        self.aclf = None
-        self.daclfdx = None
-        self.lf_aclf = None
-        self.lg_aclf = None
-        self.lY_aclf = None
-        self.daclfdx = None
-
         # Let subclass define symbolic system
-        x_sym, f_sym, g_sym = self.define_system_symbolic()
+        x_sym, f_sym, g_sym, Y_sym, a_sym = self.define_system_symbolic()
         self.xdim = x_sym.shape[0]
         self.udim = g_sym.shape[1]
+        self.adim = Y_sym.shape[1]
+        self.a_true = np.copy(self.params["a_true"]) if "a_true" in self.params else np.zeros((self.adim,1))
+        self.a_hat_b = np.copy(self.params["a_0"])  if "a_0" in self.params else np.zeros((self.adim,1)) # Initial guess for a_hat_b
+        self.a_hat_L = np.copy(self.params["a_0"])  if "a_0" in self.params else np.zeros((self.adim,1)) # Initial guess for a_hat_L
+        self.a_hat_ccm = np.copy(self.params["a_0"])  if "a_0" in self.params else np.zeros((self.adim,1)) # Initial guess for a_hat_ccm
+        # WARNING: a_hat_b, a_hat_L, and a_hat_ccm should be initialized by copying, otherwise they will be references to the same array.
 
         clf_sym = self.define_clf_symbolic(x_sym)
-        cbf_sym = self.define_cbf_symbolic(x_sym)
+
         aclf_sym = None
+
+        cbf_sym = self.define_cbf_symbolic(x_sym)
+
         acbf_sym = None
-        Y_sym = None
-        a_hat_sym = None
 
         if self.use_adaptive:
             # Adaptive control parameters
             self.a_hat_norm_max = self.params["a_hat_norm_max"]
             self.a_err_max = np.ones((self.params["a_0"].shape[0], 1)) * self.a_hat_norm_max * 2 #TODO: check correctness
-            self.a_b_hat = np.copy(self.params["a_0"])  # Initial guess for a_b_hat
-            self.a_L_hat = np.copy(self.params["a_0"])  # Initial guess for a_L_hat
-            self.a_ccm_hat = np.copy(self.params["a_0"])  # Initial guess for a_ccm_hat
-            # WARNING: a_b_hat, a_L_hat, and a_ccm_hat should be initialized by copying, otherwise they will be references to the same array.
+            
             self.epsilon = self.params.get("epsilon", 1e-3)  # Small value for numerical stability of projection operator
 
             self.eta_clf = self.params.get("eta_clf", 0.1)
@@ -101,20 +54,13 @@ class CtrlAffineSys:
             self.Gamma_L = self.params.get("Gamma_L", None)  # adaptive gain matrix for CRaCLF
             self.Gamma_ccm = self.params.get("Gamma_ccm", None)  # adaptive gain matrix for CRaCCM
 
-            Y_sym = self.define_Y_symbolic(x_sym)
-            self.adim = Y_sym.shape[1]
-            a_hat_sym = self.define_a_symbolic()
-            aclf_sym = self.define_aclf_symbolic(x_sym, a_hat_sym)
-            acbf_sym = self.define_acbf_symbolic(x_sym, a_hat_sym)
+            aclf_sym = self.define_aclf_symbolic(x_sym, a_sym)
+            acbf_sym = self.define_acbf_symbolic(x_sym, a_sym)
 
-        self.lambdify_symbolic_funcs(x_sym, f_sym, g_sym, clf_sym, cbf_sym, aclf_sym, acbf_sym, Y_sym, a_hat_sym)
+        self.lambdify_symbolic_funcs(x_sym, f_sym, g_sym, Y_sym, a_sym, clf_sym, cbf_sym, aclf_sym, acbf_sym)
 
-    def dynamics(self, x, u, param_uncertainty=False):
-        if param_uncertainty:
-            a_true = np.copy(self.params["a_true"])
-            return (self.f(x) + self.g(x) @ u + self.Y(x) @ a_true).ravel()
-        else:
-            return (self.f(x) + self.g(x) @ u).ravel()
+    def dynamics(self, x, u):
+        return (self.f(x) + self.g(x) @ u + self.Y(x) @ self.a_true).ravel()
 
     def ctrl_nominal(self, x):
         raise NotImplementedError("Nominal control not implemented.")
@@ -127,21 +73,15 @@ class CtrlAffineSys:
 
     def define_cbf_symbolic(self, x_sym):
         pass
-    
-    def define_Y_symbolic(self, x_sym):
+
+    def define_aclf_symbolic(self, x_sym, a_hat_L=None):
         pass
 
-    def define_a_symbolic(self):
+    def define_acbf_symbolic(self, x_sym, a_hat_b=None):
         pass
 
-    def define_aclf_symbolic(self, x_sym, a_L_hat=None):
-        pass
-
-    def define_acbf_symbolic(self, x_sym, a_b_hat=None):
-        pass
-
-    def lambdify_symbolic_funcs(self, x_sym, f_sym, g_sym, clf_sym=None, cbf_sym=None, 
-                              aclf_sym=None, acbf_sym=None, Y_sym=None, a_hat_sym=None):
+    def lambdify_symbolic_funcs(self, x_sym, f_sym, g_sym, Y_sym, a_hat_sym,
+                                clf_sym=None, cbf_sym=None, aclf_sym=None, acbf_sym=None):
         if x_sym is None or f_sym is None or g_sym is None:
             raise ValueError("Symbolic x, f, and g must be provided.")
 
@@ -150,6 +90,7 @@ class CtrlAffineSys:
 
         self.f = sp.lambdify([x_sym], f_sym, modules='numpy')
         self.g = sp.lambdify([x_sym], g_sym, modules='numpy')
+        self.Y = sp.lambdify([x_sym], Y_sym, modules='numpy')
 
         if cbf_sym is not None:
             dcbfdx = sp.simplify(sp.derive_by_array(cbf_sym, x_sym))
@@ -195,12 +136,10 @@ class CtrlAffineSys:
     
             daclfda = sp.simplify(sp.derive_by_array(aclf_sym, a_hat_sym))
             daclfda = sp.Matrix(daclfda)
-            self.daclfda = sp.lambdify([x_sym, a_hat_sym], daclfda, modules='numpy')
-
-        if Y_sym is not None:
-            self.Y = sp.lambdify([x_sym], Y_sym, modules='numpy')
+            self.daclfda = sp.lambdify([x_sym, a_hat_sym], daclfda, modules='numpy')            
 
     # Control laws
+    # CLFs
     # TODO: combine ctrl_cr_clf_qp and ctrl_cra_clf_qp
     def ctrl_cr_clf_qp(self, x, u_ref, cp_quantile, with_slack=True):
         """CR-CLF-QP Controller"""
@@ -294,14 +233,14 @@ class CtrlAffineSys:
         if u_ref.shape[0] != self.udim:
             raise ValueError("u_ref shape mismatch.")
         
-        a_L_hat = self.a_L_hat
+        a_hat_L = self.a_hat_L
 
-        V = self.aclf(x, a_L_hat)
-        LfV = self.lf_aclf(x, a_L_hat)
-        LgV = self.lg_aclf(x, a_L_hat)
-        LYV = self.lY_aclf(x, a_L_hat)
-        daclfdx = self.daclfdx(x, a_L_hat)
-        daclfda = self.daclfda(x, a_L_hat)
+        V = self.aclf(x, a_hat_L)
+        LfV = self.lf_aclf(x, a_hat_L)
+        LgV = self.lg_aclf(x, a_hat_L)
+        LYV = self.lY_aclf(x, a_hat_L)
+        daclfdx = self.daclfdx(x, a_hat_L)
+        daclfda = self.daclfda(x, a_hat_L)
 
         cp_bound = cp_quantile * np.linalg.norm(daclfdx, 2)
 
@@ -314,7 +253,7 @@ class CtrlAffineSys:
             b = (
                 -LfV 
                 -cp_bound
-                -LYV @ (a_L_hat + self.Gamma_L @ daclfda) #TODO: check sign
+                -LYV @ (a_hat_L + self.Gamma_L @ daclfda) #TODO: check sign
                 - self.params["clf"]["rate"] * V
             )
             if "u_max" in self.params:
@@ -350,7 +289,7 @@ class CtrlAffineSys:
             A = LgV
             b = (
                 -LfV
-                -LYV @ (a_L_hat + self.Gamma_L @ daclfda) #TODO: check sign
+                -LYV @ (a_hat_L + self.Gamma_L @ daclfda) #TODO: check sign
                 -cp_bound 
                 -self.params["clf"]["rate"] * V
             )
@@ -380,11 +319,12 @@ class CtrlAffineSys:
             u_val = u.value if feas else np.array([self.params["u_min"] if LgV[i] > 0 else self.params["u_max"] for i in range(self.udim)])
             slack_val = None
         
-        # Update a_L_hat
-        self.update_a_L_hat(x, dt)
+        # Update a_hat_L
+        self.update_a_hat_L(x, dt)
 
         return u_val, V, slack_val, feas
     
+    # CBFs
     # TODO: combine ctrl_cr_cbf_qp and ctrl_cra_cbf_qp
     def ctrl_cr_cbf_qp(self, x, u_ref, cp_quantile):
         """CR-CBF-QP Controller"""
@@ -443,14 +383,14 @@ class CtrlAffineSys:
         if u_ref.shape[0] != self.udim:
             raise ValueError("u_ref shape mismatch.")
         
-        a_b_hat = self.a_b_hat
+        a_hat_b = self.a_hat_b
 
-        h = self.acbf(x, a_b_hat)
-        Lfh = self.lf_acbf(x, a_b_hat)
-        Lgh = self.lg_acbf(x, a_b_hat)
-        LYh = self.lY_acbf(x, a_b_hat)
-        dacbfdx = self.dacbfdx(x, a_b_hat)
-        dacbfda = self.dacbfda(x, a_b_hat)
+        h = self.acbf(x, a_hat_b)
+        Lfh = self.lf_acbf(x, a_hat_b)
+        Lgh = self.lg_acbf(x, a_hat_b)
+        LYh = self.lY_acbf(x, a_hat_b)
+        dacbfdx = self.dacbfdx(x, a_hat_b)
+        dacbfda = self.dacbfda(x, a_hat_b)
 
         cp_bound = cp_quantile * np.linalg.norm(dacbfdx, 2)
 
@@ -460,7 +400,7 @@ class CtrlAffineSys:
         A = -Lgh
         b = (
             Lfh 
-            + LYh @ (a_b_hat - self.Gamma_b @ dacbfda) #TODO: check sign
+            + LYh @ (a_hat_b - self.Gamma_b @ dacbfda) #TODO: check sign
             - cp_bound
             + self.params["cbf"]["rate"] * (h - 0.5 * self.a_err_max.T @ np.linalg.inv(self.Gamma_b) @ self.a_err_max)
         )
@@ -490,11 +430,12 @@ class CtrlAffineSys:
         feas = prob.status == cvxpy.OPTIMAL
         u_val = u.value if feas else np.zeros(self.udim)
 
-        # Update a_b_hat
-        self.update_a_b_hat(x, dt)
+        # Update a_hat_b
+        self.update_a_hat_b(x, dt)
 
         return u_val, h, feas
     
+    # CCMs
     def ctrl_cra_ccm(self, x, x_d, u_d):
         # x_d: Start point
         # x: End point
@@ -503,10 +444,15 @@ class CtrlAffineSys:
 
         u_d = u_d.reshape(-1, 1)
 
-        M_x = np.linalg.inv(self.W_fcn(x))
-        M_d = np.linalg.inv(self.W_fcn(x_d))
-        self.gamma_s1_M_x = self.gamma_s_1.reshape(-1, 1).T @ M_x
-        self.gamma_s0_M_d = self.gamma_s_0.reshape(-1, 1).T @ M_d
+        M_x = np.linalg.inv(self.W_fcn(x, self.a_hat_ccm))
+        M_d = np.linalg.inv(self.W_fcn(x_d, self.a_hat_ccm))
+        
+        if self.use_adaptive: 
+            Y_x_a = self.Y(x) @ self.a_hat_ccm
+            Y_d_a = self.Y(x_d) @ self.a_hat_ccm
+        else:
+            Y_x_a = 0.0
+            Y_d_a = 0.0
 
         if self.use_cp:
             Theta = np.linalg.cholesky(M_x)
@@ -515,12 +461,8 @@ class CtrlAffineSys:
         else:
             tightening = 0.0
 
-        if self.use_adaptive:
-            Y_x_a = self.Y(x) @ self.a_ccm_hat
-            Y_d_a = self.Y(x_d) @ self.a_ccm_hat
-        else:
-            Y_x_a = 0.0
-            Y_d_a = 0.0
+        self.gamma_s1_M_x = self.gamma_s_1.reshape(-1, 1).T @ M_x
+        self.gamma_s0_M_d = self.gamma_s_0.reshape(-1, 1).T @ M_d
         
         A = self.gamma_s1_M_x @ self.g(x)
         B = (self.gamma_s1_M_x @ (self.f(x) + self.g(x) @ u_d + Y_x_a)
@@ -555,15 +497,12 @@ class CtrlAffineSys:
 
     # Solve for geodesics for CCM-based controllers
     def calc_geodesic(self, solver, x, x_d):
-        #N = self.params["geodesic"]["N"]
-        #D = self.params["geodesic"]["D"]
-        #n = self.xdim
-        #solver = GeodesicSolver(n, D, N, self.W_fcn, self.dW_dxi_fcn)
-
+        
         # Initialize optimization variables and constraints internally
         c0, beq = solver.initialize_conditions(x_d, x)
         # Solve the geodesic optimization problem
-        gamma, gamma_s, Erem = solver.solve_geodesic(c0, beq)
+        # TODO: check if self.a_hat_ccm is None?
+        gamma, gamma_s, Erem = solver.solve_geodesic(c0, beq, self.a_hat_ccm)
 
         self.gamma_s_0 = gamma_s[:, 0]
         self.gamma_s_1 = gamma_s[:, -1]
@@ -576,7 +515,7 @@ class CtrlAffineSys:
                 for k in range(self.N + 1):
                     gk = gamma[:, k]
                     gsk = gamma_s[:, k]
-                    W = self.dW_dai_fcn(i,gk)
+                    W = self.dW_dai_fcn(i,gk,self.a_hat_ccm)
                     # Solve W * x = gamma_s(:,k)
                     x_sol = np.linalg.solve(W, gsk)
                     dErem_dai[i] += np.dot(gsk.T, x_sol) * self.w_cheby[k]
@@ -584,47 +523,46 @@ class CtrlAffineSys:
     
     # Adaptation laws
     def adaptation_cra_clf(self, x, dt):
-        """Update adaptive parameter a_L_hat for aCLF."""
-        if self.Y is None or self.a_L_hat is None or self.a_b_hat is None:
+        """Update adaptive parameter a_hat_L for aCLF."""
+        if self.Y is None or self.a_hat_L is None or self.a_hat_b is None:
             raise ValueError("Adaptive control parameters not defined.")
 
-        daclfdx = self.daclfdx(x, self.a_L_hat)
+        daclfdx = self.daclfdx(x, self.a_hat_L)
 
-        # Projection operator to enforce bounds on a_L_hat
+        # Projection operator to enforce bounds on a_hat_L
         #TODO: check sign
-        #self.a_L_hat += self.Gamma_L @ (daclfdx.T @ self.Y(x)).T, self.a_hat_norm_max
-        self.a_L_hat += projection_operator(self.a_L_hat, self.Gamma_L @ (daclfdx.T @ self.Y(x)).T, self.a_hat_norm_max, self.epsilon) * dt
+        #self.a_hat_L += self.Gamma_L @ (daclfdx.T @ self.Y(x)).T, self.a_hat_norm_max
+        self.a_hat_L += projection_operator(self.a_hat_L, self.Gamma_L @ (daclfdx.T @ self.Y(x)).T, self.a_hat_norm_max, self.epsilon) * dt
 
     def adaptation_cra_cbf(self, x, dt):
-        """Update adaptive parameter a_b_hat for aCBF."""
-        if self.Y is None or self.a_L_hat is None or self.a_b_hat is None:
+        """Update adaptive parameter a_hat_b for aCBF."""
+        if self.Y is None or self.a_hat_L is None or self.a_hat_b is None:
             raise ValueError("Adaptive control parameters not defined.")
 
-        dacbfdx = self.dacbfdx(x, self.a_b_hat)
-        #self.a_b_hat += (-self.Gamma_b @ (dacbfdx.T @ self.Y(x)).T) * dt
+        dacbfdx = self.dacbfdx(x, self.a_hat_b)
+        #self.a_hat_b += (-self.Gamma_b @ (dacbfdx.T @ self.Y(x)).T) * dt
 
-        # Projection operator to enforce bounds on a_b_hat
+        # Projection operator to enforce bounds on a_hat_b
         #TODO: check sign
-        self.a_b_hat += projection_operator(self.a_b_hat, -self.Gamma_b @ (dacbfdx.T @ self.Y(x)).T, self.a_hat_norm_max, self.epsilon) * dt
+        self.a_hat_b += projection_operator(self.a_hat_b, -self.Gamma_b @ (dacbfdx.T @ self.Y(x)).T, self.a_hat_norm_max, self.epsilon) * dt
 
     def adaptation_cra_ccm(self, x, x_d, dt):
-        """Update adaptive parameter a_ccm_hat for tracking."""
-        if self.Y is None or self.a_L_hat is None or self.a_b_hat is None:
+        """Update adaptive parameter a_hat_ccm for tracking."""
+        if self.Y is None or self.a_hat_L is None or self.a_hat_b is None:
             raise ValueError("Adaptive control parameters not defined.")
 
         # Update a_hat
-        a_hat_dot = np.linalg.inv(self.Gamma_ccm) @ projection_operator(self.a_ccm_hat, 
+        a_hat_dot = np.linalg.inv(self.Gamma_ccm) @ projection_operator(self.a_hat_ccm, 
                                             self.nu_ccm() * self.Y(x).T @ self.gamma_s1_M_x.T, 
                                             self.a_hat_norm_max, self.epsilon)
-        #test_nonpositive = (self.a_ccm_hat - np.array([[0.1], [0.1], [0.1], [0.01]])).T @ (-self.nu_ccm()* self.Y(x).T @ self.gamma_s1_M_x.T + self.Gamma_ccm @ a_hat_dot)
+        #test_nonpositive = (self.a_hat_ccm - np.array([[0.1], [0.1], [0.1], [0.01]])).T @ (-self.nu_ccm()* self.Y(x).T @ self.gamma_s1_M_x.T + self.Gamma_ccm @ a_hat_dot)
         #a_hat_dot = self.nu_ccm() * np.linalg.inv(self.Gamma_ccm) @ self.Y(x).T @ self.gamma_s1_M_x.T
-        self.a_ccm_hat += a_hat_dot * dt
+        self.a_hat_ccm += a_hat_dot * dt
         
         # Update rho
-        rho_dot = -self.nu_ccm()/(self.dnu_drho_ccm() * (self.Erem+ self.eta_ccm)) * (2*self.gamma_s0_M_d @ self.Y(x_d) @ self.a_ccm_hat + self.dErem_dai(x, x_d) @ a_hat_dot)
+        rho_dot = -self.nu_ccm()/(self.dnu_drho_ccm() * (self.Erem+ self.eta_ccm)) * (2*self.gamma_s0_M_d @ self.Y(x_d) @ self.a_hat_ccm + self.dErem_dai(x, x_d) @ a_hat_dot)
         self.rho_ccm += rho_dot * dt
     
-
     # Scaling functions for unmatched adaptive controls
     def nu_clf(self):
         pass

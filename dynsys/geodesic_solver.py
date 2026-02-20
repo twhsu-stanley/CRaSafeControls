@@ -97,7 +97,7 @@ class GeodesicSolver:
             U[0, :] = 1.0
         return T, Tdot
 
-    def compute_riemann_energy(self, c):
+    def compute_riemann_energy(self, c, a_hat_ccm = None):
         """
         Compute the Riemann Energy using a pseudospectral method
 
@@ -119,13 +119,13 @@ class GeodesicSolver:
         for k in range(self.N + 1):
             gk = gamma[:, k]
             gsk = gamma_s[:, k]
-            W = self.W_fcn(gk)
+            W = self.W_fcn(gk, a_hat_ccm)
             # Solve W * x = gamma_s(:,k)
             x_sol = np.linalg.solve(W, gsk)
             E += np.dot(gsk.T, x_sol) * self.w_cheby[k]
         return E
 
-    def compute_energy_gradient(self, c):
+    def compute_energy_gradient(self, c, a_hat_ccm = None):
         """
         Compute the gradient of the Riemann Energy
 
@@ -147,10 +147,10 @@ class GeodesicSolver:
             for k in range(self.N + 1):
                 gamma_k = gamma[:, k]
                 gamma_s_k = gamma_s[:, k]
-                W_eval = self.W_fcn(gamma_k)
+                W_eval = self.W_fcn(gamma_k, a_hat_ccm)
                 M_x_gamma_sk = np.linalg.solve(W_eval, gamma_s_k)
                 for i in range(self.n):
-                    dW_dxi = self.dW_dxi_fcn(i, gamma_k)
+                    dW_dxi = self.dW_dxi_fcn(i, gamma_k, a_hat_ccm)
                     # Prepare the contribution matrix.
                     temp = np.zeros((self.n, self.D + 1))
                     temp[i, :] = self.Tdot[:self.D + 1, k]
@@ -195,7 +195,7 @@ class GeodesicSolver:
         beq = np.hstack((x_nom, x_end))
         return c0, beq
 
-    def solve_geodesic(self, c0, beq):
+    def solve_geodesic(self, c0, beq, a_hat_ccm = None):
         """
         Set up and solve the geodesic optimization problem
 
@@ -228,8 +228,8 @@ class GeodesicSolver:
         bounds = Bounds(lb, ub)
 
         # Define the cost (energy) and its gradient.
-        costf = lambda c: self.compute_riemann_energy(c)
-        grad = lambda c: self.compute_energy_gradient(c)
+        costf = lambda c: self.compute_riemann_energy(c, a_hat_ccm)
+        grad = lambda c: self.compute_energy_gradient(c, a_hat_ccm)
 
         # Create the linear equality constraint.
         linear_constraint = LinearConstraint(Aeq, beq, beq)
@@ -252,4 +252,3 @@ class GeodesicSolver:
         energy = res.fun
 
         return gamma, gamma_s, energy
-

@@ -20,39 +20,13 @@ class DUBINS_UNCERTAIN_SINDY(CtrlAffineSys):
         f = sindy_prediction_symbolic(x, np.array([0.0]), feature_names, coefficients, idx_x)
         g = sindy_prediction_symbolic(x, np.array([1.0]), feature_names, coefficients, idx_u)
         
-        """
-        # Symbolic states
-        p_x, p_y, theta = sp.symbols('p_x p_y theta')
-        x = sp.Matrix([p_x, p_y, theta])
-
-        v = self.params['v']
-
-        # System dynamics based on MATLAB code
-        f = sp.Matrix([
-            [v * sp.cos(theta)],
-            [v * sp.sin(theta)],
-            [0]
-        ])
-        g = sp.Matrix([
-            [0],
-            [0],
-            [1]
-        ])
-        """
-
-        return x, f, g
-    
-    def define_Y_symbolic(self, x):
         # Define the symbolic uncertainty term Y(x)
-        # TODO: this should be given by some neural network
-        theta = x[2]
-        return sp.Matrix([[sp.cos(theta), 0, 0], [0, sp.sin(theta), 0], [0, 0, theta]])
-        #return sp.Matrix([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
-    
-    def define_a_symbolic(self):
-        # Symbolic states
+        Y = sp.Matrix([[sp.cos(x[2]), 0, 0], [0, sp.sin(x[2]), 0], [0, 0, x[2]]])
+
         a0, a1, a2 = sp.symbols('a0 a1 a2')
-        return sp.Matrix([a0, a1, a2])
+        a = sp.Matrix([a0, a1, a2])
+
+        return x, f, g, Y, a
 
     def define_clf_symbolic(self, x):
         p_x = x[0]

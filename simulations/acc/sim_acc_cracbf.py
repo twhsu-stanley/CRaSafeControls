@@ -140,7 +140,7 @@ for n in range(N):
         h_hist[n, k] = h
 
         # Propagate dynamics
-        dx = acc_true.dynamics(x, u, param_uncertainty=True)
+        dx = acc_true.dynamics(x, u)
         x = x + dx.reshape(-1) * dt
 
 # Violation score

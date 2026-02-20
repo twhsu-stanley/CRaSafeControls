@@ -30,20 +30,16 @@ class IP_UNCERTAIN_SINDY(CtrlAffineSys):
         self.A = A(np.array([0,0])) # evaluate at equilibrium point (0,0)
         B = sp.lambdify([x], g, modules='numpy')
         self.B = B(np.array([0,0])) # evaluate at equilibrium point (0,0)
-        
-        return x, f, g
-    
-    def define_Y_symbolic(self, x):
+
         # Define the symbolic uncertainty term Y(x)
-        # TODO: this should be given by some neural network
         theta = x[0]
         theta_dot = x[1]
-        return sp.Matrix([[0, 0], [sp.sin(theta), theta_dot]])
-    
-    def define_a_symbolic(self):
-        # Symbolic states
+        Y = sp.Matrix([[0, 0], [sp.sin(theta), theta_dot]])
+
         a0, a1 = sp.symbols('a0 a1')
-        return sp.Matrix([a0, a1])
+        a = sp.Matrix([a0, a1])
+        
+        return x, f, g, Y, a
 
     def define_aclf_symbolic(self, x, a_L_hat=None):
         # x: symbolic states

@@ -20,7 +20,13 @@ class ACC_SINDY(CtrlAffineSys):
         f = sindy_prediction_symbolic(x, np.array([0.0]), feature_names, coefficients, idx_x)
         g = sindy_prediction_symbolic(x, np.array([1.0]), feature_names, coefficients, idx_u)
         
-        return x, f, g
+        # Define the symbolic uncertainty term Y(x)
+        Y = sp.Matrix([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
+
+        a0, a1, a2 = sp.symbols('a0 a1 a2')
+        a = sp.Matrix([a0, a1, a2])
+
+        return x, f, g, Y, a
 
     def define_clf_symbolic(self, x):
         v = x[1]

@@ -31,7 +31,13 @@ class IP_SINDY(CtrlAffineSys):
         B = sp.lambdify([x], g, modules='numpy')
         self.B = B(np.array([0,0])) # evaluate at equilibrium point (0,0)
         
-        return x, f, g
+        # Define the symbolic uncertainty term Y(x)
+        Y = sp.Matrix([[0, 0], [0, 0]])
+
+        a0, a1 = sp.symbols('a0 a1')
+        a = sp.Matrix([a0, a1])
+        
+        return x, f, g, Y, a
 
     def define_clf_symbolic(self, x):
         # x: symbolic states

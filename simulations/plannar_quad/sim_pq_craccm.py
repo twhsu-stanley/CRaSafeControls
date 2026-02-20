@@ -5,6 +5,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 from scipy.integrate import solve_ivp
 from dynsys.plannar_quad.plannar_quad_uncertain import PLANNAR_QUAD_UNCERTAIN
+from dynsys.plannar_quad.plannar_quad import PLANNAR_QUAD
 from dynsys.geodesic_solver import GeodesicSolver
 from scipy.io import loadmat
 from scipy.interpolate import interp1d
@@ -12,7 +13,7 @@ from scipy.interpolate import interp1d
 USE_CP = 0 # 1 or 0: whether to use conformal prediction
 USE_ADAPTIVE = 0 # 1 or 0: whether to use adaptive control
 
-weight_slack = 2.0 #if USE_CP else 100.0
+weight_slack = 50.0 if USE_CP else 1000.0
 
 # Load the desired trajectory
 # TODO: load a motion planner
@@ -68,14 +69,15 @@ params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
 params["cp_quantile"] = w_max * 0.95 if USE_CP else 0.0
 params["Gamma_ccm"] = np.eye(1) * 0.1 # adaptive gain matrix for CRaCCM
-params["a_true"] = np.array([[0.2]]) # true a(Theta)
-params["a_hat_norm_max"] = np.linalg.norm(np.array([[0.5]]), 2)*1# max norm of a_hat
+params["a_true"] = np.array([[0.0]])  # true a
+params["a_hat_norm_max"] = np.linalg.norm(np.array([[0.5]]), 2)*1 # max norm of a_hat
 params["a_0"] = np.array([[0.0]]) # initial guess for a_hat
 params["epsilon"] = 1e-3 # small value for numerical stability of projection operator
 
 params["eta_ccm"] = 1000.0
 
 plannar_quad = PLANNAR_QUAD_UNCERTAIN(params)
+#plannar_quad = PLANNAR_QUAD(params)
 
 x_hist = np.zeros((plannar_quad.xdim, T_steps))
 u_hist = np.zeros((plannar_quad.udim, T_steps))
@@ -128,7 +130,7 @@ for i in range(T_steps):
         t_span = (tt[i], tt[i + 1])
         
         sol = solve_ivp(
-            lambda t, y: plannar_quad.dynamics(y, uc, param_uncertainty=True) + wt,
+            lambda t, y: plannar_quad.dynamics(y, uc) + wt,
             t_span,
             x,
             method = "BDF", #"LSODA", #"Radau",  # stiff solver

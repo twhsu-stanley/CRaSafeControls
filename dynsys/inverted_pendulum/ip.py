@@ -29,7 +29,13 @@ class IP(CtrlAffineSys):
             [-1 / I]
         ])
 
-        return x, f, g
+        # Define the symbolic uncertainty term Y(x)
+        Y = sp.Matrix([[0, 0], [0, 0]])
+
+        a0, a1 = sp.symbols('a0 a1')
+        a = sp.Matrix([a0, a1])
+        
+        return x, f, g, Y, a
 
     def define_clf_symbolic(self, x):
         I = self.params['I'] # moment of inertia (kg*m^2)

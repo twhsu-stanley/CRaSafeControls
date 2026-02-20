@@ -20,18 +20,13 @@ class ACC_UNCERTAIN_SINDY(CtrlAffineSys):
         f = sindy_prediction_symbolic(x, np.array([0.0]), feature_names, coefficients, idx_x)
         g = sindy_prediction_symbolic(x, np.array([1.0]), feature_names, coefficients, idx_u)
 
-        return x, f, g
-    
-    def define_Y_symbolic(self, x):
         # Define the symbolic uncertainty term Y(x)
-        # TODO: this should be given by some neural network
-        v = x[1]
-        return sp.Matrix([[0, 0, 0], [1, v, v**2], [0, 0, 0]])
-    
-    def define_a_symbolic(self):
-        # Symbolic states
+        Y = sp.Matrix([[0, 0, 0], [1, x[1], x[1]**2], [0, 0, 0]])
+
         a0, a1, a2 = sp.symbols('a0 a1 a2')
-        return sp.Matrix([a0, a1, a2])
+        a = sp.Matrix([a0, a1, a2])
+
+        return x, f, g, Y, a
 
     def define_aclf_symbolic(self, x, a_L_hat=None):
         v = x[1]

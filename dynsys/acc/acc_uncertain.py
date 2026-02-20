@@ -20,17 +20,13 @@ class ACC_UNCERTAIN(CtrlAffineSys):
         f = sp.Matrix([[v], [0], [v0 - v]])
         g = sp.Matrix([[0], [1/m], [0]])
 
-        return x, f, g
-    
-    def define_Y_symbolic(self, x):
         # Define the symbolic uncertainty term Y(x)
         Y = sp.Matrix([[0, 0, 0], [1, x[1], x[1]**2], [0, 0, 0]])
-        return Y
 
-    def define_a_symbolic(self):
-        # Symbolic states
         a0, a1, a2 = sp.symbols('a0 a1 a2')
-        return sp.Matrix([a0, a1, a2])
+        a = sp.Matrix([a0, a1, a2])
+
+        return x, f, g, Y, a
 
     def define_clf_symbolic(self, x):
         v = x[1]

@@ -26,17 +26,13 @@ class DUBINS_UNCERTAIN(CtrlAffineSys):
             [1]
         ])
 
-        return x, f, g
-    
-    def define_Y_symbolic(self, x):
         # Define the symbolic uncertainty term Y(x)
         Y = sp.Matrix([[sp.cos(x[2]), 0, 0], [0, sp.sin(x[2]), 0], [0, 0, x[2]]])
-        return Y
 
-    def define_a_symbolic(self):
-        # Symbolic states
         a0, a1, a2 = sp.symbols('a0 a1 a2')
-        return sp.Matrix([a0, a1, a2])
+        a = sp.Matrix([a0, a1, a2])
+    
+        return x, f, g, Y, a
 
     def define_clf_symbolic(self, x):
         p_x = x[0]
