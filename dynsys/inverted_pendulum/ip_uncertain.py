@@ -32,13 +32,20 @@ class IP_UNCERTAIN(CtrlAffineSys):
             [-1 / I]
         ])
 
-        # True uncertainty term: Y(x)a(Theta)
-        Y = sp.Matrix([[0, 0], [sp.sin(theta), theta_dot]]) # true Y(x)
-        a = np.copy(self.params["a_true"]) # true a(Theta)
-        f += Y @ a  # Adding the true uncertainty to the system dynamics
-
         return x, f, g
 
+    def define_Y_symbolic(self, x):
+        # Define the symbolic uncertainty term Y(x)
+        theta = x[0]
+        theta_dot = x[1]
+        Y = sp.Matrix([[0, 0], [sp.sin(theta), theta_dot]])
+        return Y
+
+    def define_a_symbolic(self):
+        # Symbolic states
+        a0, a1 = sp.symbols('a0 a1')
+        return sp.Matrix([a0, a1])
+    
     def define_clf_symbolic(self, x):
         I = self.params['I'] # moment of inertia (kg*m^2)
         c_bar = self.params['m'] * self.params['g'] * self.params['l'] / (2 * I)

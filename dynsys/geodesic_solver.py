@@ -2,23 +2,24 @@ import numpy as np
 from scipy.optimize import minimize, LinearConstraint, Bounds, BFGS, check_grad
 
 class GeodesicSolver:
-    def __init__(self, n, D, N, W_fcn, dW_fcn):
+    def __init__(self, n, D, N, W_fcn, dW_dxi_fcn, dW_dai_fcn = None):
         """
-        Initialize the geodesic solver.
+        Initialize the geodesic solver
 
         Parameters:
-            n      : int, number of state variables.
-            D      : int, degree of the Chebyshev polynomial basis.
-            N      : int, one less than the number of collocation nodes (total nodes = N+1).
-            W_fcn  : callable, function that returns the contraction metric matrix W(x) when given a state x.
-            dW_fcn : callable, function that returns the derivative of the contraction metric,
-                           dW/dxi, when given an index i and state x.
+            n      : int, number of state variables
+            D      : int, degree of the Chebyshev polynomial basis
+            N      : int, one less than the number of collocation nodes (total nodes = N+1)
+            W_fcn  : callable, function that returns the contraction metric matrix W(x) when given a state x
+            dW_dxi_fcn : callable, function that returns the derivative of the contraction metric,
+                           dW/dxi, when given an index i and state x
         """
         self.n = n
         self.D = D
         self.N = N
         self.W_fcn = W_fcn
-        self.dW_fcn = dW_fcn
+        self.dW_dxi_fcn = dW_dxi_fcn
+        self.dW_dai_fcn = dW_dai_fcn
 
         # Compute Clenshaw-Curtis nodes and weights and Chebyshev basis/derivative
         self.s, self.w_cheby = self.clencurt(N)
@@ -31,14 +32,14 @@ class GeodesicSolver:
     @staticmethod
     def clencurt(N):
         """
-        Compute Clenshaw-Curtis nodes and weights.
+        Compute Clenshaw-Curtis nodes and weights
 
         Parameters:
-            N : int, number of subintervals (produces N+1 nodes).
+            N : int, number of subintervals (produces N+1 nodes)
 
         Returns:
-            x : 1D np.array, nodes mapped to [0, 1].
-            w : 1D np.array, corresponding quadrature weights.
+            x : 1D np.array, nodes mapped to [0, 1]
+            w : 1D np.array, corresponding quadrature weights
         """
         theta = np.pi * np.arange(0, N + 1) / N
         x = np.cos(theta)
@@ -68,16 +69,16 @@ class GeodesicSolver:
     @staticmethod
     def compute_cheby(N, D, t):
         """
-        Compute Chebyshev basis and its derivative.
+        Compute Chebyshev basis and its derivative
 
         Parameters:
-            N : int, where there will be N+1 Chebyshev nodes.
-            D : int, degree of Chebyshev polynomial.
-            t : 1D np.array of Chebyshev nodes in [0,1].
+            N : int, where there will be N+1 Chebyshev nodes
+            D : int, degree of Chebyshev polynomial
+            t : 1D np.array of Chebyshev nodes in [0,1]
 
         Returns:
-            T    : 2D np.array of shape (D+1, N+1) containing the Chebyshev basis.
-            Tdot : 2D np.array of shape (D+1, N+1) containing the derivative of the basis.
+            T    : 2D np.array of shape (D+1, N+1) containing the Chebyshev basis
+            Tdot : 2D np.array of shape (D+1, N+1) containing the derivative of the basis
         """
         T = np.zeros((D + 1, N + 1))
         U = np.zeros((D + 1, N + 1))
@@ -98,13 +99,13 @@ class GeodesicSolver:
 
     def compute_riemann_energy(self, c):
         """
-        Compute the Riemann Energy using a pseudospectral method.
+        Compute the Riemann Energy using a pseudospectral method
 
         Parameters:
-            c : 1D np.array, flattened vector of coefficients with length n*(D+1).
+            c : 1D np.array, flattened vector of coefficients with length n*(D+1)
 
         Returns:
-            E : float, the computed Riemann energy.
+            E : float, the computed Riemann energy
         """
         # Reshape c into a (n x (D+1)) coefficient matrix.
         c_mat = np.reshape(c, (self.D + 1, self.n), order='F').T
@@ -126,13 +127,13 @@ class GeodesicSolver:
 
     def compute_energy_gradient(self, c):
         """
-        Compute the gradient of the Riemann Energy.
+        Compute the gradient of the Riemann Energy
 
         Parameters:
-            c : 1D np.array, flattened coefficient vector.
+            c : 1D np.array, flattened coefficient vector
 
         Returns:
-            g : 1D np.array, flattened gradient.
+            g : 1D np.array, flattened gradient
         """
         # Reshape c to a (n x (D+1)) matrix.
         c_matrix = np.reshape(c, (self.D + 1, self.n), order='F').T
@@ -149,7 +150,7 @@ class GeodesicSolver:
                 W_eval = self.W_fcn(gamma_k)
                 M_x_gamma_sk = np.linalg.solve(W_eval, gamma_s_k)
                 for i in range(self.n):
-                    dW_dxi = self.dW_fcn(i, gamma_k)
+                    dW_dxi = self.dW_dxi_fcn(i, gamma_k)
                     # Prepare the contribution matrix.
                     temp = np.zeros((self.n, self.D + 1))
                     temp[i, :] = self.Tdot[:self.D + 1, k]
@@ -172,7 +173,7 @@ class GeodesicSolver:
     def initialize_conditions(self, x_nom, x_end):
         """
         Initialize the coefficient vector and the equality constraint vector from
-        the boundary conditions.
+        the boundary conditions
 
         Parameters:
             x_nom : np.array of shape (n,)
@@ -181,8 +182,8 @@ class GeodesicSolver:
                 The ending state.
 
         Returns:
-            c0  : 1D np.array, initial guess for the coefficients (length n*(D+1)).
-            beq : 1D np.array, equality constraints vector (concatenation of x_nom and x_end).
+            c0  : 1D np.array, initial guess for the coefficients (length n*(D+1))
+            beq : 1D np.array, equality constraints vector (concatenation of x_nom and x_end)
         """
         c0 = np.zeros(self.n * (self.D + 1))
         # Compute indices for the first and second coefficient in each block.
@@ -196,15 +197,17 @@ class GeodesicSolver:
 
     def solve_geodesic(self, c0, beq):
         """
-        Set up and solve the geodesic optimization problem.
+        Set up and solve the geodesic optimization problem
 
         Parameters:
-            c0  : 1D np.array, initial flattened coefficient vector.
-            beq : 1D np.array, right-hand side for equality constraints.
+            c0  : 1D np.array, initial flattened coefficient vector
+            beq : 1D np.array, right-hand side for equality constraints
 
         Returns:
-            c_opt  : 2D np.array, optimized coefficients (shape n x (D+1)).
-            energy : float, final Riemann energy.
+            gamma     : Geodesic matrix computed as c_opt @ T
+            gamma_s_0 : Derivative at the initial point (c_opt @ Tdot[:, 0])
+            gamma_s_1 : Derivative at the final point (c_opt @ Tdot[:, -1])
+            energy : float, final Riemann energy
         """
         # Construct equality constraint matrices:
         #   Aeq1 enforces the first Chebyshev node conditions.
@@ -235,27 +238,18 @@ class GeodesicSolver:
         res = minimize(fun=costf, x0=c0, method='trust-constr',
                        jac=grad, bounds=bounds,
                        constraints=[linear_constraint],
-                       options={'maxiter': 500, 'gtol': 1e-4, 'xtol': 1e-8, 'verbose': 0})
+                       options={'maxiter': 200, 'gtol': 5e-3, 'xtol': 1e-3, 'verbose': 0})
+                       #options={'maxiter': 500, 'gtol': 1e-4, 'xtol': 1e-8, 'verbose': 0})
 
-        # Reshape the result back into a (n x (D+1)) matrix.
+        # c_opt: optimized coefficients; reshape into a (n x (D+1)) matrix
         c_opt = np.reshape(res.x, (self.D + 1, self.n), order='F').T
+
+        # Geodesic and its derivative
+        gamma = c_opt.dot(self.T)
+        gamma_s = c_opt.dot(self.Tdot)
+        
+        # Riemannian energy
         energy = res.fun
 
-        return c_opt, energy
+        return gamma, gamma_s, energy
 
-    def get_trajectory(self, c_opt):
-        """
-        Compute the geodesic matrix and endpoint derivatives from the optimized coefficients.
-
-        Parameters:
-            c_opt : 2D np.array of shape (n x (D+1)) - optimized coefficients.
-
-        Returns:
-            gamma     : Geodesic matrix computed as c_opt @ T.
-            gamma_s_0 : Derivative at the initial point (c_opt @ Tdot[:, 0]).
-            gamma_s_1 : Derivative at the final point (c_opt @ Tdot[:, -1]).
-        """
-        gamma = c_opt.dot(self.T)
-        gamma_s_0 = c_opt.dot(self.Tdot)[:, 0]
-        gamma_s_1 = c_opt.dot(self.Tdot)[:, -1]
-        return gamma, gamma_s_0, gamma_s_1

@@ -171,7 +171,7 @@ for n in range(N):
         slack_hist[n, k] = slack_val
 
         # Propagate dynamics
-        dx = ip_true.dynamics(x, u)
+        dx = ip_true.dynamics(x, u, param_uncertainty=True)
         x = x + dx.reshape(-1) * dt
 
 # ========= Plots =========

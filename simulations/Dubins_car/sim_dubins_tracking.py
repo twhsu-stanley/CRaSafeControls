@@ -120,7 +120,7 @@ for k in range(len(tt)):
     V_dot_hist[k] = V_dot
 
     # Propagate dynamics
-    dx = Dubins_true.dynamics(x, u)
+    dx = Dubins_true.dynamics(x, u, param_uncertainty=True)
     x = x + dx.reshape(-1) * dt
 
 # === Plots ===
