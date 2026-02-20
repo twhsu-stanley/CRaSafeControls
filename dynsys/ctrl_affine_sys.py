@@ -453,9 +453,6 @@ class CtrlAffineSys:
         # Formulate it as a min-norm CLF QP problem
 
         u_d = u_d.reshape(-1, 1)
-
-        M_x = np.linalg.inv(self.W_fcn(x, self.a_hat_ccm))
-        M_d = np.linalg.inv(self.W_fcn(x_d, self.a_hat_ccm))
         
         if self.use_adaptive: 
             Y_x_a = self.Y(x) @ self.a_hat_ccm
@@ -465,14 +462,11 @@ class CtrlAffineSys:
             Y_d_a = 0.0
 
         if self.use_cp:
-            Theta = np.linalg.cholesky(M_x)
+            Theta = np.linalg.cholesky(self.M_x)
             sigma_max = np.max(np.linalg.svd(Theta, compute_uv=False))  # maximum singular value
             tightening = sigma_max * self.cp_quantile * np.sqrt(self.Erem)
         else:
             tightening = 0.0
-
-        self.gamma_s1_M_x = self.gamma_s_1.reshape(-1, 1).T @ M_x
-        self.gamma_s0_M_d = self.gamma_s_0.reshape(-1, 1).T @ M_d
         
         A = self.gamma_s1_M_x @ self.g(x)
         B = (self.gamma_s1_M_x @ (self.f(x) + self.g(x) @ u_d + Y_x_a)
@@ -518,17 +512,23 @@ class CtrlAffineSys:
         self.gamma_s_1 = gamma_s[:, -1]
         self.Erem = Erem.item()
 
+        self.M_x = np.linalg.inv(self.W_fcn(x, self.a_hat_ccm))
+        self.M_d = np.linalg.inv(self.W_fcn(x_d, self.a_hat_ccm))
+
+        # TODO: make this faster
+        self.gamma_s1_M_x = self.gamma_s_1.reshape(-1, 1).T @ self.M_x
+        self.gamma_s0_M_d = self.gamma_s_0.reshape(-1, 1).T @ self.M_d
+
         if solver.dW_dai_fcn is not None and self.use_adaptive:
             dErem_dai = np.zeros(self.adim)
             # TODO: check correctness
             for i in range(self.adim):
-                for k in range(self.N + 1):
+                for k in range(solver.N + 1):
                     gk = gamma[:, k]
                     gsk = gamma_s[:, k]
-                    W = self.dW_dai_fcn(i,gk,self.a_hat_ccm)
-                    # Solve W * x = gamma_s(:,k)
-                    x_sol = np.linalg.solve(W, gsk)
-                    dErem_dai[i] += np.dot(gsk.T, x_sol) * self.w_cheby[k]
+                    dW_dai = solver.dW_dai_fcn(i,gk,self.a_hat_ccm)
+                    dM_dai = -self.M_x @ dW_dai @ self.M_x
+                    dErem_dai[i] += (gsk.T @ dM_dai @ gsk) * solver.w_cheby[k]
             self.dErem_dai = dErem_dai
     
     # Adaptation laws
@@ -570,7 +570,7 @@ class CtrlAffineSys:
         self.a_hat_ccm += a_hat_dot * dt
         
         # Update rho
-        rho_dot = -self.nu_ccm()/(self.dnu_drho_ccm() * (self.Erem+ self.eta_ccm)) * (2*self.gamma_s0_M_d @ self.Y(x_d) @ self.a_hat_ccm + self.dErem_dai(x, x_d) @ a_hat_dot)
+        rho_dot = -self.nu_ccm()/(self.dnu_drho_ccm() * (self.Erem+ self.eta_ccm)) * (2*self.gamma_s0_M_d @ self.Y(x_d) @ self.a_hat_ccm + self.dErem_dai @ a_hat_dot)
         self.rho_ccm += rho_dot * dt
     
     # Scaling functions for unmatched adaptive controls
