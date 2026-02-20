@@ -22,6 +22,11 @@ class CtrlAffineSys:
         self.xdim = x_sym.shape[0]
         self.udim = g_sym.shape[1]
         self.adim = Y_sym.shape[1]
+        assert(f_sym.shape[0] == x_sym.shape[0])
+        assert(g_sym.shape[0] == x_sym.shape[0])
+        assert(Y_sym.shape[1] == a_sym.shape[0])
+
+        # Uncertainty parameters
         self.a_true = np.copy(self.params["a_true"]) if "a_true" in self.params else np.zeros((self.adim,1))
         self.a_hat_b = np.copy(self.params["a_0"])  if "a_0" in self.params else np.zeros((self.adim,1)) # Initial guess for a_hat_b
         self.a_hat_L = np.copy(self.params["a_0"])  if "a_0" in self.params else np.zeros((self.adim,1)) # Initial guess for a_hat_L
@@ -37,12 +42,15 @@ class CtrlAffineSys:
         acbf_sym = None
 
         if self.use_adaptive:
-            # Adaptive control parameters
+            # For uncertainty parameter estimates
             self.a_hat_norm_max = self.params["a_hat_norm_max"]
-            self.a_err_max = np.ones((self.params["a_0"].shape[0], 1)) * self.a_hat_norm_max * 2 #TODO: check correctness
+            self.a_err_max = np.ones((self.params["a_0"].shape[0], 1)) * self.a_hat_norm_max * 2 
+            #TODO: check correctness: Are we considering box limits?
             
-            self.epsilon = self.params.get("epsilon", 1e-3)  # Small value for numerical stability of projection operator
+            # A small value for numerical stability of projection operator
+            self.epsilon = self.params.get("epsilon", 1e-3)
 
+            # For the scaling functions of the unmatched adapation laws
             self.eta_clf = self.params.get("eta_clf", 0.1)
             self.rho_clf = 0.0
             self.eta_cbf = self.params.get("eta_cbf", 0.1)
@@ -50,13 +58,15 @@ class CtrlAffineSys:
             self.eta_ccm = self.params.get("eta_ccm", 0.1)
             self.rho_ccm = 0.0
 
-            self.Gamma_b = self.params.get("Gamma_b", None)  # adaptive gain matrix for CRaCBF
-            self.Gamma_L = self.params.get("Gamma_L", None)  # adaptive gain matrix for CRaCLF
-            self.Gamma_ccm = self.params.get("Gamma_ccm", None)  # adaptive gain matrix for CRaCCM
+            # Adaptive gain matrices
+            self.Gamma_b = self.params.get("Gamma_b", np.eye(self.adim))
+            self.Gamma_L = self.params.get("Gamma_L", np.eye(self.adim))
+            self.Gamma_ccm = self.params.get("Gamma_ccm", np.eye(self.adim))
 
             aclf_sym = self.define_aclf_symbolic(x_sym, a_sym)
             acbf_sym = self.define_acbf_symbolic(x_sym, a_sym)
 
+        # Convert symbolic functions into Python functions
         self.lambdify_symbolic_funcs(x_sym, f_sym, g_sym, Y_sym, a_sym, clf_sym, cbf_sym, aclf_sym, acbf_sym)
 
     def dynamics(self, x, u):
