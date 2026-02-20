@@ -452,6 +452,7 @@ class CtrlAffineSys:
     
         # Formulate it as a min-norm CLF QP problem
 
+        # TODO: avoid reshaping to make it faster
         u_d = u_d.reshape(-1, 1)
         
         if self.use_adaptive: 
@@ -508,16 +509,16 @@ class CtrlAffineSys:
         # TODO: check if self.a_hat_ccm is None?
         gamma, gamma_s, Erem = solver.solve_geodesic(c0, beq, self.a_hat_ccm)
 
-        self.gamma_s_0 = gamma_s[:, 0]
-        self.gamma_s_1 = gamma_s[:, -1]
+        gamma_s_0 = gamma_s[:, 0]
+        gamma_s_1 = gamma_s[:, -1]
         self.Erem = Erem.item()
 
         self.M_x = np.linalg.inv(self.W_fcn(x, self.a_hat_ccm))
         self.M_d = np.linalg.inv(self.W_fcn(x_d, self.a_hat_ccm))
 
         # TODO: make this faster
-        self.gamma_s1_M_x = self.gamma_s_1.reshape(-1, 1).T @ self.M_x
-        self.gamma_s0_M_d = self.gamma_s_0.reshape(-1, 1).T @ self.M_d
+        self.gamma_s1_M_x = gamma_s_1.reshape(1,-1) @ self.M_x
+        self.gamma_s0_M_d = gamma_s_0.reshape(1,-1) @ self.M_d
 
         if solver.dW_dai_fcn is not None and self.use_adaptive:
             dErem_dai = np.zeros(self.adim)
