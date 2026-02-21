@@ -51,7 +51,7 @@ w_norms = [np.linalg.norm(dist_config["gen_dist"](t)) for t in np.arange(0.0, 10
 w_max = np.max(w_norms)
 
 # Time setup
-dt = 0.01
+dt = 0.005
 sim_T = np.floor(t_d_data[-1]) # Simulation time
 tt = np.arange(0, sim_T, dt)
 T_steps = len(tt)
@@ -62,17 +62,17 @@ params = {
     "m": 0.486,
     "g": 9.81,
     "J": 0.00383,
-    "ccm": {"rate": 1.2, "weight_slack": weight_slack},
+    "ccm": {"rate": 0.8, "weight_slack": weight_slack},
     "geodesic": {"N": 8, "D": 2},
 }
 params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
 params["cp_quantile"] = w_max * 0.95 if USE_CP else 0.0
-params["Gamma_ccm"] = np.eye(1) * 0.1 # adaptive gain matrix for CRaCCM
+params["Gamma_ccm"] = np.eye(1) # adaptive gain matrix for CRaCCM
 params["a_true"] = np.array([[0.0]])  # true a
-params["a_hat_norm_max"] = np.linalg.norm(np.array([[0.5]]), 2)*1 # max norm of a_hat
+params["a_hat_norm_max"] = np.linalg.norm(np.array([[0.6]]), 2) # max norm of a_hat
 params["a_0"] = np.array([[0.0]]) # initial guess for a_hat
-params["epsilon"] = 1e-3 # small value for numerical stability of projection operator
+params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 
 params["eta_ccm"] = 1000.0
 
@@ -81,8 +81,12 @@ plannar_quad = PLANNAR_QUAD_UNCERTAIN(params)
 
 x_hist = np.zeros((plannar_quad.xdim, T_steps))
 u_hist = np.zeros((plannar_quad.udim, T_steps))
-energy_hist = np.zeros((T_steps,))
+Erem_hist = np.zeros((T_steps,))
 slack_hist = np.zeros((T_steps,))
+a_hat_ccm_hist = np.zeros((plannar_quad.adim, T_steps))
+a_true_hist = np.zeros((plannar_quad.adim, T_steps))
+nu_ccm_hist = np.zeros((T_steps,))
+rho_ccm_hist = np.zeros((T_steps,))
 x_d_hist = np.zeros((plannar_quad.xdim, T_steps))
 u_d_hist = np.zeros((plannar_quad.udim, T_steps))
 
@@ -110,6 +114,11 @@ for i in range(T_steps):
     x_d_hist[:, i] = x_d
     u_d_hist[:, i] = u_d
 
+    a_hat_ccm_hist[:, i] = plannar_quad.a_hat_ccm.ravel()
+    a_true_hist[:,i] = plannar_quad.a_true.ravel() # TODO: just to verify that a_true is constant; can remove later
+    nu_ccm_hist[i] = plannar_quad.nu_ccm() if USE_ADAPTIVE else 0.0
+    rho_ccm_hist[i] = plannar_quad.rho_ccm if USE_ADAPTIVE else 0.0
+
     # Disturbance
     if dist_config["include_dist"]:
         wt = dist_config["gen_dist"](t)
@@ -118,7 +127,7 @@ for i in range(T_steps):
 
     # Precompute geodesic
     plannar_quad.calc_geodesic(geodesic_solver, x, x_d)
-    energy_hist[i] = plannar_quad.Erem
+    Erem_hist[i] = plannar_quad.Erem
 
     # Log controller inputs
     uc, slack = plannar_quad.ctrl_cra_ccm(x, x_d, u_d)
@@ -199,6 +208,26 @@ plt.xlabel('Time (s)')
 plt.ylabel('QP slack')
 plt.grid(True)
 
+# Uncertainty parameter
+plt.figure(figsize=(8,3))
+plt.plot(tt, a_hat_ccm_hist[0, :], label='a0')
+plt.plot(tt, a_true_hist[0, :], label='a true')
+plt.xlabel('Time (s)')
+plt.ylabel('a_hat_ccm')
+plt.legend()
+plt.grid(True)
+
+# nu_ccm
+fig, axs = plt.subplots(2, 1)
+axs = axs.flatten()
+axs[0].plot(tt, nu_ccm_hist, lw=1)
+axs[0].set_ylabel('nu_ccm')
+axs[0].grid(True)
+axs[1].plot(tt, rho_ccm_hist, lw=1)
+axs[1].set_xlabel('Time (s)')
+axs[1].set_ylabel('rho_ccm')
+axs[1].grid(True)
+
 # Tracking error norm
 plt.figure()
 err_norm = np.linalg.norm(x_d_hist - x_hist, ord=2, axis=0)  # column-wise 2-norm
@@ -209,7 +238,7 @@ plt.grid(True)
 
 # Riemannian energy
 plt.figure()
-plt.plot(tt, np.sqrt(np.maximum(energy_hist, 0.0)))
+plt.plot(tt, np.sqrt(np.maximum(Erem_hist, 0.0)))
 plt.ylim([0, None])
 plt.xlabel('Time (s)')
 plt.ylabel('Riemann distance: sqrt E(t)')

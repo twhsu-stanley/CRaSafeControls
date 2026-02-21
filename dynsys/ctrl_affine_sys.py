@@ -566,14 +566,13 @@ class CtrlAffineSys:
         a_hat_dot = np.linalg.inv(self.Gamma_ccm) @ projection_operator(self.a_hat_ccm, 
                                             self.nu_ccm() * self.Y(x).T @ self.gamma_s1_M_x.T, 
                                             self.a_hat_norm_max, self.epsilon)
-        #test_nonpositive = (self.a_hat_ccm - np.array([[0.1], [0.1], [0.1], [0.01]])).T @ (-self.nu_ccm()* self.Y(x).T @ self.gamma_s1_M_x.T + self.Gamma_ccm @ a_hat_dot)
         #a_hat_dot = self.nu_ccm() * np.linalg.inv(self.Gamma_ccm) @ self.Y(x).T @ self.gamma_s1_M_x.T
         self.a_hat_ccm += a_hat_dot * dt
-        
+
         # Update rho
-        rho_dot = -self.nu_ccm()/(self.dnu_drho_ccm() * (self.Erem+ self.eta_ccm)) * (2*self.gamma_s0_M_d @ self.Y(x_d) @ self.a_hat_ccm + self.dErem_dai @ a_hat_dot)
-        self.rho_ccm += rho_dot * dt
-    
+        rho_dot = -self.nu_ccm()/(self.dnu_drho_ccm() * (self.Erem + self.eta_ccm)) * (2*self.gamma_s0_M_d @ self.Y(x_d) @ self.a_hat_ccm + self.dErem_dai @ a_hat_dot)
+        self.rho_ccm += rho_dot.item() * dt
+
     # Scaling functions for unmatched adaptive controls
     def nu_clf(self):
         pass
@@ -588,10 +587,7 @@ class CtrlAffineSys:
         pass
     
     def nu_ccm(self):
-        #TODO: pick a nu function of self.rho_ccm
-        nu = 0.5*np.exp(self.rho_ccm/5) + 0.1
-        return nu
+        return 0.5 * np.exp(self.rho_ccm/5) + 0.1
     
     def dnu_drho_ccm(self):
-        # TODO: take derivative of self.nu_ccm w.r.t. self.rho_ccm
-        return 0.5*np.exp(-self.rho_ccm/5)/5
+        return 0.5 * np.exp(self.rho_ccm/5)/5
