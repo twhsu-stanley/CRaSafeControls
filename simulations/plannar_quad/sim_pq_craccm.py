@@ -11,7 +11,7 @@ from scipy.io import loadmat
 from scipy.interpolate import interp1d
 
 USE_CP = 0 # 1 or 0: whether to use conformal prediction
-USE_ADAPTIVE = 0 # 1 or 0: whether to use adaptive control
+USE_ADAPTIVE = 1 # 1 or 0: whether to use adaptive control
 
 weight_slack = 50.0 if USE_CP else 1000.0
 
@@ -64,17 +64,19 @@ params = {
     "J": 0.00383,
     "ccm": {"rate": 0.8, "weight_slack": weight_slack},
     "geodesic": {"N": 8, "D": 2},
+    "dt": dt,
 }
 params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
 params["cp_quantile"] = w_max * 0.95 if USE_CP else 0.0
 params["Gamma_ccm"] = np.eye(1) # adaptive gain matrix for CRaCCM
-params["a_true"] = np.array([[0.0]])  # true a
+params["a_true"] = np.array([[0.2]])  # true a
 params["a_hat_norm_max"] = np.linalg.norm(np.array([[0.6]]), 2) # max norm of a_hat
 params["a_0"] = np.array([[0.0]]) # initial guess for a_hat
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 
-params["eta_ccm"] = 1000.0
+params["eta_ccm"] = 100.0
+params["rho_ccm"] = 50.0
 
 plannar_quad = PLANNAR_QUAD_UNCERTAIN(params)
 #plannar_quad = PLANNAR_QUAD(params)
@@ -127,12 +129,12 @@ for i in range(T_steps):
 
     # Precompute geodesic
     plannar_quad.calc_geodesic(geodesic_solver, x, x_d)
-    Erem_hist[i] = plannar_quad.Erem
-
+    
     # Log controller inputs
     uc, slack = plannar_quad.ctrl_cra_ccm(x, x_d, u_d)
     u_hist[:, i] = uc.ravel()
     slack_hist[i] = slack
+    Erem_hist[i] = plannar_quad.Erem
 
     # Propagate with zero-order hold on control and disturbance
     if i < T_steps - 1:
@@ -151,10 +153,6 @@ for i in range(T_steps):
             x = sol.y[:, -1]
         except Exception as e:
             print("Error occurred while solving IVP:", e)
-
-    # Update adaptive parameter
-    if USE_ADAPTIVE:
-        plannar_quad.adaptation_cra_ccm(x, x_d, dt)
 
 # Plot results
 # x vs. x_d

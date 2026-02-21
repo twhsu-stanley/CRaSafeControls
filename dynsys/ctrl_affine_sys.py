@@ -17,6 +17,8 @@ class CtrlAffineSys:
         self.cp_quantile = self.params.get("cp_quantile", 0)
         self.use_adaptive = self.params.get("use_adaptive", 0)
 
+        self.dt = self.params.get("dt")
+
         # Let subclass define symbolic system
         x_sym, f_sym, g_sym, Y_sym, a_sym = self.define_system_symbolic()
         self.xdim = x_sym.shape[0]
@@ -52,11 +54,11 @@ class CtrlAffineSys:
 
             # For the scaling functions of the unmatched adapation laws
             self.eta_clf = self.params.get("eta_clf", 0.1)
-            self.rho_clf = 0.0
+            self.rho_clf = self.params.get("rho_clf", 0.0)
             self.eta_cbf = self.params.get("eta_cbf", 0.1)
-            self.rho_cbf = 0.0
+            self.rho_cbf = self.params.get("rho_cbf", 0.0)
             self.eta_ccm = self.params.get("eta_ccm", 0.1)
-            self.rho_ccm = 0.0
+            self.rho_ccm = self.params.get("rho_ccm", 0.0)
 
             # Adaptive gain matrices
             self.Gamma_b = self.params.get("Gamma_b", np.eye(self.adim))
@@ -498,6 +500,10 @@ class CtrlAffineSys:
 
         uc = u_d + u
 
+        # Update adaptive parameter
+        if self.use_adaptive:
+            self.adaptation_cra_ccm(x, x_d)
+
         return uc, slack #.item()
 
     # Solve for geodesics for CCM-based controllers
@@ -557,21 +563,21 @@ class CtrlAffineSys:
         #TODO: check sign
         self.a_hat_b += projection_operator(self.a_hat_b, -self.Gamma_b @ (dacbfdx.T @ self.Y(x)).T, self.a_hat_norm_max, self.epsilon) * dt
 
-    def adaptation_cra_ccm(self, x, x_d, dt):
+    def adaptation_cra_ccm(self, x, x_d):
         """Update adaptive parameter a_hat_ccm for tracking."""
         if self.Y is None or self.a_hat_L is None or self.a_hat_b is None:
             raise ValueError("Adaptive control parameters not defined.")
 
-        # Update a_hat
         a_hat_dot = np.linalg.inv(self.Gamma_ccm) @ projection_operator(self.a_hat_ccm, 
                                             self.nu_ccm() * self.Y(x).T @ self.gamma_s1_M_x.T, 
                                             self.a_hat_norm_max, self.epsilon)
         #a_hat_dot = self.nu_ccm() * np.linalg.inv(self.Gamma_ccm) @ self.Y(x).T @ self.gamma_s1_M_x.T
-        self.a_hat_ccm += a_hat_dot * dt
-
-        # Update rho
-        rho_dot = -self.nu_ccm()/(self.dnu_drho_ccm() * (self.Erem + self.eta_ccm)) * (2*self.gamma_s0_M_d @ self.Y(x_d) @ self.a_hat_ccm + self.dErem_dai @ a_hat_dot)
-        self.rho_ccm += rho_dot.item() * dt
+        
+        rho_dot = -self.nu_ccm() / (self.dnu_drho_ccm() * (self.Erem + self.eta_ccm)) * (2*self.gamma_s0_M_d @ self.Y(x_d) @ self.a_hat_ccm + self.dErem_dai @ a_hat_dot)
+        
+        # Updates
+        self.a_hat_ccm += a_hat_dot * self.dt
+        self.rho_ccm += rho_dot.item() * self.dt
 
     # Scaling functions for unmatched adaptive controls
     def nu_clf(self):
@@ -587,7 +593,9 @@ class CtrlAffineSys:
         pass
     
     def nu_ccm(self):
-        return 0.5 * np.exp(self.rho_ccm/5) + 0.1
+        #return 0.5 * np.exp(self.rho_ccm/5) + 0.1
+        return np.arctan(self.rho_ccm/5) + np.pi/2 + 0.1
     
     def dnu_drho_ccm(self):
-        return 0.5 * np.exp(self.rho_ccm/5)/5
+        #return 0.5 * np.exp(self.rho_ccm/5)/5
+        return 1/(1+(self.rho_ccm/5)**2) * 1/5
