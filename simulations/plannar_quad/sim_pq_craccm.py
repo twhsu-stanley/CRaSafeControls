@@ -69,13 +69,13 @@ params = {
 params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
 params["cp_quantile"] = w_max * 0.95 if USE_CP else 0.0
-params["Gamma_ccm"] = np.eye(1) # adaptive gain matrix for CRaCCM
+params["Gamma_ccm"] = np.eye(1) * 10 # adaptive gain matrix for CRaCCM
 params["a_true"] = np.array([[0.2]])  # true a
-params["a_hat_norm_max"] = np.linalg.norm(np.array([[0.6]]), 2) # max norm of a_hat
+params["a_hat_norm_max"] = np.linalg.norm(np.array([[0.8]]), 2) # max norm of a_hat
 params["a_0"] = np.array([[0.0]]) # initial guess for a_hat
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 
-params["eta_ccm"] = 100.0
+params["eta_ccm"] = 1.0
 params["rho_ccm"] = 50.0
 
 plannar_quad = PLANNAR_QUAD_UNCERTAIN(params)
@@ -127,10 +127,10 @@ for i in range(T_steps):
     else:
         wt = np.zeros((x.shape[0],))
 
-    # Precompute geodesic
+    # Pre-compute geodesic
     plannar_quad.calc_geodesic(geodesic_solver, x, x_d)
     
-    # Log controller inputs
+    # Implement ccm control law
     uc, slack = plannar_quad.ctrl_cra_ccm(x, x_d, u_d)
     u_hist[:, i] = uc.ravel()
     slack_hist[i] = slack

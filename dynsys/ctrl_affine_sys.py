@@ -540,9 +540,7 @@ class CtrlAffineSys:
     
     # Adaptation laws
     def adaptation_cra_clf(self, x, dt):
-        """Update adaptive parameter a_hat_L for aCLF."""
-        if self.Y is None or self.a_hat_L is None or self.a_hat_b is None:
-            raise ValueError("Adaptive control parameters not defined.")
+        """CRaCLF adaptation law"""
 
         daclfdx = self.daclfdx(x, self.a_hat_L)
 
@@ -552,9 +550,7 @@ class CtrlAffineSys:
         self.a_hat_L += projection_operator(self.a_hat_L, self.Gamma_L @ (daclfdx.T @ self.Y(x)).T, self.a_hat_norm_max, self.epsilon) * dt
 
     def adaptation_cra_cbf(self, x, dt):
-        """Update adaptive parameter a_hat_b for aCBF."""
-        if self.Y is None or self.a_hat_L is None or self.a_hat_b is None:
-            raise ValueError("Adaptive control parameters not defined.")
+        """CRaCBF adaptation law"""
 
         dacbfdx = self.dacbfdx(x, self.a_hat_b)
         #self.a_hat_b += (-self.Gamma_b @ (dacbfdx.T @ self.Y(x)).T) * dt
@@ -564,9 +560,7 @@ class CtrlAffineSys:
         self.a_hat_b += projection_operator(self.a_hat_b, -self.Gamma_b @ (dacbfdx.T @ self.Y(x)).T, self.a_hat_norm_max, self.epsilon) * dt
 
     def adaptation_cra_ccm(self, x, x_d):
-        """Update adaptive parameter a_hat_ccm for tracking."""
-        if self.Y is None or self.a_hat_L is None or self.a_hat_b is None:
-            raise ValueError("Adaptive control parameters not defined.")
+        """CRaCCM adaptation law"""
 
         a_hat_dot = np.linalg.inv(self.Gamma_ccm) @ projection_operator(self.a_hat_ccm, 
                                             self.nu_ccm() * self.Y(x).T @ self.gamma_s1_M_x.T, 
@@ -594,8 +588,8 @@ class CtrlAffineSys:
     
     def nu_ccm(self):
         #return 0.5 * np.exp(self.rho_ccm/5) + 0.1
-        return np.arctan(self.rho_ccm/5) + np.pi/2 + 0.1
+        return np.arctan(self.rho_ccm/100) + np.pi/2 + 0.1
     
     def dnu_drho_ccm(self):
         #return 0.5 * np.exp(self.rho_ccm/5)/5
-        return 1/(1+(self.rho_ccm/5)**2) * 1/5
+        return 1/(1+(self.rho_ccm/100)**2) * 1/100
