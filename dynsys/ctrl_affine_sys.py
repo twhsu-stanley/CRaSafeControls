@@ -519,6 +519,7 @@ class CtrlAffineSys:
         gamma_s_1 = gamma_s[:, -1]
         self.Erem = Erem.item()
 
+        # NOTE: self.W_fcn == solver.W_fcn
         self.M_x = np.linalg.inv(self.W_fcn(x, self.a_hat_ccm))
         self.M_d = np.linalg.inv(self.W_fcn(x_d, self.a_hat_ccm))
 
@@ -527,6 +528,7 @@ class CtrlAffineSys:
         self.gamma_s0_M_d = gamma_s_0.reshape(1,-1) @ self.M_d
 
         if solver.dW_dai_fcn is not None and self.use_adaptive:
+            # NOTE: self.dW_dai_fcn == solver.dW_dai_fcn
             dErem_dai = np.zeros(self.adim)
             # TODO: check correctness
             for i in range(self.adim):
@@ -534,7 +536,8 @@ class CtrlAffineSys:
                     gk = gamma[:, k]
                     gsk = gamma_s[:, k]
                     dW_dai = solver.dW_dai_fcn(i,gk,self.a_hat_ccm)
-                    dM_dai = -self.M_x @ dW_dai @ self.M_x
+                    M = np.linalg.inv(solver.W_fcn(gk,self.a_hat_ccm)) # TODO: check correctness
+                    dM_dai = -M @ dW_dai @ M # TODO: check correctness
                     dErem_dai[i] += (gsk.T @ dM_dai @ gsk) * solver.w_cheby[k]
             self.dErem_dai = dErem_dai
     
