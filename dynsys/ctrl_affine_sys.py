@@ -35,6 +35,19 @@ class CtrlAffineSys:
         self.a_hat_ccm = np.copy(self.params["a_0"])  if "a_0" in self.params else np.zeros((self.adim,1)) # Initial guess for a_hat_ccm
         # WARNING: a_hat_b, a_hat_L, and a_hat_ccm should be initialized by copying, otherwise they will be references to the same array.
 
+        # For the scaling functions of the unmatched adapation laws
+        self.eta_clf = self.params.get("eta_clf", 0.1)
+        self.rho_clf = self.params.get("rho_clf", 0.0)
+        self.eta_cbf = self.params.get("eta_cbf", 0.1)
+        self.rho_cbf = self.params.get("rho_cbf", 0.0)
+        self.eta_ccm = self.params.get("eta_ccm", 0.1)
+        self.rho_ccm = self.params.get("rho_ccm", 0.0)
+
+        # Adaptive gain matrices
+        self.Gamma_b = self.params.get("Gamma_b", np.eye(self.adim))
+        self.Gamma_L = self.params.get("Gamma_L", np.eye(self.adim))
+        self.Gamma_ccm = self.params.get("Gamma_ccm", np.eye(self.adim))
+
         clf_sym = self.define_clf_symbolic(x_sym)
 
         aclf_sym = None
@@ -44,26 +57,11 @@ class CtrlAffineSys:
         acbf_sym = None
 
         if self.use_adaptive:
-            # For uncertainty parameter estimates
+            # For projection-based adaptive controls
             self.a_hat_norm_max = self.params["a_hat_norm_max"]
-            self.a_err_max = np.ones((self.params["a_0"].shape[0], 1)) * self.a_hat_norm_max * 2 
             #TODO: check correctness: Are we considering box limits?
-            
-            # A small value for numerical stability of projection operator
-            self.epsilon = self.params.get("epsilon", 1e-3)
-
-            # For the scaling functions of the unmatched adapation laws
-            self.eta_clf = self.params.get("eta_clf", 0.1)
-            self.rho_clf = self.params.get("rho_clf", 0.0)
-            self.eta_cbf = self.params.get("eta_cbf", 0.1)
-            self.rho_cbf = self.params.get("rho_cbf", 0.0)
-            self.eta_ccm = self.params.get("eta_ccm", 0.1)
-            self.rho_ccm = self.params.get("rho_ccm", 0.0)
-
-            # Adaptive gain matrices
-            self.Gamma_b = self.params.get("Gamma_b", np.eye(self.adim))
-            self.Gamma_L = self.params.get("Gamma_L", np.eye(self.adim))
-            self.Gamma_ccm = self.params.get("Gamma_ccm", np.eye(self.adim))
+            self.a_err_max = np.ones((self.params["a_0"].shape[0], 1)) * self.a_hat_norm_max * 2 
+            self.epsilon = self.params.get("epsilon", 1e-3) # a small value for numerical stability of projection operator
 
             aclf_sym = self.define_aclf_symbolic(x_sym, a_sym)
             acbf_sym = self.define_acbf_symbolic(x_sym, a_sym)
@@ -591,8 +589,8 @@ class CtrlAffineSys:
     
     def nu_ccm(self):
         #return 0.5 * np.exp(self.rho_ccm/5) + 0.1
-        return np.arctan(self.rho_ccm/100) + np.pi/2 + 0.1
+        return np.arctan(self.rho_ccm/10) + np.pi/2 + 0.1
     
     def dnu_drho_ccm(self):
         #return 0.5 * np.exp(self.rho_ccm/5)/5
-        return 1/(1+(self.rho_ccm/100)**2) * 1/100
+        return 1/(1+(self.rho_ccm/10)**2) * 1/10

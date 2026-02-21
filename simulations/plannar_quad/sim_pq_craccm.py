@@ -11,7 +11,7 @@ from scipy.io import loadmat
 from scipy.interpolate import interp1d
 
 USE_CP = 0 # 1 or 0: whether to use conformal prediction
-USE_ADAPTIVE = 1 # 1 or 0: whether to use adaptive control
+USE_ADAPTIVE = 0 # 1 or 0: whether to use adaptive control
 
 weight_slack = 50.0 if USE_CP else 1000.0
 
@@ -51,7 +51,7 @@ w_norms = [np.linalg.norm(dist_config["gen_dist"](t)) for t in np.arange(0.0, 10
 w_max = np.max(w_norms)
 
 # Time setup
-dt = 0.005
+dt = 0.01
 sim_T = np.floor(t_d_data[-1]) # Simulation time
 tt = np.arange(0, sim_T, dt)
 T_steps = len(tt)
@@ -76,7 +76,7 @@ params["a_0"] = np.array([[0.0]]) # initial guess for a_hat
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 
 params["eta_ccm"] = 1.0
-params["rho_ccm"] = 50.0
+params["rho_ccm"] = 10.0
 
 plannar_quad = PLANNAR_QUAD_UNCERTAIN(params)
 #plannar_quad = PLANNAR_QUAD(params)
@@ -84,6 +84,7 @@ plannar_quad = PLANNAR_QUAD_UNCERTAIN(params)
 x_hist = np.zeros((plannar_quad.xdim, T_steps))
 u_hist = np.zeros((plannar_quad.udim, T_steps))
 Erem_hist = np.zeros((T_steps,))
+V_hist = np.zeros((T_steps,))
 slack_hist = np.zeros((T_steps,))
 a_hat_ccm_hist = np.zeros((plannar_quad.adim, T_steps))
 a_true_hist = np.zeros((plannar_quad.adim, T_steps))
@@ -132,9 +133,13 @@ for i in range(T_steps):
     
     # Implement ccm control law
     uc, slack = plannar_quad.ctrl_cra_ccm(x, x_d, u_d)
+    
     u_hist[:, i] = uc.ravel()
     slack_hist[i] = slack
     Erem_hist[i] = plannar_quad.Erem
+
+    V = plannar_quad.nu_ccm() * (plannar_quad.Erem + plannar_quad.eta_ccm) + (plannar_quad.a_hat_ccm - plannar_quad.a_true).T @ plannar_quad.Gamma_ccm @ (plannar_quad.a_hat_ccm - plannar_quad.a_true)
+    V_hist[i] = V.item()
 
     # Propagate with zero-order hold on control and disturbance
     if i < T_steps - 1:
@@ -236,10 +241,18 @@ plt.grid(True)
 
 # Riemannian energy
 plt.figure()
-plt.plot(tt, np.sqrt(np.maximum(Erem_hist, 0.0)))
+plt.plot(tt, Erem_hist)
 plt.ylim([0, None])
 plt.xlabel('Time (s)')
-plt.ylabel('Riemann distance: sqrt E(t)')
+plt.ylabel('Riemann Energy:Erem(t)')
+plt.grid(True)
+
+# Lyapunov
+plt.figure()
+plt.plot(tt, V_hist)
+plt.ylim([0, None])
+plt.xlabel('Time (s)')
+plt.ylabel('Lyapunov: V(t)')
 plt.grid(True)
 
 plt.show()
