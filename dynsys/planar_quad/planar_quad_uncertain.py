@@ -2,7 +2,7 @@ import sympy as sp
 import numpy as np
 from dynsys.ctrl_affine_sys import CtrlAffineSys
 
-class PLANNAR_QUAD_UNCERTAIN(CtrlAffineSys):
+class PLANAR_QUAD_UNCERTAIN(CtrlAffineSys):
     def __init__(self, params=None):
         super().__init__(params)
     

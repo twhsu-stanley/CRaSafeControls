@@ -568,11 +568,19 @@ class CtrlAffineSys:
                                             self.a_hat_norm_max, self.epsilon)
         #a_hat_dot = self.nu_ccm() * np.linalg.inv(self.Gamma_ccm) @ self.Y(x).T @ self.gamma_s1_M_x.T
         
-        rho_dot = -self.nu_ccm() / (self.dnu_drho_ccm() * (self.Erem + self.eta_ccm)) * (2*self.gamma_s0_M_d @ self.Y(x_d) @ self.a_hat_ccm + self.dErem_dai @ a_hat_dot)
+        uu = self.nu_ccm() * (2*self.gamma_s0_M_d @ self.Y(x_d) @ self.a_hat_ccm + self.dErem_dai @ a_hat_dot)
+        if uu > 0:
+            rho_dot = (-uu / (self.dnu_drho_ccm() * (self.Erem + self.eta_ccm))).item()
+        else:
+            rho_dot = 0.0
         
+        # Temp logging
+        self.a_hat_dot = a_hat_dot
+        self.rho_dot = rho_dot
+
         # Updates
         self.a_hat_ccm += a_hat_dot * self.dt
-        self.rho_ccm += rho_dot.item() * self.dt
+        self.rho_ccm += rho_dot * self.dt
 
     # Scaling functions for unmatched adaptive controls
     def nu_clf(self):
@@ -588,9 +596,9 @@ class CtrlAffineSys:
         pass
     
     def nu_ccm(self):
-        #return 0.5 * np.exp(self.rho_ccm/5) + 0.1
-        return np.arctan(self.rho_ccm/10) + np.pi/2 + 0.1
+        #return np.exp(self.rho_ccm/5) + 2.0
+        return np.arctan(self.rho_ccm/10) + np.pi/2 + 0.5
     
     def dnu_drho_ccm(self):
-        #return 0.5 * np.exp(self.rho_ccm/5)/5
+        #return np.exp(self.rho_ccm/5)/5
         return 1/(1+(self.rho_ccm/10)**2) * 1/10
