@@ -13,7 +13,7 @@ from scipy.interpolate import interp1d
 USE_CP = 0 # 1 or 0: whether to use conformal prediction
 USE_ADAPTIVE = 1 # 1 or 0: whether to use adaptive control
 
-weight_slack = 10.0 if USE_CP else 10000.0
+weight_slack = 5.0 if USE_CP else 10000.0
 
 # Load the desired trajectory
 # TODO: load a motion planner
@@ -36,12 +36,12 @@ u_d_fcn = lambda t: interp_u(t)
 
 # Disturbance (non-parametric uncertainty)
 Delta = lambda t: np.array([
-    0.0,# + 0.0 * np.sin(2 * np.pi / 1 * t),
-    0.0,# + 0.0 * np.cos(2 * np.pi / 1 * t + 0.03),
-    0.0,# + 0.0 * np.sin(2 * np.pi / 2 * t + 0.01),
-    0.0,# + 0.0 * np.cos(2 * np.pi / 2 * t + 0.04),
-    0.0,# + 0.0 * np.sin(2 * np.pi / 2 * t + 0.01),
-    0.0,# + 0.0 * np.cos(2 * np.pi / 2 * t + 0.05),
+    0.0,#0.04 + 0.05 * np.sin(2 * np.pi / 0.3 * t),
+    0.0,#0.1 + 0.05 * np.cos(2 * np.pi / 0.5 * t + 0.03),
+    0.0,#-0.1 + 0.2 * np.sin(2 * np.pi / 2 * t + 0.01),
+    0.0,#0.1 + 0.1 * np.cos(2 * np.pi / 1 * t + 0.04),
+    0.0,#0.05 + 0.12 * np.sin(2 * np.pi / 0.2 * t + 0.01),
+    0.0,#0.0 + 0.2 * np.cos(2 * np.pi / 1.6 * t + 0.05),
 ], dtype = float)#.reshape((6,1))
 
 # Time setup
@@ -51,7 +51,7 @@ tt = np.arange(0, sim_T, dt)
 T_steps = len(tt)
 
 # Compute upper bound of Delta
-Delta_max = np.max([np.linalg.norm(Delta(t)) for t in np.arange(0.0, sim_T, 0.01)])
+Delta_max = np.max([np.linalg.norm(Delta(t), 2) for t in np.arange(0.0, sim_T, 0.01)])
 
 # System parameters
 params = {
@@ -66,10 +66,10 @@ params = {
 params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
 params["cp_quantile"] = Delta_max * 0.8 if USE_CP else 0.0
-params["Gamma_ccm"] = np.eye(4) * 2 # adaptive gain matrix for CRaCCM
-params["a_true"] = np.array([[0.12], [0.05], [-0.1], [0.0]]) * 0.0 # true a
+params["Gamma_ccm"] = np.diag(np.array([1, 1, 1, 1])) # adaptive gain matrix for CRaCCM
+params["a_true"] = np.array([[0.2], [0.01], [-0.2], [0.01]]) # true parameters
 params["a_hat_norm_max"] = np.linalg.norm(np.array([[0.4], [0.1], [0.4], [0.1]]), 2) # max norm of a_hat
-params["a_0"] = np.array([[0.0], [0.0], [0.0], [0.0]]) # initial guess for a_hat
+params["a_0"] = np.array([[-0.1], [0.02], [0.05], [0.02]]) # initial guess for a_hat
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 
 params["eta_ccm"] = 5
@@ -113,7 +113,7 @@ pq.calc_geodesic(geodesic_solver, x, x_d_fcn(0))
 for i in range(T_steps):
     t = tt[i]
     print("Time: ", t)
-    
+
     # Store current state
     x_hist[:, i] = x
 
@@ -131,20 +131,21 @@ for i in range(T_steps):
 
     # Store previous Erem (for debugging)
     Erem_prev = pq.Erem
-    
+
     # Compute geodesic
     pq.calc_geodesic(geodesic_solver, x, x_d)
-    
+
     # Implement ccm control law
     uc, slack = pq.ctrl_cra_ccm(x, x_d, u_d)
-    
+
     u_hist[:, i] = uc.ravel()
     slack_hist[i] = slack
     Erem_hist[i] = pq.Erem
 
     # Lyapunov function (for debugging)
     V1 = pq.nu_ccm() * (pq.Erem + pq.eta_ccm)
-    V2 = (pq.a_hat_ccm - pq.a_true).T @ pq.Gamma_ccm @ (pq.a_hat_ccm - pq.a_true)
+    a_tilde = pq.a_hat_ccm - pq.a_true
+    V2 = a_tilde.T @ pq.Gamma_ccm @ a_tilde
     V1_hist[i] = V1.item()
     V2_hist[i] = V2.item()
 
@@ -152,7 +153,7 @@ for i in range(T_steps):
     a_hat_dot = pq.a_hat_dot if USE_ADAPTIVE else np.zeros((pq.adim,1))
     rho_dot = pq.rho_dot if USE_ADAPTIVE else 0.0
     dErem_dai = pq.dErem_dai if USE_ADAPTIVE else np.zeros(pq.adim)
-    U1_hist[i] = ( 2 * (pq.a_hat_ccm - pq.a_true).T @ (-pq.nu_ccm() * pq.Y(x).T @ pq.gamma_s1_M_x.T + pq.Gamma_ccm @ a_hat_dot) ).item()
+    U1_hist[i] = ( 2 * a_tilde.T @ (-pq.nu_ccm() * pq.Y(x).T @ pq.gamma_s1_M_x.T + pq.Gamma_ccm @ a_hat_dot) ).item()
     U2_hist[i] = ( pq.nu_ccm() * (2 * pq.gamma_s0_M_d @ pq.Y(x_d) @ pq.a_hat_ccm +  dErem_dai @ a_hat_dot) + pq.dnu_drho_ccm() * rho_dot * (pq.Erem + pq.eta_ccm) ).item()
 
     # Edot error (for debugging)
@@ -267,7 +268,7 @@ axs[0].set_ylabel('||x-x_d||_2')
 axs[0].grid(True)
 # Erem
 axs[1].plot(tt, Erem_hist)
-axs[1].set_ylabel('Riemann Energy:Erem(t)')
+axs[1].set_ylabel('Riemann Energy: Erem(t)')
 axs[1].grid(True)
 # Lyapunov
 axs[2].plot(tt, V1_hist, label='V1 = nu(rho)(E+eta)')

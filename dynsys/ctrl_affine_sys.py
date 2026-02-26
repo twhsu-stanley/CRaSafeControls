@@ -462,9 +462,10 @@ class CtrlAffineSys:
             Y_d_a = 0.0
 
         if self.use_cp:
-            Theta = np.linalg.cholesky(self.M_x)
-            sigma_max = np.max(np.linalg.svd(Theta, compute_uv=False))  # maximum singular value
-            tightening = sigma_max * self.cp_quantile * np.sqrt(self.Erem)
+            #Theta = np.linalg.cholesky(self.M_x)
+            #sigma_max = np.max(np.linalg.svd(Theta, compute_uv=False))  # maximum singular value
+            #tightening = sigma_max * self.cp_quantile * np.sqrt(self.Erem)
+            tightening = np.linalg.norm(self.gamma_s1_M_x, 2) * self.cp_quantile
         else:
             tightening = 0.0
         
