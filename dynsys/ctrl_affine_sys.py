@@ -28,6 +28,8 @@ class CtrlAffineSys:
         assert(g_sym.shape[0] == x_sym.shape[0])
         assert(Y_sym.shape[1] == a_sym.shape[0])
 
+        self.weight_slack = self.params["ccm"]["weight_slack"] if "weight_slack" in self.params["ccm"] else 100
+
         # Uncertainty parameters
         self.a_true = np.copy(self.params["a_true"]) if "a_true" in self.params else np.zeros((self.adim,1))
         self.a_hat_b = np.copy(self.params["a_0"])  if "a_0" in self.params else np.zeros((self.adim,1)) # Initial guess for a_hat_b
@@ -447,13 +449,10 @@ class CtrlAffineSys:
     
     # CCMs
     def ctrl_cra_ccm(self, x, x_d, u_d):
-        # x_d: Start point
-        # x: End point
-    
-        # Formulate it as a min-norm CLF QP problem
-
-        # TODO: avoid reshaping to make it faster
-        u_d = u_d.reshape(-1, 1)
+        """CRaCCM control law"""
+        # x: current state
+        # x_d: desired state
+        # u_d: nominal control input; u_d.shape = (self.udim, 1)
         
         if self.use_adaptive: 
             Y_x_a = self.Y(x) @ self.a_hat_ccm
@@ -474,9 +473,7 @@ class CtrlAffineSys:
             - self.gamma_s0_M_d @ (self.f(x_d) + self.g(x_d) @ u_d + Y_d_a)
             + self.params["ccm"]["rate"] * self.Erem).item()
 
-        weight_slack = self.params["ccm"]["weight_slack"] if "weight_slack" in self.params["ccm"] else 100
-
-        denom = (1 + weight_slack * A @ A.T).item()
+        denom = (1 + self.weight_slack * A @ A.T).item()
         #tightening = (tightening * denom + B)/(denom-1)
 
         # Analytic solution
@@ -485,8 +482,7 @@ class CtrlAffineSys:
                 u = 0.0
                 slack = 0.0
             else:
-                #denom = (1 + weight_slack * A @ A.T).item()
-                u = (-weight_slack * (B + tightening) * A.T) / denom
+                u = (-self.weight_slack * (B + tightening) * A.T) / denom
                 slack = (B + tightening) / denom
         else:
             if B + tightening <= 0:
@@ -502,7 +498,7 @@ class CtrlAffineSys:
         if self.use_adaptive:
             self.adaptation_cra_ccm(x, x_d)
 
-        return uc, slack #.item()
+        return uc, slack
 
     # Solve for geodesics for CCM-based controllers
     def calc_geodesic(self, solver, x, x_d):
@@ -568,11 +564,9 @@ class CtrlAffineSys:
                                             self.a_hat_norm_max, self.epsilon)
         #a_hat_dot = self.nu_ccm() * np.linalg.inv(self.Gamma_ccm) @ self.Y(x).T @ self.gamma_s1_M_x.T
         
-        uu = self.nu_ccm() * (2*self.gamma_s0_M_d @ self.Y(x_d) @ self.a_hat_ccm + self.dErem_dai @ a_hat_dot)
-        if uu > 0:
-            rho_dot = (-uu / (self.dnu_drho_ccm() * (self.Erem + self.eta_ccm))).item()
-        else:
-            rho_dot = 0.0
+        uu = self.nu_ccm() * (2 * self.gamma_s0_M_d @ self.Y(x_d) @ self.a_hat_ccm + self.dErem_dai @ a_hat_dot)
+        rho_dot = (-uu / (self.dnu_drho_ccm() * (self.Erem + self.eta_ccm))).item()
+        #TODO: only activate rho_dot when uu > 0?
         
         # Temp logging
         self.a_hat_dot = a_hat_dot
@@ -596,9 +590,12 @@ class CtrlAffineSys:
         pass
     
     def nu_ccm(self):
-        #return np.exp(self.rho_ccm/5) + 2.0
-        return np.arctan(self.rho_ccm/10) + np.pi/2 + 0.5
+        nu = 0.9 * np.exp(self.rho_ccm) + 0.1 # must be bounded away from zero
+        #nu = np.arctan(self.rho_ccm)/np.pi + 1.0
+        return nu
     
     def dnu_drho_ccm(self):
-        #return np.exp(self.rho_ccm/5)/5
-        return 1/(1+(self.rho_ccm/10)**2) * 1/10
+        dnu_drho = 0.9 * np.exp(self.rho_ccm)
+        #dnu_drho = 1/(1+(self.rho_ccm)**2)/np.pi
+        return max(dnu_drho, 1e-10)
+        

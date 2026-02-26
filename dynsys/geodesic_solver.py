@@ -238,7 +238,7 @@ class GeodesicSolver:
         res = minimize(fun=costf, x0=c0, method='trust-constr',
                        jac=grad, bounds=bounds,
                        constraints=[linear_constraint],
-                       options={'maxiter': 200, 'gtol': 5e-3, 'xtol': 1e-3, 'verbose': 0})
+                       options={'maxiter': 200, 'gtol': 4e-3, 'xtol': 1e-3, 'verbose': 0})
                        #options={'maxiter': 500, 'gtol': 1e-4, 'xtol': 1e-8, 'verbose': 0})
 
         # c_opt: optimized coefficients; reshape into a (n x (D+1)) matrix
