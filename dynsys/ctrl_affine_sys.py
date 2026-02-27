@@ -1,6 +1,7 @@
 import numpy as np
 import sympy as sp
 import cvxpy
+from qpsolvers import solve_qp
 from dynsys.geodesic_solver import GeodesicSolver
 from dynsys.utils import *
 
@@ -73,6 +74,9 @@ class CtrlAffineSys:
 
     def dynamics(self, x, u):
         return (self.f(x) + self.g(x) @ u + self.Y(x) @ self.a_true).ravel()
+    
+    def dynamics_nominal(self, x, u):
+        return (self.f(x) + self.g(x) @ u).ravel()
 
     def ctrl_nominal(self, x):
         raise NotImplementedError("Nominal control not implemented.")
@@ -448,7 +452,7 @@ class CtrlAffineSys:
         return u_val, h, feas
     
     # CCMs
-    def ctrl_cra_ccm(self, x, x_d, u_d):
+    def ctrl_cra_ccm(self, x, x_d, u_d, use_qpsolvers = False):
         """CRaCCM control law"""
         # x: current state
         # x_d: desired state
@@ -474,26 +478,49 @@ class CtrlAffineSys:
             - self.gamma_s0_M_d @ (self.f(x_d) + self.g(x_d) @ u_d + Y_d_a)
             + self.params["ccm"]["rate"] * self.Erem).item()
 
-        denom = (1 + self.weight_slack * A @ A.T).item()
-        #tightening = (tightening * denom + B)/(denom-1)
-
-        # Analytic solution
-        if np.linalg.norm(A, 2) >= 1e-4:
-            if B + tightening <= 0:
-                u = 0.0
-                slack = 0.0
-            else:
-                u = (-self.weight_slack * (B + tightening) * A.T) / denom
-                slack = (B + tightening) / denom
+        if use_qpsolvers is True: 
+            # with slacks
+            P = np.block([[np.eye(self.udim),        np.zeros((self.udim, 1))],
+                          [np.zeros((1, self.udim)), np.array([[self.weight_slack]])],
+            ])
+            q = np.zeros(self.udim + 1)
+            G = np.vstack([np.hstack([A, np.array([[-1.0]])]),
+                           np.hstack([np.zeros((1, self.udim)), np.array([[-1.0]])]),
+            ])
+            h = np.array([-(B + tightening), 0.0])
+            qp_sol = solve_qp(P, q, G, h, solver = 'quadprog')
+            u_qp = qp_sol[0:2].reshape(-1,1)
+            slack = qp_sol[-1]
+            
+            # no slack
+            """
+            P = np.eye(self.udim)
+            q = np.zeros(self.udim)
+            G = A
+            h = np.array([-(B + tightening)])
+            u_qp = solve_qp(P, q, G, h, solver = 'quadprog')
+            slack = 0.0
+            """
         else:
-            if B + tightening <= 0:
-                u = 0.0
-                slack = 0.0
+            # Analytic solution
+            denom = (1 + self.weight_slack * A @ A.T).item()
+            #tightening = (tightening * denom + B)/(denom-1)
+            if np.linalg.norm(A, 2) > 1e-4:
+                if B + tightening <= 0:
+                    u_qp = 0.0
+                    slack = 0.0
+                else:
+                    u_qp = (-self.weight_slack * (B + tightening) * A.T) / denom
+                    slack = (B + tightening) / denom
             else:
-                u = 0.0
-                slack = B + tightening
+                if B + tightening <= 0:
+                    u_qp = 0.0
+                    slack = 0.0
+                else:
+                    u_qp = 0.0
+                    slack = B + tightening
 
-        uc = u_d + u
+        uc = u_d + u_qp
 
         # Update adaptive parameter
         if self.use_adaptive:

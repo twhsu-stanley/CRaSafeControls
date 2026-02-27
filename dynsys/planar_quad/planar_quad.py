@@ -35,16 +35,16 @@ class PLANAR_QUAD(CtrlAffineSys):
         ])
 
         # Define the symbolic uncertainty term Y(x)
-        Y = sp.Matrix([[0], 
-                       [0],
-                       [0],
-                       [0],
-                       [0],
-                       [0]])
+        Y = sp.Matrix([[0, 0, 0, 0], 
+                       [0, 0, 0, 0],
+                       [0, 0, 0, 0],
+                       [0, 0, 0, 0],
+                       [0, 0, 0, 0],
+                       [0, 0, 0, 0]])
         
         # Define symbolic uncertainty parameters
-        a0 = sp.symbols('a0')
-        a = sp.Matrix([a0])
+        a0, a1, a2, a3 = sp.symbols('a0 a1 a2 a3')
+        a = sp.Matrix([a0, a1, a2, a3])
 
         return x, f, g, Y, a
 
