@@ -1,6 +1,6 @@
 import numpy as np
 import sympy as sp
-import cvxpy
+#import cvxpy
 from qpsolvers import solve_qp
 from dynsys.geodesic_solver import GeodesicSolver
 from dynsys.utils import *
@@ -529,7 +529,7 @@ class CtrlAffineSys:
         return uc, slack
 
     # Solve for geodesics for CCM-based controllers
-    def calc_geodesic(self, solver, x, x_d):
+    def calc_geodesic(self, solver, x, x_d, verify_geodesic = False):
         
         # Initialize optimization variables and constraints internally
         c0, beq = solver.initialize_conditions(x_d, x)
@@ -562,7 +562,21 @@ class CtrlAffineSys:
                     dM_dai = -M @ dW_dai @ M # TODO: check correctness
                     dErem_dai[i] += (gsk.T @ dM_dai @ gsk) * solver.w_cheby[k]
             self.dErem_dai = dErem_dai
-    
+        
+        # Verify whether the curve found is really a geodesic
+        if verify_geodesic and self.Erem > 0:
+            error = 0
+            for k in range(solver.N + 1):
+                gk = gamma[:, k]
+                gsk = gamma_s[:, k]
+                M = np.linalg.inv(solver.W_fcn(gk,self.a_hat_ccm))
+                error += ((gsk.T @ M @ gsk - self.Erem)**2) * solver.w_cheby[k]
+            error = np.sqrt(error)/self.Erem
+            if error > 1e-5:
+                print(f"geodesic error={error} exceeds threshold = 1e-5")
+                if error > 1e-2:
+                    raise ValueError(f"geodesic error={error} exceeds threshold = 1e-2")
+
     # Adaptation laws
     def adaptation_cra_clf(self, x, dt):
         """CRaCLF adaptation law"""

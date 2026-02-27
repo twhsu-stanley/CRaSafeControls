@@ -11,7 +11,10 @@ from scipy.io import loadmat
 from scipy.interpolate import interp1d
 
 USE_CP = 0 # 1 or 0: whether to use conformal prediction
-USE_ADAPTIVE = 1 # 1 or 0: whether to use adaptive control
+USE_ADAPTIVE = 0 # 1 or 0: whether to use adaptive control
+
+VERIFY_GEODESIC = True
+USE_QPSOLVERS = True
 
 weight_slack = 5.0 if USE_CP else 1000.0
 
@@ -36,8 +39,8 @@ params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
 #params["cp_quantile"] = Delta_max * 0.8 if USE_CP else 0.0
 params["Gamma_ccm"] = np.diag(np.array([2, 2, 2, 2])) # adaptive gain matrix for CRaCCM
-params["a_true"] = np.array([[-0.0], [0.1], [-0.0], [0.0]]) # true parameters
-params["a_hat_norm_max"] = np.linalg.norm(np.array([[0.0], [0.15], [0.0], [0.0]]), 2) # max norm of a_hat
+params["a_true"] = np.array([[-0.0], [0.18], [-0.0], [0.0]]) # true parameters
+params["a_hat_norm_max"] = np.linalg.norm(np.array([[0.0], [0.2], [0.0], [0.0]]), 2) # max norm of a_hat
 params["a_0"] = np.array([[0.0], [0.0], [0.0], [0.0]]) # initial guess for a_hat
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 params["eta_ccm"] = 5
@@ -161,7 +164,7 @@ x_d_hist = np.zeros((pq.xdim, T_steps))
 u_d_hist = np.zeros((pq.udim, T_steps))
 
 # Initial state
-x = x_d_fcn(0).copy() + np.array([-0.0, 0.0, 0.00, 0, 0, 0])  # initial condition perturbation
+x = x_d_fcn(0).copy() + np.array([-0.2, 0.5, 0.00, 0, 0, 0])  # initial condition perturbation
 
 # Initialize geodesic solver
 N = pq.params["geodesic"]["N"]
@@ -190,10 +193,10 @@ for i in range(T_steps):
     rho_ccm_hist[i] = pq.rho_ccm
 
     # Compute geodesic
-    pq.calc_geodesic(geodesic_solver, x, x_d)
+    pq.calc_geodesic(geodesic_solver, x, x_d, verify_geodesic = VERIFY_GEODESIC)
 
     # Implement ccm control law
-    uc, slack = pq.ctrl_cra_ccm(x, x_d, u_d, use_qpsolvers = False)
+    uc, slack = pq.ctrl_cra_ccm(x, x_d, u_d, use_qpsolvers = USE_QPSOLVERS)
 
     u_hist[:, i] = uc.ravel()
     slack_hist[i] = slack

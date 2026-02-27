@@ -139,34 +139,35 @@ class GeodesicSolver:
         c_matrix = np.reshape(c, (self.D + 1, self.n), order='F').T
 
         # Check cache to avoid recomputation if c has not changed significantly.
-        if self._c_pre is None or np.linalg.norm(c_matrix - self._c_pre) > 1e-5:
-            gamma = c_matrix.dot(self.T)  # shape: (n, N+1)
-            gamma_s = c_matrix.dot(self.Tdot)  # shape: (n, N+1)
-            g = np.zeros((1, (self.D + 1) * self.n))
-            # Loop through each spectral node.
-            for k in range(self.N + 1):
-                gamma_k = gamma[:, k]
-                gamma_s_k = gamma_s[:, k]
-                W_eval = self.W_fcn(gamma_k, a_hat_ccm)
-                M_x_gamma_sk = np.linalg.solve(W_eval, gamma_s_k)
-                for i in range(self.n):
-                    dW_dxi = self.dW_dxi_fcn(i, gamma_k, a_hat_ccm)
-                    # Prepare the contribution matrix.
-                    temp = np.zeros((self.n, self.D + 1))
-                    temp[i, :] = self.Tdot[:self.D + 1, k]
-                    T_k = self.T[:self.D + 1, k]
-                    # Compute the term as in the MATLAB code.
-                    term = 2 * temp - np.outer(np.dot(dW_dxi, M_x_gamma_sk), T_k)
-                    contribution = np.dot(M_x_gamma_sk, term) * self.w_cheby[k]
-                    # Add contribution to the appropriate block of the gradient.
-                    start = i * (self.D + 1)
-                    end = (i + 1) * (self.D + 1)
-                    g[0, start:end] += contribution
-            # Cache the computed coefficient matrix and gradient.
-            self._c_pre = c_matrix.copy()
-            self._g_pre = g.copy()
-        else:
-            g = self._g_pre
+        # NOTE: using cache might cause problems in Hessian computation during optimization
+        #if self._c_pre is None or np.linalg.norm(c_matrix - self._c_pre) > 1e-5: 
+        gamma = c_matrix.dot(self.T)  # shape: (n, N+1)
+        gamma_s = c_matrix.dot(self.Tdot)  # shape: (n, N+1)
+        g = np.zeros((1, (self.D + 1) * self.n))
+        # Loop through each spectral node.
+        for k in range(self.N + 1):
+            gamma_k = gamma[:, k]
+            gamma_s_k = gamma_s[:, k]
+            W_eval = self.W_fcn(gamma_k, a_hat_ccm)
+            M_x_gamma_sk = np.linalg.solve(W_eval, gamma_s_k)
+            for i in range(self.n):
+                dW_dxi = self.dW_dxi_fcn(i, gamma_k, a_hat_ccm)
+                # Prepare the contribution matrix.
+                temp = np.zeros((self.n, self.D + 1))
+                temp[i, :] = self.Tdot[:self.D + 1, k]
+                T_k = self.T[:self.D + 1, k]
+                # Compute the term as in the MATLAB code.
+                term = 2 * temp - np.outer(np.dot(dW_dxi, M_x_gamma_sk), T_k)
+                contribution = np.dot(M_x_gamma_sk, term) * self.w_cheby[k]
+                # Add contribution to the appropriate block of the gradient.
+                start = i * (self.D + 1)
+                end = (i + 1) * (self.D + 1)
+                g[0, start:end] += contribution
+        # Cache the computed coefficient matrix and gradient.
+        #self._c_pre = c_matrix.copy()
+        #self._g_pre = g.copy()
+        #else:
+        #    g = self._g_pre
 
         return g.reshape(-1)
 
@@ -219,7 +220,7 @@ class GeodesicSolver:
         # Set variable bounds (example values as in the MATLAB code).
         lb_matrix = -20 * np.ones((self.n, self.D + 1))
         ub_matrix = 20 * np.ones((self.n, self.D + 1))
-        # For example, fix states 3 and 4 (indices 2 and 3) to be in [-5, 5].
+        # For the planarquad example, fix states 3 and 4 (indices 2 and 3) to be in [-5, 5].
         if self.n >= 4:
             lb_matrix[2:4, :] = -5
             ub_matrix[2:4, :] = 5
@@ -238,7 +239,7 @@ class GeodesicSolver:
         res = minimize(fun=costf, x0=c0, method='trust-constr',
                        jac=grad, bounds=bounds,
                        constraints=[linear_constraint],
-                       options={'maxiter': 200, 'gtol': 4e-3, 'xtol': 1e-3, 'verbose': 0})
+                       options={'maxiter': 500, 'gtol': 1e-4, 'xtol': 1e-8, 'verbose': 0})
                        #options={'maxiter': 500, 'gtol': 1e-4, 'xtol': 1e-8, 'verbose': 0})
 
         # c_opt: optimized coefficients; reshape into a (n x (D+1)) matrix
