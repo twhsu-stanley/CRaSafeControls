@@ -489,7 +489,7 @@ class CtrlAffineSys:
             ])
             h = np.array([-(B + tightening), 0.0])
             qp_sol = solve_qp(P, q, G, h, solver = 'quadprog')
-            u_qp = qp_sol[0:2].reshape(-1,1)
+            u_qp = qp_sol[0:self.udim].reshape(-1,1)
             slack = qp_sol[-1]
             
             # no slack
