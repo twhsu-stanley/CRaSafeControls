@@ -1,1 +1,1 @@
-## Conformally Robust Adaptive Safe Control (working in progress...)
+## Conformally Robust Adaptive Safe Control (work in progress...)
