@@ -9,17 +9,17 @@ from dynsys.geodesic_solver import GeodesicSolver
 from scipy.interpolate import interp1d
 
 USE_CP = 0 # 1 or 0: whether to use conformal prediction
-USE_ADAPTIVE = 0 # 1 or 0: whether to use adaptive control
+USE_ADAPTIVE = 1 # 1 or 0: whether to use adaptive control
 
 VERIFY_GEODESIC = False
 USE_QPSOLVERS = True
 
-weight_slack = 5.0 if USE_CP else 1000.0
+weight_slack = 1000.0
 
 # Time setup
 dt = 0.01
 #sim_T = np.floor(t_d_data[-1]) # Simulation time
-sim_T = 5.0 # Simulation time
+sim_T = 12.0 # Simulation time
 tt = np.arange(0, sim_T, dt)
 T_steps = len(tt)
 
@@ -34,7 +34,7 @@ params["use_cp"] = USE_CP
 params["Gamma_ccm"] = np.diag(np.array([0.5, 0.5, 0.5])) # adaptive gain matrix for CRaCCM
 params["a_true"] = np.array([[-1.0], [-0.5], [-1.5]]) * 1 # true parameters [theta1, theta2, theta3]
 params["a_hat_norm_max"] = np.linalg.norm(np.array([[1.0], [0.5], [1.5]]), 2) # max norm of a_hat
-params["a_0"] = np.array([[1.0], [0.0], [-0.5]]) * 0.0# initial guess for a_hat
+params["a_0"] = np.array([[0.0], [0.0], [0.0]]) # initial guess for a_hat
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 params["eta_ccm"] = 5.0
 params["rho_ccm"] = 0.0
@@ -43,20 +43,21 @@ params["rho_ccm"] = 0.0
 toy = NONLINEAR_TOY(params)
 
 # Compute x_d using the nominal dynamics with u_d to make sure the trajectory follows the nominal dynamics
-def u_d_fcn(t):
-    # Simple reference control: sinusoidal input to x3 equation
-
-    u_d = np.array([[0.1 * np.sin(2 * np.pi / 2.0 * t)]])  # 2-second period
-
+def u_d_fcn(t, x):
+    # Simple reference control
+    #u_d = np.array([[0.02 * np.sin(2 * np.pi / 2.0 * t)]])
+    u_d = (-np.array([0.3162, 0.5396, 0.8558]) @ x).reshape(-1,1) # some LQR gain
     return u_d
 
 x_d_data = np.zeros((toy.xdim, T_steps))
-x_d = np.array([0.0, 0.0, 0.0]) # initial state [x1, x2, x3]
+u_d_data = np.zeros((toy.udim, T_steps))
+x_d = np.array([1.0, -1.8, -1.2]) # initial state [x1, x2, x3]
 for i in range(T_steps):
     t = tt[i]
     print("Time: ", t)
-    u_d = u_d_fcn(t)
-    x_d_data[:, i] = x_d
+    u_d = u_d_fcn(t, x_d)
+    u_d_data[:,i] = u_d
+    x_d_data[:,i] = x_d
     # Propagate with zero-order hold on control
     if i < T_steps - 1:
         t_span = (tt[i], tt[i + 1])
@@ -70,11 +71,14 @@ for i in range(T_steps):
             t_eval=[tt[i + 1]],
         )
         x_d = sol.y[:, -1]
-interp_x = interp1d(
+interp_x_d = interp1d(
     tt, x_d_data, kind='linear', axis=1,
     bounds_error=False, fill_value='extrapolate'
 )
-x_d_fcn = lambda t: interp_x(t)
+interp_u_d = interp1d(
+    tt, u_d_data, kind='linear', axis=1,
+    bounds_error=False, fill_value='extrapolate'
+)
 
 fig, axs = plt.subplots(3, 1)
 axs = axs.flatten()
@@ -93,14 +97,14 @@ plt.show()
 
 # Disturbance (non-parametric uncertainty)
 Delta = lambda t: np.array([
-    0.0,
-    0.0,
-    0.0,
+    0.5 * np.sin(2 * np.pi / 4 * t + 0.3),
+    -0.85 * np.sin(2 * np.pi / 2 * t + 0.1),
+    0.85 * np.sin(2 * np.pi / 5 * t + 0.2),
 ], dtype=float)
 
 # Compute upper bound of Delta
 Delta_max = np.max([np.linalg.norm(Delta(t), 2) for t in np.arange(0.0, sim_T, 0.01)])
-toy.cp_quantile = Delta_max * 0.8
+toy.cp_quantile = Delta_max * 0.9
 
 # Time hisotry of logged data
 x_hist = np.zeros((toy.xdim, T_steps))
@@ -116,11 +120,9 @@ a_hat_ccm_hist = np.zeros((toy.adim, T_steps))
 a_true_hist = np.zeros((toy.adim, T_steps))
 nu_ccm_hist = np.zeros((T_steps,))
 rho_ccm_hist = np.zeros((T_steps,))
-x_d_hist = np.zeros((toy.xdim, T_steps))
-u_d_hist = np.zeros((toy.udim, T_steps))
 
 # Initial state
-x = x_d_fcn(0).copy() + np.array([0.7, 0.5, -0.1])  # initial condition perturbation
+x = interp_x_d(0).copy() #+ np.array([0.7, 0.5, -0.1])  # initial condition perturbation
 
 # Initialize geodesic solver
 N = toy.params["geodesic"]["N"]
@@ -137,10 +139,8 @@ for i in range(T_steps):
     x_hist[:, i] = x
 
     # Nominal trajectory
-    x_d = x_d_data[:,i]#x_d_fcn(t)
-    u_d = u_d_fcn(t)
-    x_d_hist[:, i] = x_d
-    u_d_hist[:, i] = u_d.ravel()
+    x_d = interp_x_d(t) # x_d_data[:,i]
+    u_d = interp_u_d(t).reshape(-1,1) #u_d_data[:,i].reshape(-1,1)
 
     # Store adaptation parameters
     a_hat_ccm_hist[:, i] = toy.a_hat_ccm.ravel()
@@ -198,16 +198,16 @@ for i in range(T_steps):
 # x vs. x_d
 fig, axs = plt.subplots(3, 1)
 axs = axs.flatten()
-axs[0].plot(tt, x_d_hist[0, :], '--', label='Nominal')
+axs[0].plot(tt, x_d_data[0, :], '--', label='Nominal')
 axs[0].plot(tt, x_hist[0, :], '-', label='CCM')
 axs[0].set_ylabel('x1'); 
 axs[0].legend()
 axs[0].grid(True)
-axs[1].plot(tt, x_d_hist[1, :], '--')
+axs[1].plot(tt, x_d_data[1, :], '--')
 axs[1].plot(tt, x_hist[1, :], '-')
 axs[1].set_ylabel('x2')
 axs[1].grid(True)
-axs[2].plot(tt, x_d_hist[2, :], '--')
+axs[2].plot(tt, x_d_data[2, :], '--')
 axs[2].plot(tt, x_hist[2, :], '-') 
 axs[2].set_ylabel('x3')
 axs[2].set_xlabel('Time (s)')
@@ -218,7 +218,7 @@ plt.suptitle('State: Actual vs. Nominal')
 fig, axs = plt.subplots(2, 1)
 axs = axs.flatten()
 axs[0].plot(tt, u_hist[0, :], 'r-', label='u: CCM')
-axs[0].plot(tt, u_d_hist[0, :], 'k--', label='u_d')
+axs[0].plot(tt, u_d_data[0, :], 'k--', label='u_d')
 axs[0].set_ylabel('Control u')
 axs[0].legend()
 axs[0].grid(True)
@@ -268,7 +268,7 @@ axs[1].grid(True)
 # Tracking error norm
 fig, axs = plt.subplots(3, 1)
 axs = axs.flatten()
-err_norm = np.linalg.norm(x_d_hist - x_hist, ord=2, axis=0)  # column-wise 2-norm
+err_norm = np.linalg.norm(x_d_data - x_hist, ord=2, axis=0)  # column-wise 2-norm
 axs[0].plot(tt, err_norm)
 axs[0].set_ylabel('||x-x_d||_2')
 axs[0].grid(True)

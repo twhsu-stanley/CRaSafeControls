@@ -4,7 +4,6 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 from scipy.integrate import solve_ivp
-from dynsys.planar_quad.planar_quad_uncertain import PLANAR_QUAD_UNCERTAIN
 from dynsys.planar_quad.planar_quad import PLANAR_QUAD
 from dynsys.geodesic_solver import GeodesicSolver
 from scipy.io import loadmat
@@ -47,8 +46,7 @@ params["eta_ccm"] = 5
 params["rho_ccm"] = 0.0
 
 # Construct the system
-pq = PLANAR_QUAD_UNCERTAIN(params)
-#pq = PLANAR_QUAD(params)
+pq = PLANAR_QUAD(params)
 
 # Load the desired trajectory from MATLAB code
 # WARNING: This (x_d, u_d) above from MATLAB does NOT follow the nominal dynamics and thus should NOT be used at all
