@@ -9,8 +9,8 @@ from dynsys.geodesic_solver import GeodesicSolver
 from scipy.io import loadmat
 from scipy.interpolate import interp1d
 
-USE_CP = 0 # 1 or 0: whether to use conformal prediction
-USE_ADAPTIVE = 0 # 1 or 0: whether to use adaptive control
+USE_CP = False # whether to use conformal prediction
+USE_ADAPTIVE = False # whether to use adaptive control
 
 VERIFY_GEODESIC = True
 USE_QPSOLVERS = True
@@ -162,7 +162,7 @@ x_d_hist = np.zeros((pq.xdim, T_steps))
 u_d_hist = np.zeros((pq.udim, T_steps))
 
 # Initial state
-x = x_d_fcn(0).copy() + np.array([-0.2, 0.5, 0.00, 0, 0, 0])  # initial condition perturbation
+x = x_d_fcn(0).copy() #+ np.array([-0.2, 0.5, 0.0, 0, 0, 0])  # initial condition + perturbation
 
 # Initialize geodesic solver
 N = pq.params["geodesic"]["N"]

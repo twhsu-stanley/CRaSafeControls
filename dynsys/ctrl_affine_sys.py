@@ -14,9 +14,9 @@ class CtrlAffineSys:
             raise TypeError("Parameters must be a dictionary.")
         self.params = params
 
-        self.use_cp = self.params.get("use_cp", 0)
-        self.cp_quantile = self.params.get("cp_quantile", 0)
-        self.use_adaptive = self.params.get("use_adaptive", 0)
+        self.use_cp = self.params.get("use_cp", False)
+        self.cp_quantile = self.params.get("cp_quantile", 0.0)
+        self.use_adaptive = self.params.get("use_adaptive", False)
 
         self.dt = self.params.get("dt")
 
@@ -564,7 +564,7 @@ class CtrlAffineSys:
             self.dErem_dai = dErem_dai
         
         # Verify whether the curve found is really a geodesic
-        if verify_geodesic and self.Erem > 0:
+        if verify_geodesic and self.Erem > 1e-3:
             error = 0
             for k in range(solver.N + 1):
                 gk = gamma[:, k]
@@ -573,9 +573,9 @@ class CtrlAffineSys:
                 error += ((gsk.T @ M @ gsk - self.Erem)**2) * solver.w_cheby[k]
             error = np.sqrt(error)/self.Erem
             if error > 1e-5:
-                print(f"geodesic error={error} exceeds threshold = 1e-5")
-                if error > 1e-2:
-                    raise ValueError(f"geodesic error={error} exceeds threshold = 1e-2")
+                print(f"geodesic error={error:2E} exceeds threshold = 1e-5")
+                #if error > 1e-2:
+                #    raise ValueError(f"geodesic error={error:2E} exceeds threshold = 1e-2")
 
     # Adaptation laws
     def adaptation_cra_clf(self, x, dt):

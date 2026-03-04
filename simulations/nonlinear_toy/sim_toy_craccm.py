@@ -8,8 +8,8 @@ from dynsys.nonlinear_toy.nonlinear_toy import NONLINEAR_TOY
 from dynsys.geodesic_solver import GeodesicSolver
 from scipy.interpolate import interp1d
 
-USE_CP = 0 # 1 or 0: whether to use conformal prediction
-USE_ADAPTIVE = 1 # 1 or 0: whether to use adaptive control
+USE_CP = False # whether to use conformal prediction
+USE_ADAPTIVE = False # whether to use adaptive control
 
 VERIFY_GEODESIC = False
 USE_QPSOLVERS = True
@@ -18,21 +18,20 @@ weight_slack = 1000.0
 
 # Time setup
 dt = 0.01
-#sim_T = np.floor(t_d_data[-1]) # Simulation time
-sim_T = 12.0 # Simulation time
+sim_T = 15.0 # Simulation time
 tt = np.arange(0, sim_T, dt)
 T_steps = len(tt)
 
 # System parameters
 params = {
     "ccm": {"rate": 0.8, "weight_slack": weight_slack},
-    "geodesic": {"N": 8, "D": 2},
+    "geodesic": {"N": 8, "D": 2}, # N = D + a
     "dt": dt,
 }
 params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
 params["Gamma_ccm"] = np.diag(np.array([0.5, 0.5, 0.5])) # adaptive gain matrix for CRaCCM
-params["a_true"] = np.array([[-1.0], [-0.5], [-1.5]]) * 1 # true parameters [theta1, theta2, theta3]
+params["a_true"] = np.array([[-1.0], [-0.5], [-1.5]]) # true parameters [theta1, theta2, theta3]
 params["a_hat_norm_max"] = np.linalg.norm(np.array([[1.0], [0.5], [1.5]]), 2) # max norm of a_hat
 params["a_0"] = np.array([[0.0], [0.0], [0.0]]) # initial guess for a_hat
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
@@ -97,14 +96,14 @@ plt.show()
 
 # Disturbance (non-parametric uncertainty)
 Delta = lambda t: np.array([
-    0.5 * np.sin(2 * np.pi / 4 * t + 0.3),
-    -0.85 * np.sin(2 * np.pi / 2 * t + 0.1),
-    0.85 * np.sin(2 * np.pi / 5 * t + 0.2),
-], dtype=float)
+    0.1 + 0.15 * np.sin(2 * np.pi / 4 * t + 0.3),
+    0.12 - 0.25 * np.sin(2 * np.pi / 2 * t + 0.1),
+    -0.2 + 0.25 * np.sin(2 * np.pi / 5 * t + 0.2),
+], dtype=float) * 0.0
 
 # Compute upper bound of Delta
 Delta_max = np.max([np.linalg.norm(Delta(t), 2) for t in np.arange(0.0, sim_T, 0.01)])
-toy.cp_quantile = Delta_max * 0.9
+toy.cp_quantile = Delta_max * 0.95
 
 # Time hisotry of logged data
 x_hist = np.zeros((toy.xdim, T_steps))
@@ -122,7 +121,7 @@ nu_ccm_hist = np.zeros((T_steps,))
 rho_ccm_hist = np.zeros((T_steps,))
 
 # Initial state
-x = interp_x_d(0).copy() #+ np.array([0.7, 0.5, -0.1])  # initial condition perturbation
+x = interp_x_d(0).copy() #+ np.array([0.7, 0.5, -0.2])  # initial condition + perturbation
 
 # Initialize geodesic solver
 N = toy.params["geodesic"]["N"]
