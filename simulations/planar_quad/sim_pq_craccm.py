@@ -12,15 +12,14 @@ from scipy.interpolate import interp1d
 USE_CP = False # whether to use conformal prediction
 USE_ADAPTIVE = False # whether to use adaptive control
 
-VERIFY_GEODESIC = True
+VERIFY_GEODESIC = False
 USE_QPSOLVERS = True
 
 weight_slack = 5.0 if USE_CP else 1000.0
 
 # Time setup
 dt = 0.01
-#sim_T = np.floor(t_d_data[-1]) # Simulation time
-sim_T = 10.0 # Simulation time
+sim_T = 3.0 # Simulation time
 tt = np.arange(0, sim_T, dt)
 T_steps = len(tt)
 
@@ -31,15 +30,15 @@ params = {
     "g": 9.81,
     "J": 0.00383,
     "ccm": {"rate": 0.8, "weight_slack": weight_slack},
-    "geodesic": {"N": 8, "D": 2},
+    "geodesic": {"N": 8, "D": 2}, # N = D + a
     "dt": dt,
 }
 params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
 #params["cp_quantile"] = Delta_max * 0.8 if USE_CP else 0.0
-params["Gamma_ccm"] = np.diag(np.array([2, 2, 2, 2])) # adaptive gain matrix for CRaCCM
-params["a_true"] = np.array([[-0.0], [0.18], [-0.0], [0.0]]) # true parameters
-params["a_hat_norm_max"] = np.linalg.norm(np.array([[0.0], [0.2], [0.0], [0.0]]), 2) # max norm of a_hat
+params["Gamma_ccm"] = np.diag(np.array([0.8, 0.8, 0.8, 0.8]))*2 # adaptive gain matrix for CRaCCM
+params["a_true"] = np.array([[0.1], [0.1], [-0.1], [0.1]])*0 # true parameters
+params["a_hat_norm_max"] = np.linalg.norm(np.array([[1.0], [0.0], [0.0], [0.0]]), 2) # max norm of a_hat
 params["a_0"] = np.array([[0.0], [0.0], [0.0], [0.0]]) # initial guess for a_hat
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 params["eta_ccm"] = 5
@@ -71,20 +70,22 @@ u_d_fcn = lambda t: interp_u(t)
 
 # Compute x_d using the nominal dynamics with u_d to make sure the trajectory follows the nominal dynamics
 def u_d_fcn(t):
-    if t >=2 and t <=3:
+    if t >= 1 and t <= 2:
         u_d = np.array([[0.486* 9.81/2 + 0.01*np.sin(2*np.pi/1 * t)], [0.486* 9.81/2]])
-        #u_d = np.array([[0.486* 9.81/2 + 0.05 - 0.05/2*t], [0.486* 9.81/2 + 0.05 - 0.05/2*t]])
-    elif t >=3 and t <=4:
+    elif t > 2 and t <= 3:
         u_d = np.array([[0.486* 9.81/2], [0.486* 9.81/2 + 0.01*np.sin(2*np.pi/1 * t)]])
     else:
         u_d = np.array([[0.486* 9.81/2], [0.486* 9.81/2]])
     return u_d
+
 x_d_data = np.zeros((pq.xdim, T_steps))
-x_d = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]) # initial state
+u_d_data = np.zeros((pq.udim, T_steps))
+x_d = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]) # initial state [x1, x2, x3]
 for i in range(T_steps):
     t = tt[i]
     print("Time: ", t)
     u_d = u_d_fcn(t)
+    u_d_data[:,i] = u_d.ravel()
     x_d_data[:,i] = x_d
     # Propagate with zero-order hold on control
     if i < T_steps - 1:
@@ -93,17 +94,20 @@ for i in range(T_steps):
             lambda t, y: pq.dynamics_nominal(y, u_d),
             t_span,
             x_d,
-            method = "BDF", #"LSODA", #"Radau",  # stiff solver
-            rtol = 1e-9, # 1e-6
-            atol = 1e-9, # 1e-6
-            t_eval = [tt[i + 1]],
+            method="BDF",
+            rtol=1e-9,
+            atol=1e-9,
+            t_eval=[tt[i + 1]],
         )
         x_d = sol.y[:, -1]
-interp_x = interp1d(
+interp_x_d = interp1d(
     tt, x_d_data, kind='linear', axis=1,
     bounds_error=False, fill_value='extrapolate'
 )
-x_d_fcn = lambda t: interp_x(t)
+interp_u_d = interp1d(
+    tt, u_d_data, kind='linear', axis=1,
+    bounds_error=False, fill_value='extrapolate'
+)
 
 fig, axs = plt.subplots(3, 2)
 axs = axs.flatten()
@@ -158,11 +162,9 @@ a_hat_ccm_hist = np.zeros((pq.adim, T_steps))
 a_true_hist = np.zeros((pq.adim, T_steps))
 nu_ccm_hist = np.zeros((T_steps,))
 rho_ccm_hist = np.zeros((T_steps,))
-x_d_hist = np.zeros((pq.xdim, T_steps))
-u_d_hist = np.zeros((pq.udim, T_steps))
 
 # Initial state
-x = x_d_fcn(0).copy() #+ np.array([-0.2, 0.5, 0.0, 0, 0, 0])  # initial condition + perturbation
+x = interp_x_d(0).copy() #+ np.array([-0.2, 0.5, 0.0, 0, 0, 0])  # initial condition + perturbation
 
 # Initialize geodesic solver
 N = pq.params["geodesic"]["N"]
@@ -179,10 +181,8 @@ for i in range(T_steps):
     x_hist[:, i] = x
 
     # Nominal trajectory
-    x_d = x_d_data[:,i]#x_d_fcn(t)
-    u_d = u_d_fcn(t)
-    x_d_hist[:, i] = x_d
-    u_d_hist[:, i] = u_d.ravel()
+    x_d = interp_x_d(t) # x_d_data[:,i]
+    u_d = interp_u_d(t).reshape(-1,1) #u_d_data[:,i].reshape(-1,1)
 
     # Store adaptation parameters
     a_hat_ccm_hist[:, i] = pq.a_hat_ccm.ravel()
@@ -241,29 +241,29 @@ for i in range(T_steps):
 # x vs. x_d
 fig, axs = plt.subplots(3, 2)
 axs = axs.flatten()
-axs[0].plot(tt, x_d_hist[0, :], '--', label='Nominal')
+axs[0].plot(tt, x_d_data[0, :], '--', label='Nominal')
 axs[0].plot(tt, x_hist[0, :], '-', label='CCM')
 axs[0].set_ylabel('x (m)'); 
 axs[0].legend()
 axs[0].grid(True)
-axs[1].plot(tt, x_d_hist[1, :], '--')
+axs[1].plot(tt, x_d_data[1, :], '--')
 axs[1].plot(tt, x_hist[1, :], '-')
 axs[1].set_ylabel('z (m)')
 axs[1].grid(True)
-axs[2].plot(tt, x_d_hist[2, :] * 180.0/np.pi, '--')
+axs[2].plot(tt, x_d_data[2, :] * 180.0/np.pi, '--')
 axs[2].plot(tt, x_hist[2, :] * 180.0/np.pi) 
 axs[2].set_ylabel('Phi (deg)')
 axs[2].grid(True)
-axs[3].plot(tt, x_d_hist[3, :], '--')
+axs[3].plot(tt, x_d_data[3, :], '--')
 axs[3].plot(tt, x_hist[3, :], '-')
 axs[3].set_ylabel('vx (m/s)')
 axs[3].grid(True)
-axs[4].plot(tt, x_d_hist[4, :], '--')
+axs[4].plot(tt, x_d_data[4, :], '--')
 axs[4].plot(tt, x_hist[4, :], '-')
 axs[4].set_xlabel('Time (s)'); 
 axs[4].set_ylabel('vz (m/s)')
 axs[4].grid(True)
-axs[5].plot(tt, x_d_hist[5, :] * 180.0/np.pi, '--')
+axs[5].plot(tt, x_d_data[5, :] * 180.0/np.pi, '--')
 axs[5].plot(tt, x_hist[5, :] * 180.0/np.pi)
 axs[5].set_xlabel('Time (s)'); 
 axs[5].set_ylabel('Phi rate (deg/s)')
@@ -274,12 +274,12 @@ plt.suptitle('State: Actual vs. Nominal')
 fig, axs = plt.subplots(3, 1)
 axs = axs.flatten()
 axs[0].plot(tt, u_hist[0, :], 'r-', label='u_1: CCM')
-axs[0].plot(tt, u_d_hist[0, :], 'k--', label='u_d_1')
+axs[0].plot(tt, u_d_data[0, :], 'k--', label='u_d_1')
 axs[0].set_ylabel('u0 (N)')
 axs[0].legend()
 axs[0].grid(True)
 axs[1].plot(tt, u_hist[1, :], 'b-', label='u_2: CCM')
-axs[1].plot(tt, u_d_hist[1, :], 'k--', label='u_d_2')
+axs[1].plot(tt, u_d_data[1, :], 'k--', label='u_d_2')
 axs[1].set_ylabel('u1 (N)')
 axs[1].legend()
 axs[1].grid(True)
@@ -329,7 +329,7 @@ axs[1].grid(True)
 # Tracking error norm
 fig, axs = plt.subplots(3, 1)
 axs = axs.flatten()
-err_norm = np.linalg.norm(x_d_hist - x_hist, ord=2, axis=0)  # column-wise 2-norm
+err_norm = np.linalg.norm(x_d_data - x_hist, ord=2, axis=0)  # column-wise 2-norm
 axs[0].plot(tt, err_norm)
 axs[0].set_ylabel('||x-x_d||_2')
 axs[0].grid(True)
