@@ -452,7 +452,7 @@ class CtrlAffineSys:
         return u_val, h, feas
     
     # CCMs
-    def ctrl_cra_ccm(self, x, x_d, u_d, use_qpsolvers = False):
+    def ctrl_cra_ccm(self, x, x_d, u_d, use_qpsolvers=False, use_slack=True):
         """CRaCCM control law"""
         # x: current state
         # x_d: desired state
@@ -479,46 +479,50 @@ class CtrlAffineSys:
             + self.params["ccm"]["rate"] * self.Erem).item()
 
         if use_qpsolvers is True: 
-            # with slacks
-            P = np.block([[np.eye(self.udim),        np.zeros((self.udim, 1))],
-                          [np.zeros((1, self.udim)), np.array([[self.weight_slack]])],
-            ])
-            q = np.zeros(self.udim + 1)
-            G = np.vstack([np.hstack([A, np.array([[-1.0]])]),
-                           np.hstack([np.zeros((1, self.udim)), np.array([[-1.0]])]),
-            ])
-            h = np.array([-(B + tightening), 0.0])
-            qp_sol = solve_qp(P, q, G, h, solver = 'quadprog')
-            u_qp = qp_sol[0:self.udim].reshape(-1,1)
-            slack = qp_sol[-1]
+            if use_slack:
+                P = np.block([[np.eye(self.udim),        np.zeros((self.udim, 1))],
+                            [np.zeros((1, self.udim)), np.array([[self.weight_slack]])],
+                ])
+                q = np.zeros(self.udim + 1)
+                G = np.vstack([np.hstack([A, np.array([[-1.0]])]),
+                            np.hstack([np.zeros((1, self.udim)), np.array([[-1.0]])]),
+                ])
+                h = np.array([-(B + tightening), 0.0])
+                qp_sol = solve_qp(P, q, G, h, solver = 'quadprog')
+                u_qp = qp_sol[0:self.udim].reshape(-1,1)
+                slack = qp_sol[-1]
+            else:
+                # no slack
+                P = np.eye(self.udim)
+                q = np.zeros(self.udim)
+                G = A
+                h = np.array([-(B + tightening)])
+                qp_sol = solve_qp(P, q, G, h, solver = 'quadprog')
+                u_qp = qp_sol.reshape(-1,1)
+                slack = 0.0
             
-            # no slack
-            """
-            P = np.eye(self.udim)
-            q = np.zeros(self.udim)
-            G = A
-            h = np.array([-(B + tightening)])
-            u_qp = solve_qp(P, q, G, h, solver = 'quadprog')
-            slack = 0.0
-            """
         else:
             # Analytic solution
-            denom = (1 + self.weight_slack * A @ A.T).item()
-            #tightening = (tightening * denom + B)/(denom-1)
-            if np.linalg.norm(A, 2) > 1e-4:
-                if B + tightening <= 0:
-                    u_qp = 0.0
-                    slack = 0.0
+            if use_slack:
+                denom = (1 + self.weight_slack * A @ A.T).item()
+                #tightening = (tightening * denom + B)/(denom-1)
+                if np.linalg.norm(A, 2) > 1e-4:
+                    if B + tightening <= 0:
+                        u_qp = 0.0
+                        slack = 0.0
+                    else:
+                        u_qp = (-self.weight_slack * (B + tightening) * A.T) / denom
+                        slack = (B + tightening) / denom
                 else:
-                    u_qp = (-self.weight_slack * (B + tightening) * A.T) / denom
-                    slack = (B + tightening) / denom
+                    if B + tightening <= 0:
+                        u_qp = 0.0
+                        slack = 0.0
+                    else:
+                        u_qp = 0.0
+                        slack = B + tightening
             else:
-                if B + tightening <= 0:
-                    u_qp = 0.0
-                    slack = 0.0
-                else:
-                    u_qp = 0.0
-                    slack = B + tightening
+                #TODO: complete this
+                raise ValueError(f"Analytic QP solution for CRaCCM with no slack is not supported")
 
         uc = u_d + u_qp
 

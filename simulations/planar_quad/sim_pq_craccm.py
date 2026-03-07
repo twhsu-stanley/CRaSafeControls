@@ -13,13 +13,28 @@ USE_CP = False # whether to use conformal prediction
 USE_ADAPTIVE = False # whether to use adaptive control
 
 VERIFY_GEODESIC = False
-USE_QPSOLVERS = True
+USE_QPSOLVERS = False
+USE_SLACK = True
 
-weight_slack = 5.0 if USE_CP else 1000.0
+weight_slack = 10.0 if USE_CP else 1000.0
+
+# Load the desired trajectory from MATLAB code
+data = loadmat("simulations/planar_quad/nomTraj.mat")
+t_d_data = data["soln"]["grid"][0][0][0][0][0][0,:]
+x_d_data = data["soln"]["grid"][0][0][0][0][1][:]
+u_d_data = data["soln"]["grid"][0][0][0][0][2][:]
+interp_x_d = interp1d(
+    t_d_data, x_d_data, kind='cubic', axis=1,
+    bounds_error=False, fill_value='extrapolate'
+)
+interp_u_d = interp1d(
+    t_d_data, u_d_data.reshape(2,1,-1), kind='cubic', axis=2,
+    bounds_error=False, fill_value='extrapolate'
+)
 
 # Time setup
 dt = 0.01
-sim_T = 3.0 # Simulation time
+sim_T = t_d_data[-1]/4 # Simulation time
 tt = np.arange(0, sim_T, dt)
 T_steps = len(tt)
 
@@ -35,104 +50,16 @@ params = {
 }
 params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
-#params["cp_quantile"] = Delta_max * 0.8 if USE_CP else 0.0
-params["Gamma_ccm"] = np.diag(np.array([0.8, 0.8, 0.8, 0.8]))*2 # adaptive gain matrix for CRaCCM
-params["a_true"] = np.array([[0.1], [0.1], [-0.1], [0.1]])*0 # true parameters
-params["a_hat_norm_max"] = np.linalg.norm(np.array([[1.0], [0.0], [0.0], [0.0]]), 2) # max norm of a_hat
-params["a_0"] = np.array([[0.0], [0.0], [0.0], [0.0]]) # initial guess for a_hat
+params["Gamma_ccm"] = np.diag(np.array([0.5])) # adaptive gain matrix for CRaCCM
+params["a_true"] = np.array([[0.5]]) # true parameters
+params["a_hat_norm_max"] = np.linalg.norm(np.array([[0.6]]), 2) # max norm of a_hat
+params["a_0"] = np.array([[0.0]]) # initial guess for a_hat
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
-params["eta_ccm"] = 5
+params["eta_ccm"] = 4.0
 params["rho_ccm"] = 0.0
 
 # Construct the system
 pq = PLANAR_QUAD(params)
-
-# Load the desired trajectory from MATLAB code
-# WARNING: This (x_d, u_d) above from MATLAB does NOT follow the nominal dynamics and thus should NOT be used at all
-"""
-# x_d_fcn and u_d_fcn: functions of time
-data = loadmat("simulations/planar_quad/nomTraj.mat")
-t_d_data = data["soln"]["grid"][0][0][0][0][0][0,:]
-x_d_data = data["soln"]["grid"][0][0][0][0][1][:]
-u_d_data = data["soln"]["grid"][0][0][0][0][2][:]
-# interpolation functions
-interp_x = interp1d(
-    t_d_data, x_d_data, kind='linear', axis=1,
-    bounds_error=False, fill_value='extrapolate'
-)
-interp_u = interp1d(
-    t_d_data, u_d_data.reshape(2,1,-1), kind='linear', axis=2,
-    bounds_error=False, fill_value='extrapolate'
-)
-x_d_fcn = lambda t: interp_x(t)
-u_d_fcn = lambda t: interp_u(t)
-"""
-
-# Compute x_d using the nominal dynamics with u_d to make sure the trajectory follows the nominal dynamics
-def u_d_fcn(t):
-    if t >= 1 and t <= 2:
-        u_d = np.array([[0.486* 9.81/2 + 0.01*np.sin(2*np.pi/1 * t)], [0.486* 9.81/2]])
-    elif t > 2 and t <= 3:
-        u_d = np.array([[0.486* 9.81/2], [0.486* 9.81/2 + 0.01*np.sin(2*np.pi/1 * t)]])
-    else:
-        u_d = np.array([[0.486* 9.81/2], [0.486* 9.81/2]])
-    return u_d
-
-x_d_data = np.zeros((pq.xdim, T_steps))
-u_d_data = np.zeros((pq.udim, T_steps))
-x_d = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]) # initial state [x1, x2, x3]
-for i in range(T_steps):
-    t = tt[i]
-    print("Time: ", t)
-    u_d = u_d_fcn(t)
-    u_d_data[:,i] = u_d.ravel()
-    x_d_data[:,i] = x_d
-    # Propagate with zero-order hold on control
-    if i < T_steps - 1:
-        t_span = (tt[i], tt[i + 1])
-        sol = solve_ivp(
-            lambda t, y: pq.dynamics_nominal(y, u_d),
-            t_span,
-            x_d,
-            method="BDF",
-            rtol=1e-9,
-            atol=1e-9,
-            t_eval=[tt[i + 1]],
-        )
-        x_d = sol.y[:, -1]
-interp_x_d = interp1d(
-    tt, x_d_data, kind='linear', axis=1,
-    bounds_error=False, fill_value='extrapolate'
-)
-interp_u_d = interp1d(
-    tt, u_d_data, kind='linear', axis=1,
-    bounds_error=False, fill_value='extrapolate'
-)
-
-fig, axs = plt.subplots(3, 2)
-axs = axs.flatten()
-axs[0].plot(tt, x_d_data[0, :], '--')
-axs[0].set_ylabel('x (m)'); 
-axs[0].grid(True)
-axs[1].plot(tt, x_d_data[1, :], '--')
-axs[1].set_ylabel('z (m)')
-axs[1].grid(True)
-axs[2].plot(tt, x_d_data[2, :] * 180.0/np.pi, '--')
-axs[2].set_ylabel('Phi (deg)')
-axs[2].grid(True)
-axs[3].plot(tt, x_d_data[3, :], '--')
-axs[3].set_ylabel('vx (m/s)')
-axs[3].grid(True)
-axs[4].plot(tt, x_d_data[4, :], '--')
-axs[4].set_xlabel('Time (s)'); 
-axs[4].set_ylabel('vz (m/s)')
-axs[4].grid(True)
-axs[5].plot(tt, x_d_data[5, :] * 180.0/np.pi, '--')
-axs[5].set_xlabel('Time (s)'); 
-axs[5].set_ylabel('Phi rate (deg/s)')
-axs[5].grid(True)
-plt.suptitle('Nominal Trajectory: x_d')
-plt.show()
 
 # Disturbance (non-parametric uncertainty)
 Delta = lambda t: np.array([
@@ -146,7 +73,7 @@ Delta = lambda t: np.array([
 
 # Compute upper bound of Delta
 Delta_max = np.max([np.linalg.norm(Delta(t), 2) for t in np.arange(0.0, sim_T, 0.01)])
-pq.cp_quantile = Delta_max * 0.8
+pq.cp_quantile = Delta_max * 0.95
 
 # Time hisotry of logged data
 x_hist = np.zeros((pq.xdim, T_steps))
@@ -155,8 +82,6 @@ Erem_hist = np.zeros((T_steps,))
 Erem_dot_hist = np.zeros((T_steps,))
 V1_hist = np.zeros((T_steps,))
 V2_hist = np.zeros((T_steps,))
-U1_hist = np.zeros((T_steps,))
-U2_hist = np.zeros((T_steps,))
 slack_hist = np.zeros((T_steps,))
 a_hat_ccm_hist = np.zeros((pq.adim, T_steps))
 a_true_hist = np.zeros((pq.adim, T_steps))
@@ -164,7 +89,7 @@ nu_ccm_hist = np.zeros((T_steps,))
 rho_ccm_hist = np.zeros((T_steps,))
 
 # Initial state
-x = interp_x_d(0).copy() #+ np.array([-0.2, 0.5, 0.0, 0, 0, 0])  # initial condition + perturbation
+x = interp_x_d(0).copy() #+ np.array([-1, -0.5, 0.0, 0, 0, 0])  # initial condition + perturbation
 
 # Initialize geodesic solver
 N = pq.params["geodesic"]["N"]
@@ -181,8 +106,8 @@ for i in range(T_steps):
     x_hist[:, i] = x
 
     # Nominal trajectory
-    x_d = interp_x_d(t) # x_d_data[:,i]
-    u_d = interp_u_d(t).reshape(-1,1) #u_d_data[:,i].reshape(-1,1)
+    x_d = interp_x_d(t)
+    u_d = interp_u_d(t)
 
     # Store adaptation parameters
     a_hat_ccm_hist[:, i] = pq.a_hat_ccm.ravel()
@@ -191,33 +116,31 @@ for i in range(T_steps):
     rho_ccm_hist[i] = pq.rho_ccm
 
     # Compute geodesic
-    pq.calc_geodesic(geodesic_solver, x, x_d, verify_geodesic = VERIFY_GEODESIC)
+    pq.calc_geodesic(geodesic_solver, x, x_d, verify_geodesic=VERIFY_GEODESIC)
 
     # Implement ccm control law
-    uc, slack = pq.ctrl_cra_ccm(x, x_d, u_d, use_qpsolvers = USE_QPSOLVERS)
+    uc, slack = pq.ctrl_cra_ccm(x, x_d, u_d, use_qpsolvers=USE_QPSOLVERS, use_slack=USE_SLACK)
 
-    u_hist[:, i] = uc.ravel()
+    u_hist[:,i] = uc.ravel()
     slack_hist[i] = slack
     Erem_hist[i] = pq.Erem
 
-    # Lyapunov function (for debugging)
+    # For debugging #######################################################################
+    # Lyapunov function
     V1 = pq.nu_ccm() * (pq.Erem + pq.eta_ccm)
     a_tilde = pq.a_hat_ccm - pq.a_true
     V2 = a_tilde.T @ pq.Gamma_ccm @ a_tilde
     V1_hist[i] = V1.item()
     V2_hist[i] = V2.item()
 
-    # Uncertanity-induced term to be cancelled by the adaptation law (for debugging)
-    a_hat_dot = pq.a_hat_dot if USE_ADAPTIVE else np.zeros((pq.adim,1))
-    rho_dot = pq.rho_dot if USE_ADAPTIVE else 0.0
+    a_hat_dot = pq.a_hat_dot if USE_ADAPTIVE else np.zeros((pq.adim, 1))
     dErem_dai = pq.dErem_dai if USE_ADAPTIVE else np.zeros(pq.adim)
-    U1_hist[i] = ( 2 * a_tilde.T @ (-pq.nu_ccm() * pq.Y(x).T @ pq.gamma_s1_M_x.T + pq.Gamma_ccm @ a_hat_dot) ).item()
-    U2_hist[i] = ( pq.nu_ccm() * (2 * pq.gamma_s0_M_d @ pq.Y(x_d) @ pq.a_hat_ccm +  dErem_dai @ a_hat_dot) + pq.dnu_drho_ccm() * rho_dot * (pq.Erem + pq.eta_ccm) ).item()
 
-    # Edot error (for debugging)
+    # Edot error
     Erem_dot_fixa = (pq.gamma_s1_M_x @ (pq.f(x) + pq.g(x) @ uc + pq.Y(x) @ pq.a_true)
                    - pq.gamma_s0_M_d @ (pq.f(x_d) + pq.g(x_d) @ u_d))
     Erem_dot_hist[i] = (Erem_dot_fixa + dErem_dai @ a_hat_dot).item()
+    #######################################################################################
 
     # Propagate with zero-order hold on control and disturbance
     if i < T_steps - 1:
@@ -241,29 +164,29 @@ for i in range(T_steps):
 # x vs. x_d
 fig, axs = plt.subplots(3, 2)
 axs = axs.flatten()
-axs[0].plot(tt, x_d_data[0, :], '--', label='Nominal')
+axs[0].plot(tt, interp_x_d(tt)[0, :], '--', label='Nominal')
 axs[0].plot(tt, x_hist[0, :], '-', label='CCM')
 axs[0].set_ylabel('x (m)'); 
 axs[0].legend()
 axs[0].grid(True)
-axs[1].plot(tt, x_d_data[1, :], '--')
+axs[1].plot(tt, interp_x_d(tt)[1, :], '--')
 axs[1].plot(tt, x_hist[1, :], '-')
 axs[1].set_ylabel('z (m)')
 axs[1].grid(True)
-axs[2].plot(tt, x_d_data[2, :] * 180.0/np.pi, '--')
+axs[2].plot(tt, interp_x_d(tt)[2, :] * 180.0/np.pi, '--')
 axs[2].plot(tt, x_hist[2, :] * 180.0/np.pi) 
 axs[2].set_ylabel('Phi (deg)')
 axs[2].grid(True)
-axs[3].plot(tt, x_d_data[3, :], '--')
+axs[3].plot(tt, interp_x_d(tt)[3, :], '--')
 axs[3].plot(tt, x_hist[3, :], '-')
 axs[3].set_ylabel('vx (m/s)')
 axs[3].grid(True)
-axs[4].plot(tt, x_d_data[4, :], '--')
+axs[4].plot(tt, interp_x_d(tt)[4, :], '--')
 axs[4].plot(tt, x_hist[4, :], '-')
 axs[4].set_xlabel('Time (s)'); 
 axs[4].set_ylabel('vz (m/s)')
 axs[4].grid(True)
-axs[5].plot(tt, x_d_data[5, :] * 180.0/np.pi, '--')
+axs[5].plot(tt, interp_x_d(tt)[5, :] * 180.0/np.pi, '--')
 axs[5].plot(tt, x_hist[5, :] * 180.0/np.pi)
 axs[5].set_xlabel('Time (s)'); 
 axs[5].set_ylabel('Phi rate (deg/s)')
@@ -274,12 +197,12 @@ plt.suptitle('State: Actual vs. Nominal')
 fig, axs = plt.subplots(3, 1)
 axs = axs.flatten()
 axs[0].plot(tt, u_hist[0, :], 'r-', label='u_1: CCM')
-axs[0].plot(tt, u_d_data[0, :], 'k--', label='u_d_1')
+axs[0].plot(tt, interp_u_d(tt)[0,0,:], 'k--', label='u_d_1')
 axs[0].set_ylabel('u0 (N)')
 axs[0].legend()
 axs[0].grid(True)
 axs[1].plot(tt, u_hist[1, :], 'b-', label='u_2: CCM')
-axs[1].plot(tt, u_d_data[1, :], 'k--', label='u_d_2')
+axs[1].plot(tt, interp_u_d(tt)[1,0,:], 'k--', label='u_d_2')
 axs[1].set_ylabel('u1 (N)')
 axs[1].legend()
 axs[1].grid(True)
@@ -305,15 +228,15 @@ axs[1].grid(True)
 
 
 # Uncertainty parameters
-fig, axs = plt.subplots(pq.adim, 1)
-axs = axs.flatten()
+fig, axs = plt.subplots(pq.adim, 1, squeeze=False)
+#axs = axs.flatten()
 for i in range(pq.adim):
-    axs[i].plot(tt, a_hat_ccm_hist[i, :], label='a hat')
-    axs[i].plot(tt, a_true_hist[i, :], label='a true')
-    axs[i].legend()
-    axs[i].grid(True)
-    axs[i].set_ylabel(f"a{i}_hat_ccm")
-axs[pq.adim-1].set_xlabel('Time (s)')
+    axs[i,0].plot(tt, a_hat_ccm_hist[i, :], label='a hat')
+    axs[i,0].plot(tt, a_true_hist[i, :], label='a true')
+    axs[i,0].legend()
+    axs[i,0].grid(True)
+    axs[i,0].set_ylabel(f"a{i}_hat_ccm")
+axs[pq.adim-1,0].set_xlabel('Time (s)')
 
 # Scaling function and parameter
 fig, axs = plt.subplots(2, 1)
@@ -327,33 +250,19 @@ axs[1].set_ylabel('rho_ccm')
 axs[1].grid(True)
 
 # Tracking error norm
-fig, axs = plt.subplots(3, 1)
+fig, axs = plt.subplots(2, 1)
 axs = axs.flatten()
-err_norm = np.linalg.norm(x_d_data - x_hist, ord=2, axis=0)  # column-wise 2-norm
-axs[0].plot(tt, err_norm)
-axs[0].set_ylabel('||x-x_d||_2')
-axs[0].grid(True)
 # Erem
-axs[1].plot(tt, Erem_hist)
-axs[1].set_ylabel('Riemann Energy: Erem(t)')
-axs[1].grid(True)
+axs[0].plot(tt, Erem_hist)
+axs[0].set_ylabel('Riemann Energy: Erem(t)')
+axs[0].grid(True)
 # Lyapunov
-axs[2].plot(tt, V1_hist, label='V1 = nu(rho)(E+eta)')
-axs[2].plot(tt, V2_hist, label='V2 = a~^T Gamma a~')
-axs[2].plot(tt, V1_hist + V2_hist, label='V = V1+V2')
-axs[2].set_xlabel('Time (s)')
-axs[2].set_ylabel('Lyapunov: V(t)')
-axs[2].legend()
-axs[2].grid(True)
-
-# Uncertainty-induced terms
-plt.figure()
-plt.plot(tt, U1_hist, label='U1')
-plt.plot(tt, U2_hist, label='U2')
-plt.plot(tt, U1_hist + U2_hist, label='U1+U2')
-plt.xlabel('Time (s)')
-plt.legend()
-plt.ylabel('Uncertainty-induced term: U(t)')
-plt.grid(True)
+axs[1].plot(tt, V1_hist, label='V1 = nu(rho)(E+eta)')
+axs[1].plot(tt, V2_hist, label='V2 = a~^T Gamma a~')
+axs[1].plot(tt, V1_hist + V2_hist, label='V = V1+V2')
+axs[1].set_xlabel('Time (s)')
+axs[1].set_ylabel('Lyapunov: V(t)')
+axs[1].legend()
+axs[1].grid(True)
 
 plt.show()

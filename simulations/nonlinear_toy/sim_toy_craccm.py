@@ -9,7 +9,7 @@ from dynsys.geodesic_solver import GeodesicSolver
 from scipy.interpolate import interp1d
 
 USE_CP = False # whether to use conformal prediction
-USE_ADAPTIVE = False # whether to use adaptive control
+USE_ADAPTIVE = True # whether to use adaptive control
 
 VERIFY_GEODESIC = False
 USE_QPSOLVERS = True
@@ -112,8 +112,6 @@ Erem_hist = np.zeros((T_steps,))
 Erem_dot_hist = np.zeros((T_steps,))
 V1_hist = np.zeros((T_steps,))
 V2_hist = np.zeros((T_steps,))
-U1_hist = np.zeros((T_steps,))
-U2_hist = np.zeros((T_steps,))
 slack_hist = np.zeros((T_steps,))
 a_hat_ccm_hist = np.zeros((toy.adim, T_steps))
 a_true_hist = np.zeros((toy.adim, T_steps))
@@ -157,24 +155,22 @@ for i in range(T_steps):
     slack_hist[i] = slack
     Erem_hist[i] = toy.Erem
 
-    # Lyapunov function (for debugging)
+    # For debugging #######################################################################
+    # Lyapunov function
     V1 = toy.nu_ccm() * (toy.Erem + toy.eta_ccm)
     a_tilde = toy.a_hat_ccm - toy.a_true
     V2 = a_tilde.T @ toy.Gamma_ccm @ a_tilde
     V1_hist[i] = V1.item()
     V2_hist[i] = V2.item()
 
-    # Uncertanity-induced term to be cancelled by the adaptation law (for debugging)
     a_hat_dot = toy.a_hat_dot if USE_ADAPTIVE else np.zeros((toy.adim, 1))
-    rho_dot = toy.rho_dot if USE_ADAPTIVE else 0.0
     dErem_dai = toy.dErem_dai if USE_ADAPTIVE else np.zeros(toy.adim)
-    U1_hist[i] = (2 * a_tilde.T @ (-toy.nu_ccm() * toy.Y(x).T @ toy.gamma_s1_M_x.T + toy.Gamma_ccm @ a_hat_dot)).item()
-    U2_hist[i] = (toy.nu_ccm() * (2 * toy.gamma_s0_M_d @ toy.Y(x_d) @ toy.a_hat_ccm + dErem_dai @ a_hat_dot) + toy.dnu_drho_ccm() * rho_dot * (toy.Erem + toy.eta_ccm)).item()
 
-    # Edot error (for debugging)
+    # Edot error
     Erem_dot_fixa = (toy.gamma_s1_M_x @ (toy.f(x) + toy.g(x) @ uc + toy.Y(x) @ toy.a_true)
                    - toy.gamma_s0_M_d @ (toy.f(x_d) + toy.g(x_d) @ u_d))
     Erem_dot_hist[i] = (Erem_dot_fixa + dErem_dai @ a_hat_dot).item()
+    #######################################################################################
 
     # Propagate with zero-order hold on control and disturbance
     if i < T_steps - 1:
@@ -283,14 +279,5 @@ axs[2].set_xlabel('Time (s)')
 axs[2].set_ylabel('Lyapunov: V(t)')
 axs[2].legend()
 axs[2].grid(True)
-# Uncertainty-induced terms
-plt.figure()
-plt.plot(tt, U1_hist, label='U1')
-plt.plot(tt, U2_hist, label='U2')
-plt.plot(tt, U1_hist + U2_hist, label='U1+U2')
-plt.xlabel('Time (s)')
-plt.legend()
-plt.ylabel('Uncertainty-induced term: U(t)')
-plt.grid(True)
 
 plt.show()
