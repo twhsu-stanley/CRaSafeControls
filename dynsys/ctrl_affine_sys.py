@@ -506,7 +506,8 @@ class CtrlAffineSys:
             if use_slack:
                 denom = (1 + self.weight_slack * A @ A.T).item()
                 #tightening = (tightening * denom + B)/(denom-1)
-                if np.linalg.norm(A, 2) > 1e-5:
+                A_norm = np.linalg.norm(A, 2)
+                if A_norm > 1e-5:
                     if B + tightening <= 0:
                         u_qp = np.zeros((self.udim,1))
                         slack = 0.0
@@ -514,6 +515,7 @@ class CtrlAffineSys:
                         u_qp = (-self.weight_slack * (B + tightening) * A.T) / denom
                         slack = (B + tightening) / denom
                 else:
+                    print(f"Loss of control authority: norm(A)={A_norm:2E}")
                     if B + tightening <= 0:
                         u_qp = np.zeros((self.udim,1))
                         slack = 0.0
