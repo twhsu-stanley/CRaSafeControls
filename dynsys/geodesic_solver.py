@@ -221,9 +221,9 @@ class GeodesicSolver:
         lb_matrix = -20 * np.ones((self.n, self.D + 1))
         ub_matrix = 20 * np.ones((self.n, self.D + 1))
         # For the planarquad example, fix states 3 and 4 (indices 2 and 3) to be in [-5, 5].
-        if self.n >= 4:
-            lb_matrix[2:4, :] = -5
-            ub_matrix[2:4, :] = 5
+        #if self.n >= 4:
+        #    lb_matrix[2:4, :] = -5
+        #    ub_matrix[2:4, :] = 5
         lb = lb_matrix.T.flatten(order='F')
         ub = ub_matrix.T.flatten(order='F')
         bounds = Bounds(lb, ub)
@@ -239,7 +239,7 @@ class GeodesicSolver:
         res = minimize(fun=costf, x0=c0, method='trust-constr',
                        jac=grad, bounds=bounds,
                        constraints=[linear_constraint],
-                       options={'maxiter': 500, 'gtol': 1e-4, 'xtol': 1e-8, 'verbose': 0})
+                       options={'maxiter': 250, 'gtol': 2e-4, 'xtol': 1e-5, 'verbose': 0})
                        #options={'maxiter': 500, 'gtol': 1e-4, 'xtol': 1e-8, 'verbose': 0})
 
         # c_opt: optimized coefficients; reshape into a (n x (D+1)) matrix

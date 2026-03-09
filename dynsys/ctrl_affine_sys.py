@@ -506,19 +506,19 @@ class CtrlAffineSys:
             if use_slack:
                 denom = (1 + self.weight_slack * A @ A.T).item()
                 #tightening = (tightening * denom + B)/(denom-1)
-                if np.linalg.norm(A, 2) > 1e-4:
+                if np.linalg.norm(A, 2) > 1e-5:
                     if B + tightening <= 0:
-                        u_qp = 0.0
+                        u_qp = np.zeros((self.udim,1))
                         slack = 0.0
                     else:
                         u_qp = (-self.weight_slack * (B + tightening) * A.T) / denom
                         slack = (B + tightening) / denom
                 else:
                     if B + tightening <= 0:
-                        u_qp = 0.0
+                        u_qp = np.zeros((self.udim,1))
                         slack = 0.0
                     else:
-                        u_qp = 0.0
+                        u_qp = np.zeros((self.udim,1))
                         slack = B + tightening
             else:
                 #TODO: complete this
@@ -610,9 +610,10 @@ class CtrlAffineSys:
                                             self.a_hat_norm_max, self.epsilon)
         #a_hat_dot = self.nu_ccm() * np.linalg.inv(self.Gamma_ccm) @ self.Y(x).T @ self.gamma_s1_M_x.T
         
-        uu = self.nu_ccm() * (2 * self.gamma_s0_M_d @ self.Y(x_d) @ self.a_hat_ccm + self.dErem_dai @ a_hat_dot)
-        rho_dot = (-uu / (self.dnu_drho_ccm() * (self.Erem + self.eta_ccm))).item()
-        #TODO: only activate rho_dot when uu > 0?
+        uu1 = (2 * self.gamma_s0_M_d @ self.Y(x_d) @ self.a_hat_ccm).item()
+        uu2 = (self.dErem_dai @ a_hat_dot).item()
+        print("uu1 = ", uu1, "; uu2 = ", uu2)
+        rho_dot = -(self.nu_ccm() * (uu1 + uu2)) / (self.dnu_drho_ccm() * (self.Erem + self.eta_ccm))
         
         # Temp logging
         self.a_hat_dot = a_hat_dot
@@ -643,5 +644,5 @@ class CtrlAffineSys:
     def dnu_drho_ccm(self):
         dnu_drho = 0.9 * np.exp(self.rho_ccm)
         #dnu_drho = 1/(1+(self.rho_ccm)**2)/np.pi
-        return max(dnu_drho, 1e-10)
+        return max(dnu_drho, 1e-20)
         
