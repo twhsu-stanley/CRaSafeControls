@@ -617,9 +617,9 @@ class CtrlAffineSys:
         print("uu1 = ", uu1, "; uu2 = ", uu2)
         rho_dot = -(self.nu_ccm() * (uu1 + uu2)) / (self.dnu_drho_ccm() * (self.Erem + self.eta_ccm))
         
-        # Temp logging
-        self.a_hat_dot = a_hat_dot
-        self.rho_dot = rho_dot
+        # For debugging
+        #self.a_hat_dot = a_hat_dot
+        #self.rho_dot = rho_dot
 
         # Updates
         self.a_hat_ccm += a_hat_dot * self.dt

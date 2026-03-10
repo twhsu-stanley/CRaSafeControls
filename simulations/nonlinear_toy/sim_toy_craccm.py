@@ -163,13 +163,13 @@ for i in range(T_steps):
     V1_hist[i] = V1.item()
     V2_hist[i] = V2.item()
 
-    a_hat_dot = toy.a_hat_dot if USE_ADAPTIVE else np.zeros((toy.adim, 1))
-    dErem_dai = toy.dErem_dai if USE_ADAPTIVE else np.zeros(toy.adim)
+    #a_hat_dot = toy.a_hat_dot if USE_ADAPTIVE else np.zeros((toy.adim, 1))
+    #dErem_dai = toy.dErem_dai if USE_ADAPTIVE else np.zeros(toy.adim)
 
     # Edot error
-    Erem_dot_fixa = (toy.gamma_s1_M_x @ (toy.f(x) + toy.g(x) @ uc + toy.Y(x) @ toy.a_true)
-                   - toy.gamma_s0_M_d @ (toy.f(x_d) + toy.g(x_d) @ u_d))
-    Erem_dot_hist[i] = (Erem_dot_fixa + dErem_dai @ a_hat_dot).item()
+    #Erem_dot_fixa = (toy.gamma_s1_M_x @ (toy.f(x) + toy.g(x) @ uc + toy.Y(x) @ toy.a_true)
+    #               - toy.gamma_s0_M_d @ (toy.f(x_d) + toy.g(x_d) @ u_d))
+    #Erem_dot_hist[i] = (Erem_dot_fixa + dErem_dai @ a_hat_dot).item()
     #######################################################################################
 
     # Propagate with zero-order hold on control and disturbance

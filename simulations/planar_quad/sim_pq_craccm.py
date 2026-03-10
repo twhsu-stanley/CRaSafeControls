@@ -10,7 +10,7 @@ from scipy.io import loadmat
 from scipy.interpolate import interp1d
 
 USE_CP = False # whether to use conformal prediction
-USE_ADAPTIVE = True # whether to use adaptive control
+USE_ADAPTIVE = False # whether to use adaptive control
 
 VERIFY_GEODESIC = False
 USE_QPSOLVERS = False
@@ -33,8 +33,8 @@ interp_u_d = interp1d(
 )
 
 # Time setup
-dt = 0.01
-sim_T = 4 #t_d_data[-1] # Simulation time
+dt = 0.01/10
+sim_T = 1 #t_d_data[-1] # Simulation time
 tt = np.arange(0, sim_T, dt)
 T_steps = len(tt)
 
@@ -50,9 +50,9 @@ params = {
 }
 params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
-params["Gamma_ccm"] = np.diag(np.array([0.8])) # adaptive gain matrix for CRaCCM
-params["a_true"] = np.array([[1.0]]) # true parameters
-params["a_hat_norm_max"] = np.linalg.norm(np.array([[2.0]]), 2) # max norm of a_hat
+params["Gamma_ccm"] = np.diag(np.array([1.6])) # adaptive gain matrix for CRaCCM
+params["a_true"] = np.array([[3.0]]) # true parameters
+params["a_hat_norm_max"] = np.linalg.norm(np.array([[4.0]]), 2) # max norm of a_hat
 params["a_0"] = np.array([[0.0]]) # initial guess for a_hat
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 params["eta_ccm"] = 5.0
@@ -89,7 +89,7 @@ nu_ccm_hist = np.zeros((T_steps,))
 rho_ccm_hist = np.zeros((T_steps,))
 
 # Initial state
-x = interp_x_d(0).copy() + np.array([-1, -2.5, 0.1, 0, 0, 0])  # initial condition + perturbation
+x = interp_x_d(0).copy() + np.array([-1.5, -2.5, -np.pi/4, -1.0, -1.0, -np.pi/3])  # initial condition + perturbation
 
 # Initialize geodesic solver
 N = pq.params["geodesic"]["N"]
