@@ -11,28 +11,26 @@ class ACC(CtrlAffineSys):
         p, v, z = sp.symbols('p v z')
         x = sp.Matrix([p, v, z])
 
-        f0 = self.params['f0']
-        f1 = self.params['f1']
-        f2 = self.params['f2']
         v0 = self.params['v0']
         m = self.params['m']
 
-        Fr = f0 + f1 * v + f2 * v**2
-        f = sp.Matrix([[v], [-Fr/m], [v0 - v]])
+        f = sp.Matrix([[v], [0], [v0 - v]])
         g = sp.Matrix([[0], [1/m], [0]])
 
-        return x, f, g
+        # Define the symbolic uncertainty term Y(x)
+        Y = sp.Matrix([[0, 0, 0, 0], [1, v, v**2, 0], [0, 0, 0, 1]])
 
-    def define_clf_symbolic(self, x):
-        v = x[1]
-        vd = self.params['vd']
-        return (v - vd)**2
+        a0, a1, a2, a3 = sp.symbols('a0 a1 a2 a3')
+        a = sp.Matrix([a0, a1, a2, a3])
 
-    def define_cbf_symbolic(self, x):
+        return x, f, g, Y, a
+
+    def define_cbf_symbolic(self, x, a):
         v = x[1]
         z = x[2]
+        a3 = a[3]
         T = self.params['T']
-        return z - T * v
+        return z - T * (v - a3)
 
     def ctrl_nominal(self, x):
         v = x[1]

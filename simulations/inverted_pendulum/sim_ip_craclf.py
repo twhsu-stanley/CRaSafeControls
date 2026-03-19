@@ -157,7 +157,7 @@ for n in range(N):
         u_ref = ip_learned.ctrl_nominal(x)
         if USE_ADAPTIVE:
             a_hat[n, k, :] = ip_learned.a_L_hat[:,0]
-            u, V, slack_val, feas = ip_learned.ctrl_cra_clf_qp(x, u_ref, cp_quantile, dt, with_slack=True)
+            u, V, slack_val, feas = ip_learned.ctrl_craclf(x, u_ref, cp_quantile, dt, with_slack=True)
         else:
             u, V, slack_val, feas = ip_learned.ctrl_clf_qp(x, u_ref, with_slack=True)
 

@@ -33,10 +33,10 @@ class CtrlAffineSys:
 
         # Uncertainty parameters
         self.a_true = np.copy(self.params["a_true"]) if "a_true" in self.params else np.zeros((self.adim,1))
-        self.a_hat_b = np.copy(self.params["a_0"])  if "a_0" in self.params else np.zeros((self.adim,1)) # Initial guess for a_hat_b
-        self.a_hat_L = np.copy(self.params["a_0"])  if "a_0" in self.params else np.zeros((self.adim,1)) # Initial guess for a_hat_L
+        self.a_hat_cbf = np.copy(self.params["a_0"])  if "a_0" in self.params else np.zeros((self.adim,1)) # Initial guess for a_hat_cbf
+        self.a_hat_clf = np.copy(self.params["a_0"])  if "a_0" in self.params else np.zeros((self.adim,1)) # Initial guess for a_hat_clf
         self.a_hat_ccm = np.copy(self.params["a_0"])  if "a_0" in self.params else np.zeros((self.adim,1)) # Initial guess for a_hat_ccm
-        # WARNING: a_hat_b, a_hat_L, and a_hat_ccm should be initialized by copying, otherwise they will be references to the same array.
+        # NOTE: a_hat_cbf, a_hat_clf, and a_hat_ccm should be initialized by copying, otherwise they will be references to the same array.
 
         # For the scaling functions of the unmatched adapation laws
         self.eta_clf = self.params.get("eta_clf", 0.1)
@@ -47,17 +47,15 @@ class CtrlAffineSys:
         self.rho_ccm = self.params.get("rho_ccm", 0.0)
 
         # Adaptive gain matrices
-        self.Gamma_b = self.params.get("Gamma_b", np.eye(self.adim))
-        self.Gamma_L = self.params.get("Gamma_L", np.eye(self.adim))
+        self.Gamma_cbf = self.params.get("Gamma_cbf", np.eye(self.adim))
+        self.Gamma_clf = self.params.get("Gamma_clf", np.eye(self.adim))
         self.Gamma_ccm = self.params.get("Gamma_ccm", np.eye(self.adim))
 
-        clf_sym = self.define_clf_symbolic(x_sym)
-
-        aclf_sym = None
-
-        cbf_sym = self.define_cbf_symbolic(x_sym)
-
-        acbf_sym = None
+        # Define symbolic CLF and CBF 
+        # NOTE: To be general and to handle both regular and adaptive CLF/CBF, 
+        #       these functions depend on the uncertainty parameters. 
+        clf_sym = self.define_clf_symbolic(x_sym, a_sym)
+        cbf_sym = self.define_cbf_symbolic(x_sym, a_sym)
 
         if self.use_adaptive:
             # For projection-based adaptive controls
@@ -66,11 +64,8 @@ class CtrlAffineSys:
             self.a_err_max = np.ones((self.params["a_0"].shape[0], 1)) * self.a_hat_norm_max * 2 
             self.epsilon = self.params.get("epsilon", 1e-3) # a small value for numerical stability of projection operator
 
-            aclf_sym = self.define_aclf_symbolic(x_sym, a_sym)
-            acbf_sym = self.define_acbf_symbolic(x_sym, a_sym)
-
         # Convert symbolic functions into Python functions
-        self.lambdify_symbolic_funcs(x_sym, f_sym, g_sym, Y_sym, a_sym, clf_sym, cbf_sym, aclf_sym, acbf_sym)
+        self.lambdify_symbolic_funcs(x_sym, f_sym, g_sym, Y_sym, a_sym, clf_sym, cbf_sym)
 
     def dynamics(self, x, u):
         return (self.f(x) + self.g(x) @ u + self.Y(x) @ self.a_true).ravel()
@@ -84,21 +79,14 @@ class CtrlAffineSys:
     def define_system_symbolic(self):
         raise NotImplementedError("System definition not implemented.")
 
-    def define_clf_symbolic(self, x_sym):
+    def define_clf_symbolic(self, x_sym, a_hat_clf=None):
         pass
 
-    def define_cbf_symbolic(self, x_sym):
+    def define_cbf_symbolic(self, x_sym, a_hat_cbf=None):
         pass
 
-    def define_aclf_symbolic(self, x_sym, a_hat_L=None):
-        pass
-
-    def define_acbf_symbolic(self, x_sym, a_hat_b=None):
-        pass
-
-    def lambdify_symbolic_funcs(self, x_sym, f_sym, g_sym, Y_sym, a_hat_sym,
-                                clf_sym=None, cbf_sym=None, aclf_sym=None, acbf_sym=None):
-        if x_sym is None or f_sym is None or g_sym is None:
+    def lambdify_symbolic_funcs(self, x_sym, f_sym, g_sym, Y_sym, a_hat_sym, clf_sym=None, cbf_sym=None):
+        if x_sym is None or f_sym is None or g_sym is None or Y_sym is None or a_hat_sym is None:
             raise ValueError("Symbolic x, f, and g must be provided.")
 
         self.xdim = len(x_sym)
@@ -108,262 +96,79 @@ class CtrlAffineSys:
         self.g = sp.lambdify([x_sym], g_sym, modules='numpy')
         self.Y = sp.lambdify([x_sym], Y_sym, modules='numpy')
 
+        # CBF
         if cbf_sym is not None:
+            self.cbf = sp.lambdify([x_sym, a_hat_sym], cbf_sym, modules='numpy')
+
             dcbfdx = sp.simplify(sp.derive_by_array(cbf_sym, x_sym))
             dcbfdx = sp.Matrix(dcbfdx)  # Convert to Matrix for compatibility
-            self.dcbfdx = sp.lambdify([x_sym], dcbfdx, modules='numpy')
-            self.cbf = sp.lambdify([x_sym], cbf_sym, modules='numpy')
-            self.lf_cbf = sp.lambdify([x_sym], dcbfdx.T @ f_sym, modules='numpy')
-            self.lg_cbf = sp.lambdify([x_sym], dcbfdx.T @ g_sym, modules='numpy')
-            self.ddcbfdx = sp.lambdify([x_sym], sp.hessian(cbf_sym, x_sym), modules='numpy')
+            self.dcbfdx = sp.lambdify([x_sym, a_hat_sym], dcbfdx, modules='numpy')
+            self.lf_cbf = sp.lambdify([x_sym, a_hat_sym], dcbfdx.T @ f_sym, modules='numpy')
+            self.lg_cbf = sp.lambdify([x_sym, a_hat_sym], dcbfdx.T @ g_sym, modules='numpy')
+            self.lY_cbf = sp.lambdify([x_sym, a_hat_sym], dcbfdx.T @ Y_sym, modules='numpy') if Y_sym is not None else None
 
+            dcbfda = sp.simplify(sp.derive_by_array(cbf_sym, a_hat_sym))
+            dcbfda = sp.Matrix(dcbfda)  # Convert to Matrix for compatibility
+            self.dcbfda = sp.lambdify([x_sym, a_hat_sym], dcbfda, modules='numpy')
+
+        # CLF
         if clf_sym is not None:
+            self.clf = sp.lambdify([x_sym, a_hat_sym], clf_sym, modules='numpy')
             dclfdx = sp.simplify(sp.derive_by_array(clf_sym, x_sym))
             dclfdx = sp.Matrix(dclfdx)  # Convert to Matrix for compatibility
-            self.dclfdx = sp.lambdify([x_sym], dclfdx, modules='numpy')
-            self.clf = sp.lambdify([x_sym], clf_sym, modules='numpy')
-            self.lf_clf = sp.lambdify([x_sym], dclfdx.T @ f_sym, modules='numpy')
-            self.lg_clf = sp.lambdify([x_sym], dclfdx.T @ g_sym, modules='numpy')
-            self.ddclfdx = sp.lambdify([x_sym], sp.hessian(clf_sym, x_sym), modules='numpy')
-
-        # Adaptive control
-        if acbf_sym is not None:
-            self.acbf = sp.lambdify([x_sym, a_hat_sym], acbf_sym, modules='numpy')
-
-            dacbfdx = sp.simplify(sp.derive_by_array(acbf_sym, x_sym))
-            dacbfdx = sp.Matrix(dacbfdx)  # Convert to Matrix for compatibility
-            self.dacbfdx = sp.lambdify([x_sym, a_hat_sym], dacbfdx, modules='numpy')
-            self.lf_acbf = sp.lambdify([x_sym, a_hat_sym], dacbfdx.T @ f_sym, modules='numpy')
-            self.lg_acbf = sp.lambdify([x_sym, a_hat_sym], dacbfdx.T @ g_sym, modules='numpy')
-            self.lY_acbf = sp.lambdify([x_sym, a_hat_sym], dacbfdx.T @ Y_sym, modules='numpy') if Y_sym is not None else None
-
-            dacbfda = sp.simplify(sp.derive_by_array(acbf_sym, a_hat_sym))
-            dacbfda = sp.Matrix(dacbfda)  # Convert to Matrix for compatibility
-            self.dacbfda = sp.lambdify([x_sym, a_hat_sym], dacbfda, modules='numpy')
-
-        if aclf_sym is not None:
-            self.aclf = sp.lambdify([x_sym, a_hat_sym], aclf_sym, modules='numpy')
-            daclfdx = sp.simplify(sp.derive_by_array(aclf_sym, x_sym))
-            daclfdx = sp.Matrix(daclfdx)  # Convert to Matrix for compatibility
-            self.daclfdx = sp.lambdify([x_sym, a_hat_sym], daclfdx, modules='numpy')
-            self.lf_aclf = sp.lambdify([x_sym, a_hat_sym], daclfdx.T @ f_sym, modules='numpy')
-            self.lg_aclf = sp.lambdify([x_sym, a_hat_sym], daclfdx.T @ g_sym, modules='numpy')
-            self.lY_aclf = sp.lambdify([x_sym, a_hat_sym], daclfdx.T @ Y_sym, modules='numpy') if Y_sym is not None else None
+            self.dclfdx = sp.lambdify([x_sym, a_hat_sym], dclfdx, modules='numpy')
+            self.lf_clf = sp.lambdify([x_sym, a_hat_sym], dclfdx.T @ f_sym, modules='numpy')
+            self.lg_clf = sp.lambdify([x_sym, a_hat_sym], dclfdx.T @ g_sym, modules='numpy')
+            self.lY_clf = sp.lambdify([x_sym, a_hat_sym], dclfdx.T @ Y_sym, modules='numpy') if Y_sym is not None else None
     
-            daclfda = sp.simplify(sp.derive_by_array(aclf_sym, a_hat_sym))
-            daclfda = sp.Matrix(daclfda)
-            self.daclfda = sp.lambdify([x_sym, a_hat_sym], daclfda, modules='numpy')            
+            dclfda = sp.simplify(sp.derive_by_array(clf_sym, a_hat_sym))
+            dclfda = sp.Matrix(dclfda)
+            self.dclfda = sp.lambdify([x_sym, a_hat_sym], dclfda, modules='numpy')            
 
     # Control laws
-    # CLFs
-    # TODO: combine ctrl_cr_clf_qp and ctrl_cra_clf_qp
-    def ctrl_cr_clf_qp(self, x, u_ref, cp_quantile, with_slack=True):
-        """CR-CLF-QP Controller"""
-        if self.clf is None:
-            raise ValueError("CLF not defined.")
-        if u_ref is None:
-            u_ref = np.zeros((self.udim, 1))
-        if u_ref.shape[0] != self.udim:
-            raise ValueError("u_ref shape mismatch.")
-        
-        V = self.clf(x)
-        LfV = self.lf_clf(x)
-        LgV = self.lg_clf(x)
-        dclfdx = self.dclfdx(x)
-
-        cp_bound = cp_quantile * np.linalg.norm(dclfdx, 2)
-
-        W = self.params["weight"]["input"] if "weight" in self.params and "input" in self.params["weight"] else 1.0
-        W = W * np.eye(self.udim) if np.isscalar(W) else W
-
-        if with_slack:
-            # Constraints : A[u; slack] <= b
-            A = np.hstack([LgV, np.array([[-1]])])
-            b = -LfV - cp_bound - self.params["clf"]["rate"] * V
-            if "u_max" in self.params:
-                A = np.vstack([A, np.hstack([np.eye(self.udim), np.zeros((self.udim, 1))])])
-                umax = self.params["u_max"]
-                if np.isscalar(umax):
-                    b = np.vstack([b, umax * np.ones((self.udim, 1))])
-                elif umax.shape == (self.udim, 1) or umax.shape == (self.udim,):
-                    b = np.vstack([b, umax.reshape(-1, 1)])
-                else:
-                    raise ValueError("params['u_max'] should be either a scalar or an (udim, 1) array")
-            if "u_min" in self.params:
-                A = np.vstack([A, np.hstack([-np.eye(self.udim), np.zeros((self.udim, 1))])])
-                umin = self.params["u_min"]
-                if np.isscalar(umin):
-                    b = np.vstack([b, -umin * np.ones((self.udim, 1))])
-                elif umin.shape == (self.udim, 1) or umin.shape == (self.udim,):
-                    b = np.vstack([b, -umin.reshape(-1, 1)])
-                else:
-                    raise ValueError("params['u_min'] should be either a scalar or an (udim, 1) array")
-            H = np.block([[W, np.zeros((self.udim, 1))],
-                          [np.zeros((1, self.udim)), self.params["weight"]["slack"]]])
-            f = np.concatenate([-W @ u_ref.flatten(), [0]])
-            slack = cvxpy.Variable((1, 1))
-            u = cvxpy.Variable((self.udim, 1))
-            xvar = cvxpy.vstack([u, slack])
-            prob = cvxpy.Problem(cvxpy.Minimize(0.5 * cvxpy.quad_form(xvar, H) + f @ xvar), [A @ xvar <= b, slack >= 0])
-            prob.solve()
-            feas = prob.status == cvxpy.OPTIMAL
-            u_val = u.value if feas else np.array([self.params["u_min"] if LgV[i] > 0 else self.params["u_max"] for i in range(self.udim)])
-            slack_val = slack.value.item()
-        else:
-            A = LgV
-            b = -LfV - cp_bound - self.params["clf"]["rate"] * V
-            if "u_max" in self.params:
-                A = np.vstack([A, np.eye(self.udim)])
-                umax = self.params["u_max"]
-                if np.isscalar(umax):
-                    b = np.vstack([b, umax * np.ones((self.udim, 1))])
-                elif umax.shape == (self.udim, 1) or umax.shape == (self.udim,):
-                    b = np.vstack([b, umax.reshape(-1, 1)])
-                else:
-                    raise ValueError("params['u_max'] should be either a scalar or an (udim, 1) array")
-            if "u_min" in self.params:
-                A = np.vstack([A, -np.eye(self.udim)])
-                umin = self.params["u_min"]
-                if np.isscalar(umin):
-                    b = np.vstack([b, -umin * np.ones((self.udim, 1))])
-                elif umin.shape == (self.udim, 1) or umin.shape == (self.udim,):
-                    b = np.vstack([b, -umin.reshape(-1, 1)])
-                else:
-                    raise ValueError("params['u_min'] should be either a scalar or an (udim, 1) array")
-            f = -W @ u_ref.flatten()
-            u = cvxpy.Variable((self.udim, 1))
-            prob = cvxpy.Problem(cvxpy.Minimize(0.5 * cvxpy.quad_form(u, W) + f @ u), [A @ u <= b])
-            prob.solve()
-            feas = prob.status == cvxpy.OPTIMAL
-            u_val = u.value if feas else np.array([self.params["u_min"] if LgV[i] > 0 else self.params["u_max"] for i in range(self.udim)])
-            slack_val = []
-
-        return u_val, V, slack_val, feas
-    
-    def ctrl_cra_clf_qp(self, x, u_ref, cp_quantile, dt, with_slack=True):
+    def ctrl_craclf(self, x, u_ref, use_slack=True):
         """CRaCLF-QP Controller"""
-        if self.aclf is None:
+        if self.clf is None:
             raise ValueError("aCLF not defined.")
         if u_ref is None:
             u_ref = np.zeros((self.udim, 1))
         if u_ref.shape[0] != self.udim:
             raise ValueError("u_ref shape mismatch.")
         
-        a_hat_L = self.a_hat_L
+        a_hat_clf = self.a_hat_clf
 
-        V = self.aclf(x, a_hat_L)
-        LfV = self.lf_aclf(x, a_hat_L)
-        LgV = self.lg_aclf(x, a_hat_L)
-        LYV = self.lY_aclf(x, a_hat_L)
-        daclfdx = self.daclfdx(x, a_hat_L)
-        daclfda = self.daclfda(x, a_hat_L)
+        V = self.clf(x, a_hat_clf)
+        LfV = self.lf_clf(x, a_hat_clf)
+        LgV = self.lg_clf(x, a_hat_clf)
+        LYV = self.lY_clf(x, a_hat_clf)
+        dclfdx = self.dclfdx(x, a_hat_clf)
+        dclfda = self.dclfda(x, a_hat_clf)
 
-        cp_bound = cp_quantile * np.linalg.norm(daclfdx, 2)
+        if self.use_cp:
+            tightening =  self.cp_quantile * np.linalg.norm(dclfdx, 2)
+        else:
+            tightening = 0.0
 
-        W = self.params["weight"]["input"] if "weight" in self.params and "input" in self.params["weight"] else 1.0
-        W = W * np.eye(self.udim) if np.isscalar(W) else W
-
-        if with_slack:
+        if use_slack:
             # Constraints : A[u; slack] <= b
             A = np.hstack([LgV, np.array([[-1]])])
             b = (
-                -LfV 
-                -cp_bound
-                -LYV @ (a_hat_L + self.Gamma_L @ daclfda) #TODO: check sign
+                -LfV
+                -tightening
+                -LYV @ (a_hat_clf + self.Gamma_clf @ dclfda) #TODO: check sign
                 - self.params["clf"]["rate"] * V
-            )
-            if "u_max" in self.params:
-                A = np.vstack([A, np.hstack([np.eye(self.udim), np.zeros((self.udim, 1))])])
-                umax = self.params["u_max"]
-                if np.isscalar(umax):
-                    b = np.vstack([b, umax * np.ones((self.udim, 1))])
-                elif umax.shape == (self.udim, 1) or umax.shape == (self.udim,):
-                    b = np.vstack([b, umax.reshape(-1, 1)])
-                else:
-                    raise ValueError("params['u_max'] should be either a scalar or an (udim, 1) array")
-            if "u_min" in self.params:
-                A = np.vstack([A, np.hstack([-np.eye(self.udim), np.zeros((self.udim, 1))])])
-                umin = self.params["u_min"]
-                if np.isscalar(umin):
-                    b = np.vstack([b, -umin * np.ones((self.udim, 1))])
-                elif umin.shape == (self.udim, 1) or umin.shape == (self.udim,):
-                    b = np.vstack([b, -umin.reshape(-1, 1)])
-                else:
-                    raise ValueError("params['u_min'] should be either a scalar or an (udim, 1) array")
-            H = np.block([[W, np.zeros((self.udim, 1))],
-                          [np.zeros((1, self.udim)), self.params["weight"]["slack"]]])
-            f = np.concatenate([-W @ u_ref.flatten(), [0]])
-            slack = cvxpy.Variable((1, 1))
-            u = cvxpy.Variable((self.udim, 1))
-            xvar = cvxpy.vstack([u, slack])
-            prob = cvxpy.Problem(cvxpy.Minimize(0.5 * cvxpy.quad_form(xvar, H) + f @ xvar), [A @ xvar <= b, slack >= 0])
-            prob.solve()
-            feas = prob.status == cvxpy.OPTIMAL
-            u_val = u.value if feas else np.array([self.params["u_min"] if LgV[i] > 0 else self.params["u_max"] for i in range(self.udim)])
-            slack_val = slack.value.item()
+            ).item()
         else:
             A = LgV
             b = (
                 -LfV
-                -LYV @ (a_hat_L + self.Gamma_L @ daclfda) #TODO: check sign
-                -cp_bound 
-                -self.params["clf"]["rate"] * V
-            )
-            if "u_max" in self.params:
-                A = np.vstack([A, np.eye(self.udim)])
-                umax = self.params["u_max"]
-                if np.isscalar(umax):
-                    b = np.vstack([b, umax * np.ones((self.udim, 1))])
-                elif umax.shape == (self.udim, 1) or umax.shape == (self.udim,):
-                    b = np.vstack([b, umax.reshape(-1, 1)])
-                else:
-                    raise ValueError("params['u_max'] should be either a scalar or an (udim, 1) array")
-            if "u_min" in self.params:
-                A = np.vstack([A, -np.eye(self.udim)])
-                umin = self.params["u_min"]
-                if np.isscalar(umin):
-                    b = np.vstack([b, -umin * np.ones((self.udim, 1))])
-                elif umin.shape == (self.udim, 1) or umin.shape == (self.udim,):
-                    b = np.vstack([b, -umin.reshape(-1, 1)])
-                else:
-                    raise ValueError("params['u_min'] should be either a scalar or an (udim, 1) array")
-            f = -W @ u_ref.flatten()
-            u = cvxpy.Variable((self.udim, 1))
-            prob = cvxpy.Problem(cvxpy.Minimize(0.5 * cvxpy.quad_form(u, W) + f @ u), [A @ u <= b])
-            prob.solve()
-            feas = prob.status == cvxpy.OPTIMAL
-            u_val = u.value if feas else np.array([self.params["u_min"] if LgV[i] > 0 else self.params["u_max"] for i in range(self.udim)])
-            slack_val = None
-        
-        # Update a_hat_L
-        self.update_a_hat_L(x, dt)
+                -LYV @ (a_hat_clf + self.Gamma_clf @ dclfda)
+                - tightening
+                - self.params["clf"]["rate"] * V
+            ).item()
 
-        return u_val, V, slack_val, feas
-    
-    # CBFs
-    # TODO: combine ctrl_cr_cbf_qp and ctrl_cra_cbf_qp
-    def ctrl_cr_cbf_qp(self, x, u_ref, cp_quantile):
-        """CR-CBF-QP Controller"""
-        if self.cbf is None:
-            raise ValueError("CBF not defined.")
-        if u_ref is None:
-            u_ref = np.zeros((self.udim, 1))
-        if u_ref.shape[0] != self.udim:
-            raise ValueError("u_ref shape mismatch.")
-
-        h = self.cbf(x)
-        Lfh = self.lf_cbf(x)
-        Lgh = self.lg_cbf(x)
-        dcbfdx = self.dcbfdx(x)
-        cp_bound = cp_quantile * np.linalg.norm(dcbfdx, 2)
-
-        W = self.params["weight"]["input"] if "weight" in self.params and "input" in self.params["weight"] else 1.0
-        W = W * np.eye(self.udim) if np.isscalar(W) else W
-
-        A = -Lgh
-        b = Lfh - cp_bound + self.params["cbf"]["rate"] * h
         if "u_max" in self.params:
-            A = np.vstack([A, np.eye(self.udim)])
+            A = np.vstack([A, np.hstack([np.eye(self.udim), np.zeros((self.udim, 1))])]) if use_slack else np.vstack([A, np.eye(self.udim)])
             umax = self.params["u_max"]
             if np.isscalar(umax):
                 b = np.vstack([b, umax * np.ones((self.udim, 1))])
@@ -371,8 +176,9 @@ class CtrlAffineSys:
                 b = np.vstack([b, umax.reshape(-1, 1)])
             else:
                 raise ValueError("params['u_max'] should be either a scalar or an (udim, 1) array")
+
         if "u_min" in self.params:
-            A = np.vstack([A, -np.eye(self.udim)])
+            A = np.vstack([A, np.hstack([-np.eye(self.udim), np.zeros((self.udim, 1))])]) if use_slack else np.vstack([A, -np.eye(self.udim)])
             umin = self.params["u_min"]
             if np.isscalar(umin):
                 b = np.vstack([b, -umin * np.ones((self.udim, 1))])
@@ -380,46 +186,67 @@ class CtrlAffineSys:
                 b = np.vstack([b, -umin.reshape(-1, 1)])
             else:
                 raise ValueError("params['u_min'] should be either a scalar or an (udim, 1) array")
-        u = cvxpy.Variable((self.udim, 1))
-        f = -W @ u_ref.flatten()
-        prob = cvxpy.Problem(cvxpy.Minimize(0.5 * cvxpy.quad_form(u, W) + f @ u), [A @ u <= b])
-        prob.solve()
 
-        feas = prob.status == cvxpy.OPTIMAL
-        u_val = u.value if feas else np.zeros(self.udim)
+        # Solve QP: min_u 0.5 u^T P u + f^T u subject to A u <= b
+        if use_slack:
+            P = np.block([
+                [np.eye(self.udim), np.zeros((self.udim, 1))],
+                [np.zeros((1, self.udim)), self.params["weight"]["slack"]],
+            ])
+            f = np.concatenate([-u_ref, [0]])
 
-        return u_val, h, feas
+            # Enforce slack >= 0
+            A = np.vstack([A, np.hstack([np.zeros((1, self.udim)), np.array([[-1.0]])])])
+            b = np.vstack([b, np.array([[0.0]])])
+        else:
+            P = np.eye(self.udim)
+            f = -u_ref
 
-    def ctrl_cra_cbf_qp(self, x, u_ref, cp_quantile, dt):
-        """CRaCBF-QP Controller"""
-        if self.acbf is None:
-            raise ValueError("aCBF not defined.")
+        qp_sol = solve_qp(P, f, A, b, solver='quadprog')
+        if qp_sol is None:
+            raise ValueError("solve_qp returns None")
+        
+        if use_slack:
+            u_qp = qp_sol[: self.udim].reshape(self.udim, 1)
+            slack_val = qp_sol[-1]
+        else:
+            u_qp = qp_sol.reshape(self.udim, 1)
+            slack_val = 0.0
+        
+        # Update adaptive parameter
+        if self.use_adaptive:
+            self.adaptation_craclf(x)
+
+        return u_qp, slack_val
+    
+    def ctrl_cracbf(self, x, u_ref):
+        """CRaCBF QP Controller"""
+        if self.cbf is None:
+            raise ValueError("CBF not defined")
         if u_ref is None:
             u_ref = np.zeros((self.udim, 1))
         if u_ref.shape[0] != self.udim:
-            raise ValueError("u_ref shape mismatch.")
+            raise ValueError("u_ref shape mismatch")
+
+        h = self.cbf(x, self.a_hat_cbf)
+        Lfh = self.lf_cbf(x, self.a_hat_cbf)
+        Lgh = self.lg_cbf(x, self.a_hat_cbf)
+        LYh = self.lY_cbf(x, self.a_hat_cbf)
+        dcbfdx = self.dcbfdx(x, self.a_hat_cbf)
         
-        a_hat_b = self.a_hat_b
-
-        h = self.acbf(x, a_hat_b)
-        Lfh = self.lf_acbf(x, a_hat_b)
-        Lgh = self.lg_acbf(x, a_hat_b)
-        LYh = self.lY_acbf(x, a_hat_b)
-        dacbfdx = self.dacbfdx(x, a_hat_b)
-        dacbfda = self.dacbfda(x, a_hat_b)
-
-        cp_bound = cp_quantile * np.linalg.norm(dacbfdx, 2)
-
-        W = self.params["weight"]["input"] if "weight" in self.params and "input" in self.params["weight"] else 1.0
-        W = W * np.eye(self.udim) if np.isscalar(W) else W
-
+        if self.use_cp:
+            tightening =  self.cp_quantile * np.linalg.norm(dcbfdx, 2)
+        else:
+            tightening = 0.0
+        
+        # A u <= b
         A = -Lgh
         b = (
             Lfh 
-            + LYh @ (a_hat_b - self.Gamma_b @ dacbfda) #TODO: check sign
-            - cp_bound
-            + self.params["cbf"]["rate"] * (h - 0.5 * self.a_err_max.T @ np.linalg.inv(self.Gamma_b) @ self.a_err_max)
-        )
+            + LYh @ self.a_hat_cbf #TODO: check sign
+            - tightening
+            + self.params["cbf"]["rate"] * (h - 0.5 * self.a_err_max.T @ np.linalg.inv(self.Gamma_cbf) @ self.a_err_max)
+        ).item()
         if "u_max" in self.params:
             A = np.vstack([A, np.eye(self.udim)])
             umax = self.params["u_max"]
@@ -438,21 +265,22 @@ class CtrlAffineSys:
                 b = np.vstack([b, -umin.reshape(-1, 1)])
             else:
                 raise ValueError("params['u_min'] should be either a scalar or an (udim, 1) array")
-        u = cvxpy.Variable((self.udim, 1))
-        f = -W @ u_ref.flatten()
-        prob = cvxpy.Problem(cvxpy.Minimize(0.5 * cvxpy.quad_form(u, W) + f @ u), [A @ u <= b])
-        prob.solve()
+            
+        # Solve QP: min_u 0.5 * u^T P u + f^T u  subject to A u <= b
+        P = np.eye(self.udim)
+        f = -u_ref
+        qp_sol = solve_qp(P, f, A, b, solver='quadprog')
+        if qp_sol is None:
+            raise ValueError("solve_qp returns None")
+        u_qp = qp_sol.reshape(-1,1)
 
-        feas = prob.status == cvxpy.OPTIMAL
-        u_val = u.value if feas else np.zeros(self.udim)
+        # Update adaptive parameter
+        if self.use_adaptive:
+            self.adaptation_cracbf(x)
 
-        # Update a_hat_b
-        self.update_a_hat_b(x, dt)
-
-        return u_val, h, feas
+        return u_qp
     
-    # CCMs
-    def ctrl_cra_ccm(self, x, x_d, u_d, use_qpsolvers=False, use_slack=True):
+    def ctrl_craccm(self, x, x_d, u_d, use_qpsolvers=False, use_slack=True):
         """CRaCCM control law"""
         # x: current state
         # x_d: desired state
@@ -481,7 +309,7 @@ class CtrlAffineSys:
         if use_qpsolvers is True: 
             if use_slack:
                 P = np.block([[np.eye(self.udim),        np.zeros((self.udim, 1))],
-                            [np.zeros((1, self.udim)), np.array([[self.weight_slack]])],
+                              [np.zeros((1, self.udim)), np.array([[self.weight_slack]])],
                 ])
                 q = np.zeros(self.udim + 1)
                 G = np.vstack([np.hstack([A, np.array([[-1.0]])]),
@@ -528,9 +356,14 @@ class CtrlAffineSys:
 
         uc = u_d + u_qp
 
+        # Pint uncertainty terms for debugging
+        U1 = -((self.a_hat_ccm - self.a_true).T @ self.Y(x).T @ self.gamma_s1_M_x.T).item() # term to be cancelled by adaptive a_dot
+        U2 = (self.gamma_s0_M_d @ self.Y(x_d) @ self.a_hat_ccm).item() # term to be cancelled by adaptive rho_dot
+        print("U1=", U1, "; U2=", U2)
+
         # Update adaptive parameter
         if self.use_adaptive:
-            self.adaptation_cra_ccm(x, x_d)
+            self.adaptation_craccm(x, x_d)
 
         return uc, slack
 
@@ -584,27 +417,39 @@ class CtrlAffineSys:
                 #    raise ValueError(f"geodesic error={error:2E} exceeds threshold = 1e-2")
 
     # Adaptation laws
-    def adaptation_cra_clf(self, x, dt):
+    def adaptation_craclf(self, x):
         """CRaCLF adaptation law"""
+        V = self.clf(x, self.a_hat_clf)
+        dclfda = self.dclfda(x, self.a_hat_clf)
+        dclfdx = self.dclfdx(x, self.a_hat_clf)
 
-        daclfdx = self.daclfdx(x, self.a_hat_L)
-
-        # Projection operator to enforce bounds on a_hat_L
+        # Projection operator to enforce bounds on a_hat_clf
         #TODO: check sign
-        #self.a_hat_L += self.Gamma_L @ (daclfdx.T @ self.Y(x)).T, self.a_hat_norm_max
-        self.a_hat_L += projection_operator(self.a_hat_L, self.Gamma_L @ (daclfdx.T @ self.Y(x)).T, self.a_hat_norm_max, self.epsilon) * dt
+        a_hat_dot = self.nu_clf() * (self.Gamma_clf
+                    @ projection_operator(self.a_hat_clf, self.Y(x).T @ dclfdx.T, self.a_hat_norm_max, self.epsilon))
+        
+        rho_dot = -self.nu_clf()/(self.dnu_drho_clf() * (V + self.eta_clf)) * (dclfda @ a_hat_dot).item()
 
-    def adaptation_cra_cbf(self, x, dt):
+        self.a_hat_clf += a_hat_dot * self.dt
+        self.rho_clf += rho_dot * self.dt
+
+    def adaptation_cracbf(self, x):
         """CRaCBF adaptation law"""
+        h = self.cbf(x, self.a_hat_cbf)
+        dcbfda = self.dcbfda(x, self.a_hat_cbf)
+        dcbfdx = self.dcbfdx(x, self.a_hat_cbf)
 
-        dacbfdx = self.dacbfdx(x, self.a_hat_b)
-        #self.a_hat_b += (-self.Gamma_b @ (dacbfdx.T @ self.Y(x)).T) * dt
-
-        # Projection operator to enforce bounds on a_hat_b
+        # Projection operator to enforce bounds on a_hat_cbf
         #TODO: check sign
-        self.a_hat_b += projection_operator(self.a_hat_b, -self.Gamma_b @ (dacbfdx.T @ self.Y(x)).T, self.a_hat_norm_max, self.epsilon) * dt
+        a_hat_dot = self.nu_cbf() * (self.Gamma_cbf
+                    @ projection_operator(self.a_hat_cbf, -self.Y(x).T @ dcbfdx.T, self.a_hat_norm_max, self.epsilon))
+        
+        rho_dot = -self.nu_cbf()/(self.dnu_drho_cbf() * (h + self.eta_cbf)) * (dcbfda @ a_hat_dot).item()
 
-    def adaptation_cra_ccm(self, x, x_d):
+        self.a_hat_cbf += a_hat_dot * self.dt
+        self.rho_cbf += rho_dot * self.dt
+
+    def adaptation_craccm(self, x, x_d):
         """CRaCCM adaptation law"""
 
         a_hat_dot = np.linalg.inv(self.Gamma_ccm) @ projection_operator(self.a_hat_ccm, 
@@ -612,10 +457,12 @@ class CtrlAffineSys:
                                             self.a_hat_norm_max, self.epsilon)
         #a_hat_dot = self.nu_ccm() * np.linalg.inv(self.Gamma_ccm) @ self.Y(x).T @ self.gamma_s1_M_x.T
         
-        uu1 = (2 * self.gamma_s0_M_d @ self.Y(x_d) @ self.a_hat_ccm).item()
-        uu2 = (self.dErem_dai @ a_hat_dot).item()
-        print("uu1 = ", uu1, "; uu2 = ", uu2)
-        rho_dot = -(self.nu_ccm() * (uu1 + uu2)) / (self.dnu_drho_ccm() * (self.Erem + self.eta_ccm))
+        c1 = (2 * self.gamma_s0_M_d @ self.Y(x_d) @ self.a_hat_ccm).item()
+        c2 = (self.dErem_dai @ a_hat_dot).item()
+        # Printing for debugging
+        print("dErem_dai = ", self.dErem_dai, "; a_hat_dot = ", a_hat_dot)
+        print("c1 = ", c1, "; c2 = ", c2)
+        rho_dot = -(self.nu_ccm() * (c1 + c2)) / (self.dnu_drho_ccm() * (self.Erem + self.eta_ccm))
         
         # For debugging
         #self.a_hat_dot = a_hat_dot
@@ -627,16 +474,20 @@ class CtrlAffineSys:
 
     # Scaling functions for unmatched adaptive controls
     def nu_clf(self):
-        pass
+        nu = np.arctan(self.rho_clf)/np.pi + 1.0
+        return nu
     
     def dnu_drho_clf(self):
-        pass
+        dnu_drho = 1/(1+(self.rho_clf)**2)/np.pi
+        return max(dnu_drho, 1e-20)
 
     def nu_cbf(self):
-        pass
+        nu = np.arctan(self.rho_cbf)/np.pi + 1.0
+        return nu
     
     def dnu_drho_cbf(self):
-        pass
+        dnu_drho = 1/(1+(self.rho_cbf)**2)/np.pi
+        return max(dnu_drho, 1e-20)
     
     def nu_ccm(self):
         nu = 0.9 * np.exp(self.rho_ccm) + 0.1 # must be bounded away from zero

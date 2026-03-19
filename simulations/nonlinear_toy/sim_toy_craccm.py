@@ -9,7 +9,7 @@ from dynsys.geodesic_solver import GeodesicSolver
 from scipy.interpolate import interp1d
 
 USE_CP = False # whether to use conformal prediction
-USE_ADAPTIVE = True # whether to use adaptive control
+USE_ADAPTIVE = False # whether to use adaptive control
 
 VERIFY_GEODESIC = False
 USE_QPSOLVERS = True
@@ -149,7 +149,7 @@ for i in range(T_steps):
     toy.calc_geodesic(geodesic_solver, x, x_d, verify_geodesic=VERIFY_GEODESIC)
 
     # Implement ccm control law
-    uc, slack = toy.ctrl_cra_ccm(x, x_d, u_d, use_qpsolvers=USE_QPSOLVERS)
+    uc, slack = toy.ctrl_craccm(x, x_d, u_d, use_qpsolvers=USE_QPSOLVERS)
 
     u_hist[:, i] = uc.ravel()
     slack_hist[i] = slack

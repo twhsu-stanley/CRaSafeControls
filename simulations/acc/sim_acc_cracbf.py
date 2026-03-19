@@ -3,8 +3,8 @@ import matplotlib.pyplot as plt
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-from dynsys.acc.acc_uncertain import ACC_UNCERTAIN
-from dynsys.acc.acc_uncertain_sindy import ACC_UNCERTAIN_SINDY
+from dynsys.acc.acc import ACC
+from dynsys.acc.acc_sindy import ACC_SINDY
 import pickle
 
 USE_CP = 1 # 1 or 0: whether to use conformal prediction
@@ -124,7 +124,7 @@ for n in range(N):
         u_ref = acc_learned.ctrl_nominal(x)
         if USE_ADAPTIVE:
             a_hat[n, k, :] = acc_learned.a_b_hat[:,0]
-            u, h, feas = acc_learned.ctrl_cra_cbf_qp(x, u_ref, cp_quantile, dt)
+            u, h, feas = acc_learned.ctrl_cracbf(x, u_ref, cp_quantile, dt)
             if h - set_tightening < 0:
                 Sigma_score += 1
         else:

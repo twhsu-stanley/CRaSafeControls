@@ -33,8 +33,8 @@ interp_u_d = interp1d(
 )
 
 # Time setup
-dt = 0.01/10
-sim_T = 1 #t_d_data[-1] # Simulation time
+dt = 0.01/2
+sim_T = t_d_data[-1] # Simulation time
 tt = np.arange(0, sim_T, dt)
 T_steps = len(tt)
 
@@ -50,11 +50,11 @@ params = {
 }
 params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
-params["Gamma_ccm"] = np.diag(np.array([1.6])) # adaptive gain matrix for CRaCCM
-params["a_true"] = np.array([[3.0]]) # true parameters
-params["a_hat_norm_max"] = np.linalg.norm(np.array([[4.0]]), 2) # max norm of a_hat
-params["a_0"] = np.array([[0.0]]) # initial guess for a_hat
-params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
+params["Gamma_ccm"] = np.diag(np.array([15, 15])) # adaptive gain matrix for CRaCCM
+params["a_true"] = np.array([[-0.0], [-0.6]]) # true parameters
+params["a_hat_norm_max"] = np.linalg.norm(np.array([[1.0], [0.6]]), 2) # max norm of a_hat
+params["a_0"] = np.array([[-1.0], [0.5]]) # initial guess for a_hat
+params["epsilon"] = 1e-3 # small value for numerical stability of projection operator
 params["eta_ccm"] = 5.0
 params["rho_ccm"] = 0
 
@@ -89,7 +89,7 @@ nu_ccm_hist = np.zeros((T_steps,))
 rho_ccm_hist = np.zeros((T_steps,))
 
 # Initial state
-x = interp_x_d(0).copy() + np.array([-1.5, -2.5, -np.pi/4, -1.0, -1.0, -np.pi/3])  # initial condition + perturbation
+x = interp_x_d(0).copy() + np.array([-1.0, -0.0, 0.0, -1.2, -0.5, 0.0])  # initial condition + perturbation
 
 # Initialize geodesic solver
 N = pq.params["geodesic"]["N"]
@@ -119,7 +119,7 @@ for i in range(T_steps):
     pq.calc_geodesic(geodesic_solver, x, x_d, verify_geodesic=VERIFY_GEODESIC)
 
     # Implement ccm control law
-    uc, slack = pq.ctrl_cra_ccm(x, x_d, u_d, use_qpsolvers=USE_QPSOLVERS, use_slack=USE_SLACK)
+    uc, slack = pq.ctrl_craccm(x, x_d, u_d, use_qpsolvers=USE_QPSOLVERS, use_slack=USE_SLACK)
     #uc = u_d + u_qp
     u_hist[:,i] = uc.ravel()
     slack_hist[i] = slack
@@ -197,12 +197,12 @@ plt.suptitle('State: Actual vs. Nominal')
 fig, axs = plt.subplots(3, 1)
 axs = axs.flatten()
 axs[0].plot(tt, u_hist[0, :], 'r-', label='u_1: CCM')
-#axs[0].plot(tt, interp_u_d(tt)[0,0,:], 'k--', label='u_d_1')
+axs[0].plot(tt, interp_u_d(tt)[0,0,:], 'k--', label='u_d_1')
 axs[0].set_ylabel('u0 (N)')
 axs[0].legend()
 axs[0].grid(True)
 axs[1].plot(tt, u_hist[1, :], 'b-', label='u_2: CCM')
-#axs[1].plot(tt, interp_u_d(tt)[1,0,:], 'k--', label='u_d_2')
+axs[1].plot(tt, interp_u_d(tt)[1,0,:], 'k--', label='u_d_2')
 axs[1].set_ylabel('u1 (N)')
 axs[1].legend()
 axs[1].grid(True)

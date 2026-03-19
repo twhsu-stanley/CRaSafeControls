@@ -124,7 +124,7 @@ for n in range(N):
         u_ref = Dubins_learned.ctrl_nominal(x)
         if USE_ADAPTIVE:
             a_hat[n, k, :] = Dubins_learned.a_b_hat[:,0]
-            u, h, feas = Dubins_learned.ctrl_cra_cbf_qp(x, u_ref, cp_quantile, dt)
+            u, h, feas = Dubins_learned.ctrl_cracbf(x, u_ref, cp_quantile, dt)
             if h - set_tightening < 0:
                 Sigma_score += 1
         else:

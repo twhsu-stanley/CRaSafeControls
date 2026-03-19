@@ -9,8 +9,8 @@ class ACC_SINDY(CtrlAffineSys):
 
     def define_system_symbolic(self):
         # Symbolic states
-        x0, x1, x2 = sp.symbols('x0 x1 x2')
-        x = sp.Matrix([x0, x1, x2])
+        p, v, z = sp.symbols('p v z')
+        x = sp.Matrix([p, v, z])
 
         feature_names = self.params["feature_names"]
         coefficients = self.params["coefficients"]
@@ -19,25 +19,21 @@ class ACC_SINDY(CtrlAffineSys):
 
         f = sindy_prediction_symbolic(x, np.array([0.0]), feature_names, coefficients, idx_x)
         g = sindy_prediction_symbolic(x, np.array([1.0]), feature_names, coefficients, idx_u)
-        
-        # Define the symbolic uncertainty term Y(x)
-        Y = sp.Matrix([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
 
-        a0, a1, a2 = sp.symbols('a0 a1 a2')
-        a = sp.Matrix([a0, a1, a2])
+        # Define the symbolic uncertainty term Y(x)
+        Y = sp.Matrix([[0, 0, 0, 0], [1, v, v**2, 0], [0, 0, 0, 1]])
+
+        a0, a1, a2, a3 = sp.symbols('a0 a1 a2 a3')
+        a = sp.Matrix([a0, a1, a2, a3])
 
         return x, f, g, Y, a
 
-    def define_clf_symbolic(self, x):
-        v = x[1]
-        vd = self.params['vd']
-        return (v - vd)**2
-
-    def define_cbf_symbolic(self, x):
+    def define_cbf_symbolic(self, x, a):
         v = x[1]
         z = x[2]
+        a3 = a[3]
         T = self.params['T']
-        return z - T * v
+        return z - T * (v - a3)
 
     def ctrl_nominal(self, x):
         v = x[1]
