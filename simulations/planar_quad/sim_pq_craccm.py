@@ -44,8 +44,9 @@ params = {
     "m": 0.486,
     "g": 9.81,
     "J": 0.00383,
-    "ccm": {"rate": 0.8, "weight_slack": weight_slack},
+    "ccm": {"rate": 0.8},
     "geodesic": {"N": 8, "D": 2}, # N = D + a
+    "weight_slack": weight_slack,
     "dt": dt,
 }
 params["use_adaptive"] = USE_ADAPTIVE

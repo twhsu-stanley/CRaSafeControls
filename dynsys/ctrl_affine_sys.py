@@ -17,7 +17,7 @@ class CtrlAffineSys:
         self.use_cp = self.params.get("use_cp", False)
         self.cp_quantile = self.params.get("cp_quantile", 0.0)
         self.use_adaptive = self.params.get("use_adaptive", False)
-
+        self.weight_slack = self.params.get("weight_slack", 100)
         self.dt = self.params.get("dt")
 
         # Let subclass define symbolic system
@@ -28,8 +28,6 @@ class CtrlAffineSys:
         assert(f_sym.shape[0] == x_sym.shape[0])
         assert(g_sym.shape[0] == x_sym.shape[0])
         assert(Y_sym.shape[1] == a_sym.shape[0])
-
-        self.weight_slack = self.params["ccm"]["weight_slack"] if "weight_slack" in self.params["ccm"] else 100
 
         # Uncertainty parameters
         self.a_true = np.copy(self.params["a_true"]) if "a_true" in self.params else np.zeros((self.adim,1))
@@ -60,9 +58,10 @@ class CtrlAffineSys:
         if self.use_adaptive:
             # For projection-based adaptive controls
             self.a_hat_norm_max = self.params["a_hat_norm_max"]
-            #TODO: check correctness: Are we considering box limits?
-            self.a_err_max = np.ones((self.params["a_0"].shape[0], 1)) * self.a_hat_norm_max * 2 
+            self.a_err_max = np.ones((self.adim, 1))/np.sqrt(self.adim) * self.a_hat_norm_max * 2 #TODO: check correctness
             self.epsilon = self.params.get("epsilon", 1e-3) # a small value for numerical stability of projection operator
+        else:
+            self.a_err_max = np.zeros((self.adim,1))
 
         # Convert symbolic functions into Python functions
         self.lambdify_symbolic_funcs(x_sym, f_sym, g_sym, Y_sym, a_sym, clf_sym, cbf_sym)
@@ -246,7 +245,7 @@ class CtrlAffineSys:
             + LYh @ self.a_hat_cbf #TODO: check sign
             - tightening
             + self.params["cbf"]["rate"] * (h - 0.5 * self.a_err_max.T @ np.linalg.inv(self.Gamma_cbf) @ self.a_err_max)
-        ).item()
+        )
         if "u_max" in self.params:
             A = np.vstack([A, np.eye(self.udim)])
             umax = self.params["u_max"]
