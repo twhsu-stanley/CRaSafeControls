@@ -2,15 +2,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 import sys
 import os
+from scipy.integrate import solve_ivp
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-from dynsys.acc.acc import ACC
 from dynsys.acc.acc_sindy import ACC_SINDY
 import pickle
 
-USE_CP = 1 # 1 or 0: whether to use conformal prediction
-USE_ADAPTIVE = 1 # 1 or 0: whether to use adaptive control
+USE_CP = True # whether to use conformal prediction
+USE_ADAPTIVE = True # whether to use adaptive control
 
-# Load the SINDy model ##########################################################################
+# Load the SINDy model ###################################################
 with open('sindy_models/model_acc_traj_sindy', 'rb') as file:
     model = pickle.load(file)
 
@@ -34,8 +34,7 @@ for i in range(len(feature_names)):
         
 cp_quantile = model["model_error"]['quantile']
 print("cp_quantile = ", cp_quantile)
-
-cp_quantile = cp_quantile * USE_CP # setting cp_quantile = 0 is equivalent to using the regular cbf
+##########################################################################
 
 # Time setup
 dt = 0.01
@@ -44,196 +43,148 @@ tt = np.arange(0, sim_T, dt)
 
 # System parameters
 params = {
-    "v0": 15,
-    "vd": 20,
-    "m": 2000,
-    "f0": 0.5,
-    "f1": 5.0,
-    "f2": 1.0,
-    "T": 1.0,
-    "cbf": {"rate": 2},
-    "weight": {"input": 2 / (2000**2)},#2 / (2000**2)
-    "Kp": 10,  # P gain for the nominal controller
+    "v0": 15.0,
+    "vd": 20.0,
+    "m": 2000.0,
+    "grav": 9.81,
+    "ca": 0.3,
+    "cd": 0.3,
+    "Kp": 100.0, # P gain for the nominal controller
+    "T": 1.0, # look-ahead time
+    "cbf": {"rate": 2.0},
+    "dt": dt
 }
-params["a_true"] = np.array([
-    [-params['f0']/params['m']],
-    [-params['f1']/params['m']], 
-    [-params['f2']/params['m']]
-]) # true a(Theta)
-
-# True system
-acc_true = ACC(params)
+#params["u_max"] = params["ca"] * params["m"] * params["grav"]
+#params["u_min"] = -params["cd"] * params["m"] * params["grav"]
+params["use_adaptive"] = USE_ADAPTIVE
+params["use_cp"] = USE_CP
+params["cp_quantile"] = cp_quantile
+params["Gamma_cbf"] = np.diag(np.array([100.0, 100.0, 10.0, 10.0])) # adaptive gain matrix for CRaCCM
+params["a_true"] = np.array([[-0.1], [-2.0], [-0.1], [-4.0]]) # true parameters
+params["a_hat_norm_max"] = np.linalg.norm(params["a_true"], 2) # TODO: check this
+params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
+params["eta_cbf"] = 10.0
 
 params["feature_names"] = feature_names
 params["coefficients"] = coefficients
 params["idx_x"] = idx_x
 params["idx_u"] = idx_u
-params["use_adaptive"] = USE_ADAPTIVE
-params["Gamma_b"] = np.diag([1,1,1]) * 1e-4 # adaptive gain matrix for CRaCBF
-#params["Gamma_L"] = np.eye(3) * 0.01 # adaptive gain matrix for CRaCLF
-# True a: -np.array([[0.5], [5.0], [1.0]]) / 2000 * 1.5
-params["a_hat_norm_max"] = np.linalg.norm(np.array([[0.5], [5.0], [1.0]])/2000 * 2.0, 2) # max norm of a_hat
-params["a_0"] = np.array([[0.0], [0.0], [0.0]]) # initial guess for a_hat
-params["epsilon"] = 1e-3 # small value for numerical stability of projection operator
 
-# Learned mode
-acc_learned = ACC_SINDY(params)
+# Learned model
+acc_sindy = ACC_SINDY(params)
 
 # Initial conditions
-N = 2
-rand_temp = np.random.rand(N)
-x0 = np.vstack([
-    rand_temp * 0,
-    rand_temp * 21 + params["vd"],
-    params["T"] * (rand_temp * 21 + params["vd"]) + np.random.rand(N) * 15
-])
+x0 = np.array([0.0, 30.0, 50.0])
+x = x0.copy()
+a_hat_cbf = np.array([[0.0], [0.0], [0.0], [0.0]]) # initial guess for a_hat
+rho_cbf = 0.0
+x_ext = np.hstack((x, a_hat_cbf.ravel(), rho_cbf)) # extended state with a_hat and rho
 
-# History arrays
-x_hist = np.zeros((N, len(tt), 3))
-u_hist = np.zeros((N, len(tt)))
-h_hist = np.zeros((N, len(tt)))
+# Check if Gamma_cbf is valid
 if USE_ADAPTIVE:
-    a_hat = np.zeros((N, len(tt), 3))
-Sigma_score = 0
+    if np.min(np.linalg.eigvals(acc_sindy.Gamma_cbf)) < np.linalg.norm(acc_sindy.a_err_max, 2)**2 / (2 * acc_sindy.nu_cbf(rho_cbf) * acc_sindy.cbf(x, a_hat_cbf).item()):
+        raise RuntimeError("Gamma_cbf is not valid: minimal eigenvalue is too small")
 
-# Check if Gamma_b is valid
-if USE_ADAPTIVE:
-    set_tightening = 0.5 * acc_learned.a_err_max.T @ np.linalg.inv(acc_learned.Gamma_b) @ acc_learned.a_err_max
-    if np.min(np.linalg.eigvals(acc_learned.Gamma_b)) < np.linalg.norm(acc_learned.a_err_max, 2)**2 / (2 * set_tightening):
-        raise RuntimeError("Gamma_b is not valid: minimal eigenvalue is too small")
+# Check if the initial state is in the safe set
+if (acc_sindy.cbf(x, a_hat_cbf).item() - 0.5 * acc_sindy.a_err_max.T @ np.linalg.inv(acc_sindy.Gamma_cbf) @ acc_sindy.a_err_max) < 1e-3:
+    raise ValueError("Initial condition unsafe")
 
-for n in range(N):
+x_hist = np.zeros((len(tt), 3))
+u_hist = np.zeros(len(tt))
+h_hist = np.zeros(len(tt))
+a_hat_cbf_hist = np.zeros((acc_sindy.adim, len(tt)))
+a_true_hist = np.zeros((acc_sindy.adim, len(tt)))
+nu_cbf_hist = np.zeros((len(tt),))
+rho_cbf_hist = np.zeros((len(tt),))
 
-    x = np.copy(x0[:, n])
+for k in range(len(tt)):
+    t = tt[k]
+    print("Time: ", t)
 
-    if USE_ADAPTIVE:
-        # Reset a_hat for each new trajectory
-        acc_learned.a_b_hat = np.copy(params["a_0"])
+    x_hist[k, :] = x
 
-        if acc_learned.acbf(x0[:, n], acc_learned.a_b_hat) - set_tightening <= 0:
-            raise RuntimeError("Initial condition unsafe: h(x0, a_hat_0) < 0")
-    else:
-        if acc_learned.cbf(x0[:, n]) <= 0:
-            raise RuntimeError("Initial condition unsafe: h(x0) < 0")
+    # Store adaptation parameters
+    a_hat_cbf_hist[:, k] = a_hat_cbf.ravel()
+    a_true_hist[:, k] = acc_sindy.a_true.ravel()
+    nu_cbf_hist[k] = acc_sindy.nu_cbf(rho_cbf)
+    rho_cbf_hist[k] = rho_cbf
 
-    for k in range(len(tt)):
-        t = tt[k]
-        x_hist[n, k, :] = x
+    u_ref = acc_sindy.ctrl_nominal(x)
+    u = acc_sindy.ctrl_cracbf(x, a_hat_cbf, u_ref)
+    u_hist[k] = u.item()
+    h_hist[k] = acc_sindy.cbf(x, a_hat_cbf).item()
 
-        # Control
-        u_ref = acc_learned.ctrl_nominal(x)
-        if USE_ADAPTIVE:
-            a_hat[n, k, :] = acc_learned.a_b_hat[:,0]
-            u, h, feas = acc_learned.ctrl_cracbf(x, u_ref, cp_quantile, dt)
-            if h - set_tightening < 0:
-                Sigma_score += 1
-        else:
-            #u, h, feas = acc_learned.ctrl_cracbf(x, u_ref)
-            u, h, feas = acc_learned.ctrl_cr_cbf_qp(x, u_ref, cp_quantile)
-            if h < 0: #TODO:
-                Sigma_score += 1
+    # Propagate with zero-order hold on control and disturbance
+    if k < len(tt) - 1:
+        t_span = (tt[k], tt[k + 1])
+        
+        sol = solve_ivp(
+            #lambda t, y: acc_sindy.dynamics(y, u),
+            lambda t, y: acc_sindy.dynamics_extended(y, u),
+            t_span,
+            x_ext,
+            method = "BDF", #"LSODA", #"Radau",  # stiff solver
+            rtol = 1e-6, # 1e-6
+            atol = 1e-6, # 1e-6
+            t_eval = [tt[k + 1]],
+        )
+        try:
+            x_ext = sol.y[:, -1]
+        except Exception as e:
+            raise ValueError("Error occurred while solving IVP:", e)
+        
+        x = x_ext[0:acc_sindy.xdim]
+        a_hat_cbf = x_ext[acc_sindy.xdim:(acc_sindy.xdim+acc_sindy.adim)].reshape(-1,1)
+        rho_cbf = x_ext[(acc_sindy.xdim+acc_sindy.adim)]
 
-        if not feas:
-            raise RuntimeError("controller infeasible")
-
-        u_hist[n, k] = u.item()
-        h_hist[n, k] = h
-
-        # Propagate dynamics
-        dx = acc_true.dynamics(x, u)
-        x = x + dx.reshape(-1) * dt
-
-# Violation score
-Sigma_score = Sigma_score / (N * len(tt)) * 100
-print(f"Sigma_score = {Sigma_score:.3f} percent")
-
-# Save results
-"""
-saved_trajectories = {
-    "time": tt,
-    "dt": dt,
-    "x_hist": x_hist,
-    "u_hist": u_hist,
-    "h_hist": h_hist,
-}
-filename = "simulations/acc/acc_crcbf_trajectories" if USE_CP else "simulations/acc/acc_cbf_trajectories"
-with open(filename, "wb") as f:
-    pickle.dump(saved_trajectories, f)
-"""
-
-# === Plots ===
+# Plotting
 plt.figure()
-plt.subplot(2, 1, 1)
-plt.plot(tt, x_hist[:, :, 1].T)
-plt.axhline(params["vd"], color='k', linestyle='--')
-plt.axhline(params["v0"], color='b', linestyle='--')
+plt.subplot(4, 1, 1)
+plt.plot(tt, x_hist[:, 1], color='blue', linewidth=1.5)
+plt.plot(tt, np.ones_like(tt) * params['vd'], 'k--')
 plt.ylabel("v (m/s)")
+plt.title("State - Velocity")
 plt.grid(True)
-
-plt.subplot(2, 1, 2)
-plt.plot(tt, x_hist[:, :, 2].T)
+plt.subplot(4, 1, 2)
+plt.plot(tt, x_hist[:, 2], color='magenta', linewidth=1.5)
 plt.ylabel("z (m)")
+plt.title("State - Distance to lead vehicle")
 plt.grid(True)
-
-plt.figure()
-plt.plot(tt, u_hist.T)
-plt.ylabel("Control Input: u (N)")
+plt.subplot(4, 1, 3)
+plt.plot(tt, u_hist, color='orange', linewidth=1.5)
+#plt.plot(tt, np.ones_like(u_hist) * params['u_max'], 'k--')
+#plt.plot(tt, np.ones_like(u_hist) * params['u_min'], 'k--')
+plt.ylabel("u(N)")
+plt.title("Control Input - Wheel Force")
 plt.grid(True)
-
-if USE_ADAPTIVE:
-    plt.figure()
-    plt.subplot(4, 2, 1)
-    plt.plot(tt, a_hat[:, :, 0].T)
-    plt.axhline(acc_learned.a_err_max[0,0], color='r', linewidth=2)
-    plt.axhline(-acc_learned.a_err_max[0,0], color='r', linewidth=2)
-    plt.ylabel("a0_hat")
-    plt.grid(True)
-    plt.subplot(4, 2, 3)
-    plt.plot(tt, a_hat[:, :, 1].T)
-    plt.axhline(acc_learned.a_err_max[1,0], color='r', linewidth=2)
-    plt.axhline(-acc_learned.a_err_max[1,0], color='r', linewidth=2)
-    plt.ylabel("a1_hat")
-    plt.grid(True)
-    plt.subplot(4, 2, 5)
-    plt.plot(tt, a_hat[:, :, 2].T)
-    plt.axhline(acc_learned.a_err_max[2,0], color='r', linewidth=2)
-    plt.axhline(-acc_learned.a_err_max[2,0], color='r', linewidth=2)
-    plt.ylabel("a2_hat")
-    plt.grid(True)
-    plt.subplot(4, 2, 7)
-    plt.plot(tt, np.linalg.norm(a_hat[:, :, :], axis=2, ord=2).T)
-    plt.axhline(acc_learned.a_hat_norm_max + acc_learned.epsilon, color='r', linewidth=2)
-    plt.ylabel("a_hat_norm")
-    plt.grid(True)
-
-    #plt.figure()
-    plt.subplot(4, 2, 2)
-    plt.plot(tt, a_hat[:, :, 0].T - params["a_true"][0,0])
-    plt.axhline(acc_learned.a_err_max[0,0], color='r', linewidth=2)
-    plt.axhline(-acc_learned.a_err_max[0,0], color='r', linewidth=2)
-    plt.ylabel("a0 error")
-    plt.grid(True)
-    plt.subplot(4, 2, 4)
-    plt.plot(tt, a_hat[:, :, 1].T - params["a_true"][1,0])
-    plt.axhline(acc_learned.a_err_max[1,0], color='r', linewidth=2)
-    plt.axhline(-acc_learned.a_err_max[1,0], color='r', linewidth=2)
-    plt.ylabel("a1 error")
-    plt.grid(True)
-    plt.subplot(4, 2, 6)
-    plt.plot(tt, a_hat[:, :, 2].T - params["a_true"][2,0])
-    plt.axhline(acc_learned.a_err_max[2,0], color='r', linewidth=2)
-    plt.axhline(-acc_learned.a_err_max[2,0], color='r', linewidth=2)
-    plt.ylabel("a2 error")
-    plt.grid(True)
-
-plt.figure()
-for n in range(N):
-    h_plot = plt.plot(tt, h_hist[n, :], alpha=0.9)
-if USE_ADAPTIVE:
-    plt.axhline(set_tightening, color='r', linewidth=2)
-else:
-    plt.axhline(0, color='r', linewidth=2)
-plt.ylabel("h(x_t)")
-plt.xlabel("Time (s)")
+plt.subplot(4, 1, 4)
+plt.plot(tt, h_hist, color='navy', linewidth=1.5)
+plt.plot(tt, np.ones_like(tt) * 0.5 * (acc_sindy.a_err_max.T @ np.linalg.inv(acc_sindy.Gamma_cbf) @ acc_sindy.a_err_max).item(), 'r--')
+plt.ylabel("CBF (h(x))")
+plt.title("CBF")
 plt.grid(True)
+plt.tight_layout()
+
+# Uncertainty parameters
+fig, axs = plt.subplots(acc_sindy.adim, 1)
+axs = axs.flatten()
+for i in range(acc_sindy.adim):
+    axs[i].plot(tt, a_hat_cbf_hist[i, :], label='a_hat')
+    axs[i].plot(tt, a_true_hist[i, :], label='a_true')
+    axs[i].legend()
+    axs[i].grid(True)
+    axs[i].set_ylabel(f"a{i}")
+axs[acc_sindy.adim-1].set_xlabel('Time (s)')
+
+# Scaling function and parameter
+fig, axs = plt.subplots(2, 1)
+axs = axs.flatten()
+axs[0].plot(tt, nu_cbf_hist, lw=1)
+axs[0].set_ylabel('nu_cbf')
+axs[0].grid(True)
+axs[1].plot(tt, rho_cbf_hist, lw=1)
+axs[1].set_xlabel('Time (s)')
+axs[1].set_ylabel('rho_cbf')
+axs[1].grid(True)
+
 plt.show()

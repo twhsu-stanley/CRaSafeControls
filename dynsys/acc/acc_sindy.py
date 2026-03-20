@@ -21,7 +21,8 @@ class ACC_SINDY(CtrlAffineSys):
         g = sindy_prediction_symbolic(x, np.array([1.0]), feature_names, coefficients, idx_u)
 
         # Define the symbolic uncertainty term Y(x)
-        Y = sp.Matrix([[0, 0, 0, 0], [1, v, v**2, 0], [0, 0, 0, 1]])
+        m = self.params['m']
+        Y = sp.Matrix([[0, 0, 0, 0], [-1/m, -v/m, -v**2/m, 0], [0, 0, 0, 1]])
 
         a0, a1, a2, a3 = sp.symbols('a0 a1 a2 a3')
         a = sp.Matrix([a0, a1, a2, a3])
@@ -29,13 +30,19 @@ class ACC_SINDY(CtrlAffineSys):
         return x, f, g, Y, a
 
     def dynamics_extended(self, x_ext, u):
+        """Extended true dynamics for state propagation in sim"""
         x = x_ext[0:self.xdim]
         a_hat = x_ext[self.xdim:(self.xdim+self.adim)].reshape(-1,1)
         rho = x_ext[(self.xdim+self.adim)]
 
         dxdt_ext = np.zeros((self.xdim+self.adim+1,))
 
-        dxdt_ext[0:self.xdim] = self.dynamics(x, u) # TODO: This should be replaced by the true dynamics
+        # True dynamics
+        m = self.params['m']
+        v = x[1]
+        fx = np.array([v, -1/m *(0.5 + 5.0 * v + 1.0 * v**2), self.params["v0"] - v])
+        gx = np.array([[0], [1/self.params["m"]], [0]])
+        dxdt_ext[0:self.xdim] = fx + (gx @ u).ravel() + (self.Y(x) @ self.a_true).ravel()
 
         if self.use_adaptive:
             a_hat_dot, rho_dot = self.adaptation_cracbf(x, a_hat, rho)

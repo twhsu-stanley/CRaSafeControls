@@ -18,7 +18,7 @@ params = {
     "v0": 15.0,
     "vd": 20.0,
     "m": 2000.0,
-    "g": 9.81,
+    "grav": 9.81,
     "ca": 0.3,
     "cd": 0.3,
     "Kp": 100.0, # P gain for the nominal controller
@@ -26,12 +26,12 @@ params = {
     "cbf": {"rate": 2.0},
     "dt": dt
 }
-#params["u_max"] = params["ca"] * params["m"] * params["g"]
-#params["u_min"] = -params["cd"] * params["m"] * params["g"]
+#params["u_max"] = params["ca"] * params["m"] * params["grav"]
+#params["u_min"] = -params["cd"] * params["m"] * params["grav"]
 params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
 params["Gamma_cbf"] = np.diag(np.array([100.0, 100.0, 10.0, 10.0])) # adaptive gain matrix for CRaCCM
-params["a_true"] = np.array([[0.5], [5.0], [1.0], [-4.0]]) # true parameters [theta1, theta2, theta3]
+params["a_true"] = np.array([[0.5], [5.0], [1.0], [-4.0]]) # true parameters
 params["a_hat_norm_max"] = np.linalg.norm(params["a_true"], 2) # TODO: check this
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 params["eta_cbf"] = 10.0
@@ -61,6 +61,10 @@ x_ext = np.hstack((x, a_hat_cbf.ravel(), rho_cbf)) # extended state with a_hat a
 if USE_ADAPTIVE:
     if np.min(np.linalg.eigvals(acc.Gamma_cbf)) < np.linalg.norm(acc.a_err_max, 2)**2 / (2 * acc.nu_cbf(rho_cbf) * acc.cbf(x, a_hat_cbf).item()):
         raise RuntimeError("Gamma_cbf is not valid: minimal eigenvalue is too small")
+    
+# Check if the initial state is in the safe set
+if (acc.cbf(x, a_hat_cbf).item() - 0.5 * acc.a_err_max.T @ np.linalg.inv(acc.Gamma_cbf) @ acc.a_err_max) < 1e-3:
+    raise ValueError("Initial condition unsafe")
 
 x_hist = np.zeros((len(tt), 3))
 u_hist = np.zeros(len(tt))

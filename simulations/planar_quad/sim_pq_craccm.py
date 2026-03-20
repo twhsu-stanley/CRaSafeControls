@@ -51,7 +51,7 @@ params = {
 }
 params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
-params["Gamma_ccm"] = np.diag(np.array([15, 15])) # adaptive gain matrix for CRaCCM
+params["Gamma_ccm"] = np.diag(np.array([1/15.0, 1/15.0])) # adaptive gain matrix for CRaCCM
 params["a_true"] = np.array([[-0.0], [-0.6]]) # true parameters
 params["a_hat_norm_max"] = np.linalg.norm(np.array([[1.0], [0.6]]), 2) # max norm of a_hat
 params["epsilon"] = 1e-3 # small value for numerical stability of projection operator
