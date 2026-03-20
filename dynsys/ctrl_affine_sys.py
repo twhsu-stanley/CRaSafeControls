@@ -425,9 +425,9 @@ class CtrlAffineSys:
         # Projection operator to enforce bounds on a_hat_clf
         #TODO: check sign
         a_hat_dot = self.nu_clf() * (self.Gamma_clf
-                    @ projection_operator(self.a_hat_clf, self.Y(x).T @ dclfdx.T, self.a_hat_norm_max, self.epsilon))
+                    @ projection_operator(self.a_hat_clf, self.Y(x).T @ dclfdx, self.a_hat_norm_max, self.epsilon))
         
-        rho_dot = -self.nu_clf()/(self.dnu_drho_clf() * (V + self.eta_clf)) * (dclfda @ a_hat_dot).item()
+        rho_dot = -self.nu_clf()/(self.dnu_drho_clf() * (V + self.eta_clf)).item() * (dclfda.T @ a_hat_dot).item()
 
         self.a_hat_clf += a_hat_dot * self.dt
         self.rho_clf += rho_dot * self.dt
@@ -441,9 +441,9 @@ class CtrlAffineSys:
         # Projection operator to enforce bounds on a_hat_cbf
         #TODO: check sign
         a_hat_dot = self.nu_cbf() * (self.Gamma_cbf
-                    @ projection_operator(self.a_hat_cbf, -self.Y(x).T @ dcbfdx.T, self.a_hat_norm_max, self.epsilon))
+                    @ projection_operator(self.a_hat_cbf, -self.Y(x).T @ dcbfdx, self.a_hat_norm_max, self.epsilon))
         
-        rho_dot = -self.nu_cbf()/(self.dnu_drho_cbf() * (h + self.eta_cbf)) * (dcbfda @ a_hat_dot).item()
+        rho_dot = -self.nu_cbf()/(self.dnu_drho_cbf() * (h + self.eta_cbf)).item() * (dcbfda.T @ a_hat_dot).item()
 
         self.a_hat_cbf += a_hat_dot * self.dt
         self.rho_cbf += rho_dot * self.dt
@@ -486,7 +486,8 @@ class CtrlAffineSys:
     
     def dnu_drho_cbf(self):
         dnu_drho = 1/(1+(self.rho_cbf)**2)/np.pi
-        return max(dnu_drho, 1e-20)
+        return dnu_drho 
+        #return max(dnu_drho, 1e-20)
     
     def nu_ccm(self):
         nu = 0.9 * np.exp(self.rho_ccm) + 0.1 # must be bounded away from zero

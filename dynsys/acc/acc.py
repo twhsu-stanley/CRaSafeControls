@@ -18,7 +18,7 @@ class ACC(CtrlAffineSys):
         g = sp.Matrix([[0], [1/m], [0]])
 
         # Define the symbolic uncertainty term Y(x)
-        Y = sp.Matrix([[0, 0, 0, 0], [1, v, v**2, 0], [0, 0, 0, 1]])
+        Y = sp.Matrix([[0, 0, 0, 0], [-1/m, -v/m, -v**2/m, 0], [0, 0, 0, 1]])
 
         a0, a1, a2, a3 = sp.symbols('a0 a1 a2 a3')
         a = sp.Matrix([a0, a1, a2, a3])

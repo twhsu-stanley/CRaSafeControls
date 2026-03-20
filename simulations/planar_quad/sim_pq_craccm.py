@@ -159,7 +159,7 @@ for i in range(T_steps):
         try:
             x = sol.y[:, -1]
         except Exception as e:
-            print("Error occurred while solving IVP:", e)
+            raise ValueError("Error occurred while solving IVP:", e)
 
 # Plot results
 # x vs. x_d

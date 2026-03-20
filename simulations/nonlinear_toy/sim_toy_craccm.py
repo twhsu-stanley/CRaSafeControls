@@ -188,7 +188,7 @@ for i in range(T_steps):
         try:
             x = sol.y[:, -1]
         except Exception as e:
-            print("Error occurred while solving IVP:", e)
+            raise ValueError("Error occurred while solving IVP:", e)
 
 # Plot results
 # x vs. x_d
@@ -237,7 +237,6 @@ axs[1].legend()
 axs[1].set_xlabel('Time (s)')
 axs[1].set_ylabel('Erem dot error')
 axs[1].grid(True)
-
 
 # Uncertainty parameters
 fig, axs = plt.subplots(toy.adim, 1)
