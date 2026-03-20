@@ -33,7 +33,7 @@ interp_u_d = interp1d(
 )
 
 # Time setup
-dt = 0.01/2
+dt = 0.01
 sim_T = t_d_data[-1] # Simulation time
 tt = np.arange(0, sim_T, dt)
 T_steps = len(tt)
@@ -54,10 +54,8 @@ params["use_cp"] = USE_CP
 params["Gamma_ccm"] = np.diag(np.array([15, 15])) # adaptive gain matrix for CRaCCM
 params["a_true"] = np.array([[-0.0], [-0.6]]) # true parameters
 params["a_hat_norm_max"] = np.linalg.norm(np.array([[1.0], [0.6]]), 2) # max norm of a_hat
-params["a_0"] = np.array([[-1.0], [0.5]]) # initial guess for a_hat
 params["epsilon"] = 1e-3 # small value for numerical stability of projection operator
 params["eta_ccm"] = 5.0
-params["rho_ccm"] = 0
 
 # Construct the system
 pq = PLANAR_QUAD(params)
@@ -91,6 +89,9 @@ rho_ccm_hist = np.zeros((T_steps,))
 
 # Initial state
 x = interp_x_d(0).copy() + np.array([-1.0, -0.0, 0.0, -1.2, -0.5, 0.0])  # initial condition + perturbation
+a_hat_ccm = np.array([[0.0], [0.0]]) # initial guess for a_hat
+rho_ccm = 0.0
+x_ext = np.hstack((x, a_hat_ccm.ravel(), rho_ccm)) # extended state with a_hat and rho
 
 # Initialize geodesic solver
 N = pq.params["geodesic"]["N"]
@@ -111,16 +112,13 @@ for i in range(T_steps):
     u_d = interp_u_d(t)
 
     # Store adaptation parameters
-    a_hat_ccm_hist[:, i] = pq.a_hat_ccm.ravel()
+    a_hat_ccm_hist[:, i] = a_hat_ccm.ravel()
     a_true_hist[:,i] = pq.a_true.ravel() # TODO: just to verify that a_true is constant; can remove later
-    nu_ccm_hist[i] = pq.nu_ccm()
-    rho_ccm_hist[i] = pq.rho_ccm
-
-    # Compute geodesic
-    pq.calc_geodesic(geodesic_solver, x, x_d, verify_geodesic=VERIFY_GEODESIC)
+    nu_ccm_hist[i] = pq.nu_ccm(rho_ccm)
+    rho_ccm_hist[i] = rho_ccm
 
     # Implement ccm control law
-    uc, slack = pq.ctrl_craccm(x, x_d, u_d, use_qpsolvers=USE_QPSOLVERS, use_slack=USE_SLACK)
+    uc, slack = pq.ctrl_craccm(x, a_hat_ccm, x_d, u_d, geodesic_solver, use_qpsolvers=USE_QPSOLVERS)
     #uc = u_d + u_qp
     u_hist[:,i] = uc.ravel()
     slack_hist[i] = slack
@@ -128,38 +126,35 @@ for i in range(T_steps):
 
     # For debugging #######################################################################
     # Lyapunov function
-    V1 = pq.nu_ccm() * (pq.Erem + pq.eta_ccm)
-    a_tilde = pq.a_hat_ccm - pq.a_true
+    V1 = pq.nu_ccm(rho_ccm) * (pq.Erem + pq.eta_ccm)
+    a_tilde = a_hat_ccm - pq.a_true
     V2 = a_tilde.T @ pq.Gamma_ccm @ a_tilde
     V1_hist[i] = V1.item()
     V2_hist[i] = V2.item()
-
-    #a_hat_dot = pq.a_hat_dot if USE_ADAPTIVE else np.zeros((pq.adim, 1))
-    #dErem_dai = pq.dErem_dai if USE_ADAPTIVE else np.zeros(pq.adim)
-
-    # Edot error
-    #Erem_dot_fixa = (pq.gamma_s1_M_x @ (pq.f(x) + pq.g(x) @ uc + pq.Y(x) @ pq.a_true)
-    #               - pq.gamma_s0_M_d @ (pq.f(x_d) + pq.g(x_d) @ u_d))
-    #Erem_dot_hist[i] = (Erem_dot_fixa + dErem_dai @ a_hat_dot).item()
     #######################################################################################
 
-    # Propagate with zero-order hold on control and disturbance
+    # Propagate with zero-order hold on control
     if i < T_steps - 1:
         t_span = (tt[i], tt[i + 1])
         
         sol = solve_ivp(
-            lambda t, y: pq.dynamics(y, uc) + Delta(t),
+            #lambda t, y: pq.dynamics(y, uc) + Delta(t),
+            lambda t, y: pq.dynamics_extended(y, x_d, uc, geodesic_solver),
             t_span,
-            x,
+            x_ext,
             method = "BDF", #"LSODA", #"Radau",  # stiff solver
             rtol = 1e-6, # 1e-6
             atol = 1e-6, # 1e-6
             t_eval = [tt[i + 1]],
         )
         try:
-            x = sol.y[:, -1]
+            x_ext = sol.y[:, -1]
         except Exception as e:
             raise ValueError("Error occurred while solving IVP:", e)
+        
+        x = x_ext[0:pq.xdim]
+        a_hat_ccm = x_ext[pq.xdim:(pq.xdim+pq.adim)].reshape(-1,1)
+        rho_ccm = x_ext[(pq.xdim+pq.adim)]
 
 # Plot results
 # x vs. x_d
@@ -211,22 +206,6 @@ axs[2].plot(tt, slack_hist)
 axs[2].set_xlabel('Time (s)')
 axs[2].set_ylabel('QP slack')
 axs[2].grid(True)
-
-# Erem dot error
-Erem_dot_num = np.gradient(Erem_hist, tt)
-fig, axs = plt.subplots(2, 1)
-axs[0].plot(tt, Erem_dot_hist, label='analytic: computed using geodesics')
-axs[0].plot(tt, Erem_dot_num, label='numeric: np.gradient of Erem')
-axs[0].legend()
-axs[0].set_xlabel('Time (s)')
-axs[0].set_ylabel('Erem dot')
-axs[0].grid(True)
-axs[1].plot(tt, Erem_dot_hist - Erem_dot_num)
-axs[1].legend()
-axs[1].set_xlabel('Time (s)')
-axs[1].set_ylabel('Erem dot error')
-axs[1].grid(True)
-
 
 # Uncertainty parameters
 fig, axs = plt.subplots(pq.adim, 1, squeeze=False)

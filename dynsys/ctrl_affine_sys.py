@@ -1,8 +1,6 @@
 import numpy as np
 import sympy as sp
-#import cvxpy
 from qpsolvers import solve_qp
-from dynsys.geodesic_solver import GeodesicSolver
 from dynsys.utils import *
 
 class CtrlAffineSys:
@@ -29,22 +27,15 @@ class CtrlAffineSys:
         assert(g_sym.shape[0] == x_sym.shape[0])
         assert(Y_sym.shape[1] == a_sym.shape[0])
 
-        # Uncertainty parameters
+        # Treu uncertainty parameters
         self.a_true = np.copy(self.params["a_true"]) if "a_true" in self.params else np.zeros((self.adim,1))
-        self.a_hat_cbf = np.copy(self.params["a_0"])  if "a_0" in self.params else np.zeros((self.adim,1)) # Initial guess for a_hat_cbf
-        self.a_hat_clf = np.copy(self.params["a_0"])  if "a_0" in self.params else np.zeros((self.adim,1)) # Initial guess for a_hat_clf
-        self.a_hat_ccm = np.copy(self.params["a_0"])  if "a_0" in self.params else np.zeros((self.adim,1)) # Initial guess for a_hat_ccm
-        # NOTE: a_hat_cbf, a_hat_clf, and a_hat_ccm should be initialized by copying, otherwise they will be references to the same array.
 
-        # For the scaling functions of the unmatched adapation laws
+        # Constant term for the adaptation laws
         self.eta_clf = self.params.get("eta_clf", 0.1)
-        self.rho_clf = self.params.get("rho_clf", 0.0)
         self.eta_cbf = self.params.get("eta_cbf", 0.1)
-        self.rho_cbf = self.params.get("rho_cbf", 0.0)
         self.eta_ccm = self.params.get("eta_ccm", 0.1)
-        self.rho_ccm = self.params.get("rho_ccm", 0.0)
 
-        # Adaptive gain matrices
+        # Adaptation gain matrices
         self.Gamma_cbf = self.params.get("Gamma_cbf", np.eye(self.adim))
         self.Gamma_clf = self.params.get("Gamma_clf", np.eye(self.adim))
         self.Gamma_ccm = self.params.get("Gamma_ccm", np.eye(self.adim))
@@ -125,7 +116,7 @@ class CtrlAffineSys:
             self.dclfda = sp.lambdify([x_sym, a_hat_sym], dclfda, modules='numpy')            
 
     # Control laws
-    def ctrl_craclf(self, x, u_ref, use_slack=True):
+    def ctrl_craclf(self, x, a_hat_clf, u_ref, use_slack=True):
         """CRaCLF-QP Controller"""
         if self.clf is None:
             raise ValueError("aCLF not defined.")
@@ -133,8 +124,6 @@ class CtrlAffineSys:
             u_ref = np.zeros((self.udim, 1))
         if u_ref.shape[0] != self.udim:
             raise ValueError("u_ref shape mismatch.")
-        
-        a_hat_clf = self.a_hat_clf
 
         V = self.clf(x, a_hat_clf)
         LfV = self.lf_clf(x, a_hat_clf)
@@ -207,18 +196,14 @@ class CtrlAffineSys:
         
         if use_slack:
             u_qp = qp_sol[: self.udim].reshape(self.udim, 1)
-            slack_val = qp_sol[-1]
+            slack = qp_sol[-1]
         else:
             u_qp = qp_sol.reshape(self.udim, 1)
-            slack_val = 0.0
-        
-        # Update adaptive parameter
-        if self.use_adaptive:
-            self.adaptation_craclf(x)
+            slack = 0.0
 
-        return u_qp, slack_val
+        return u_qp, slack
     
-    def ctrl_cracbf(self, x, u_ref):
+    def ctrl_cracbf(self, x, a_hat_cbf, u_ref):
         """CRaCBF QP Controller"""
         if self.cbf is None:
             raise ValueError("CBF not defined")
@@ -227,11 +212,11 @@ class CtrlAffineSys:
         if u_ref.shape[0] != self.udim:
             raise ValueError("u_ref shape mismatch")
 
-        h = self.cbf(x, self.a_hat_cbf)
-        Lfh = self.lf_cbf(x, self.a_hat_cbf)
-        Lgh = self.lg_cbf(x, self.a_hat_cbf)
-        LYh = self.lY_cbf(x, self.a_hat_cbf)
-        dcbfdx = self.dcbfdx(x, self.a_hat_cbf)
+        h = self.cbf(x, a_hat_cbf)
+        Lfh = self.lf_cbf(x, a_hat_cbf)
+        Lgh = self.lg_cbf(x, a_hat_cbf)
+        LYh = self.lY_cbf(x, a_hat_cbf)
+        dcbfdx = self.dcbfdx(x, a_hat_cbf)
         
         if self.use_cp:
             tightening =  self.cp_quantile * np.linalg.norm(dcbfdx, 2)
@@ -242,7 +227,7 @@ class CtrlAffineSys:
         A = -Lgh
         b = (
             Lfh 
-            + LYh @ self.a_hat_cbf #TODO: check sign
+            + LYh @ a_hat_cbf #TODO: check sign
             - tightening
             + self.params["cbf"]["rate"] * (h - 0.5 * self.a_err_max.T @ np.linalg.inv(self.Gamma_cbf) @ self.a_err_max)
         )
@@ -273,36 +258,38 @@ class CtrlAffineSys:
             raise ValueError("solve_qp returns None")
         u_qp = qp_sol.reshape(-1,1)
 
-        # Update adaptive parameter
-        if self.use_adaptive:
-            self.adaptation_cracbf(x)
-
         return u_qp
     
-    def ctrl_craccm(self, x, x_d, u_d, use_qpsolvers=False, use_slack=True):
+    def ctrl_craccm(self, x, a_hat_ccm, x_d, u_d, geodesic_solver, use_qpsolvers=False, use_slack=True, verify_geodesic=False):
         """CRaCCM control law"""
         # x: current state
         # x_d: desired state
         # u_d: nominal control input; u_d.shape = (self.udim, 1)
+
+        # Compute geodesic
+        self.calc_geodesic(geodesic_solver, x, x_d, a_hat_ccm, verify_geodesic) # update gamma, gamma_s, and E_rem
+
+        gamma_s1_M_x = self.gamma_s[:, -1].reshape(1,-1) @ np.linalg.inv(self.W_fcn(x, a_hat_ccm))
+        gamma_s0_M_d = self.gamma_s[:, 0].reshape(1,-1) @ np.linalg.inv(self.W_fcn(x_d, a_hat_ccm))
         
         if self.use_adaptive: 
-            Y_x_a = self.Y(x) @ self.a_hat_ccm
-            Y_d_a = self.Y(x_d) @ self.a_hat_ccm
+            Y_x_a = self.Y(x) @ a_hat_ccm
+            Y_d_a = self.Y(x_d) @ a_hat_ccm
         else:
             Y_x_a = 0.0
             Y_d_a = 0.0
 
         if self.use_cp:
-            #Theta = np.linalg.cholesky(self.M_x)
+            #Theta = np.linalg.cholesky(M_x)
             #sigma_max = np.max(np.linalg.svd(Theta, compute_uv=False))  # maximum singular value
             #tightening = sigma_max * self.cp_quantile * np.sqrt(self.Erem)
-            tightening = np.linalg.norm(self.gamma_s1_M_x, 2) * self.cp_quantile
+            tightening = np.linalg.norm(gamma_s1_M_x, 2) * self.cp_quantile
         else:
             tightening = 0.0
         
-        A = self.gamma_s1_M_x @ self.g(x)
-        B = (self.gamma_s1_M_x @ (self.f(x) + self.g(x) @ u_d + Y_x_a)
-            - self.gamma_s0_M_d @ (self.f(x_d) + self.g(x_d) @ u_d + Y_d_a)
+        A = gamma_s1_M_x @ self.g(x)
+        B = (gamma_s1_M_x @ (self.f(x) + self.g(x) @ u_d + Y_x_a)
+            - gamma_s0_M_d @ (self.f(x_d) + self.g(x_d) @ u_d + Y_d_a)
             + self.params["ccm"]["rate"] * self.Erem).item()
 
         if use_qpsolvers is True: 
@@ -312,7 +299,7 @@ class CtrlAffineSys:
                 ])
                 q = np.zeros(self.udim + 1)
                 G = np.vstack([np.hstack([A, np.array([[-1.0]])]),
-                            np.hstack([np.zeros((1, self.udim)), np.array([[-1.0]])]),
+                               np.hstack([np.zeros((1, self.udim)), np.array([[-1.0]])]),
                 ])
                 h = np.array([-(B + tightening), 0.0])
                 qp_sol = solve_qp(P, q, G, h, solver = 'quadprog')
@@ -356,50 +343,23 @@ class CtrlAffineSys:
         uc = u_d + u_qp
 
         # Pint uncertainty terms for debugging
-        U1 = -((self.a_hat_ccm - self.a_true).T @ self.Y(x).T @ self.gamma_s1_M_x.T).item() # term to be cancelled by adaptive a_dot
-        U2 = (self.gamma_s0_M_d @ self.Y(x_d) @ self.a_hat_ccm).item() # term to be cancelled by adaptive rho_dot
-        print("U1=", U1, "; U2=", U2)
-
-        # Update adaptive parameter
-        if self.use_adaptive:
-            self.adaptation_craccm(x, x_d)
+        #U1 = -((a_hat_ccm - self.a_true).T @ self.Y(x).T @ gamma_s1_M_x.T).item() # term to be cancelled by adaptive a_dot
+        #U2 = (gamma_s0_M_d @ self.Y(x_d) @ a_hat_ccm).item() # term to be cancelled by adaptive rho_dot
+        #print("U1=", U1, "; U2=", U2)
 
         return uc, slack
 
     # Solve for geodesics for CCM-based controllers
-    def calc_geodesic(self, solver, x, x_d, verify_geodesic = False):
+    def calc_geodesic(self, solver, x, x_d, a_hat_ccm=None, verify_geodesic=False):
         
         # Initialize optimization variables and constraints internally
         c0, beq = solver.initialize_conditions(x_d, x)
+        
         # Solve the geodesic optimization problem
-        # TODO: check if self.a_hat_ccm is None?
-        gamma, gamma_s, Erem = solver.solve_geodesic(c0, beq, self.a_hat_ccm)
-
-        gamma_s_0 = gamma_s[:, 0]
-        gamma_s_1 = gamma_s[:, -1]
+        gamma, gamma_s, Erem = solver.solve_geodesic(c0, beq, a_hat_ccm) # TODO: check if a_hat_ccm is None?
+        self.gamma = gamma
+        self.gamma_s = gamma_s
         self.Erem = Erem.item()
-
-        # NOTE: self.W_fcn == solver.W_fcn
-        self.M_x = np.linalg.inv(self.W_fcn(x, self.a_hat_ccm))
-        self.M_d = np.linalg.inv(self.W_fcn(x_d, self.a_hat_ccm))
-
-        # TODO: make this faster
-        self.gamma_s1_M_x = gamma_s_1.reshape(1,-1) @ self.M_x
-        self.gamma_s0_M_d = gamma_s_0.reshape(1,-1) @ self.M_d
-
-        if solver.dW_dai_fcn is not None and self.use_adaptive:
-            # NOTE: self.dW_dai_fcn == solver.dW_dai_fcn
-            dErem_dai = np.zeros(self.adim)
-            # TODO: check correctness
-            for i in range(self.adim):
-                for k in range(solver.N + 1):
-                    gk = gamma[:, k]
-                    gsk = gamma_s[:, k]
-                    dW_dai = solver.dW_dai_fcn(i,gk,self.a_hat_ccm)
-                    M = np.linalg.inv(solver.W_fcn(gk,self.a_hat_ccm)) # TODO: check correctness
-                    dM_dai = -M @ dW_dai @ M # TODO: check correctness
-                    dErem_dai[i] += (gsk.T @ dM_dai @ gsk) * solver.w_cheby[k]
-            self.dErem_dai = dErem_dai
         
         # Verify whether the curve found is really a geodesic
         if verify_geodesic and self.Erem > 1e-3:
@@ -407,7 +367,7 @@ class CtrlAffineSys:
             for k in range(solver.N + 1):
                 gk = gamma[:, k]
                 gsk = gamma_s[:, k]
-                M = np.linalg.inv(solver.W_fcn(gk,self.a_hat_ccm))
+                M = np.linalg.inv(solver.W_fcn(gk,a_hat_ccm))
                 error += ((gsk.T @ M @ gsk - self.Erem)**2) * solver.w_cheby[k]
             error = np.sqrt(error)/self.Erem
             if error > 1e-5:
@@ -416,86 +376,93 @@ class CtrlAffineSys:
                 #    raise ValueError(f"geodesic error={error:2E} exceeds threshold = 1e-2")
 
     # Adaptation laws
-    def adaptation_craclf(self, x):
+    def adaptation_craclf(self, x, a_hat_clf, rho_clf):
         """CRaCLF adaptation law"""
-        V = self.clf(x, self.a_hat_clf)
-        dclfda = self.dclfda(x, self.a_hat_clf)
-        dclfdx = self.dclfdx(x, self.a_hat_clf)
+        V = self.clf(x, a_hat_clf)
+        dclfda = self.dclfda(x, a_hat_clf)
+        dclfdx = self.dclfdx(x, a_hat_clf)
 
         # Projection operator to enforce bounds on a_hat_clf
         #TODO: check sign
-        a_hat_dot = self.nu_clf() * (self.Gamma_clf
-                    @ projection_operator(self.a_hat_clf, self.Y(x).T @ dclfdx, self.a_hat_norm_max, self.epsilon))
+        a_hat_clf_dot = self.nu_clf(rho_clf) * (self.Gamma_clf
+                    @ projection_operator(a_hat_clf, self.Y(x).T @ dclfdx, self.a_hat_norm_max, self.epsilon))
         
-        rho_dot = -self.nu_clf()/(self.dnu_drho_clf() * (V + self.eta_clf)).item() * (dclfda.T @ a_hat_dot).item()
+        rho_clf_dot = -self.nu_clf(rho_clf)/(self.dnu_drho_clf(rho_clf) * (V + self.eta_clf)).item() * (dclfda.T @ a_hat_clf_dot).item()
 
-        self.a_hat_clf += a_hat_dot * self.dt
-        self.rho_clf += rho_dot * self.dt
+        return a_hat_clf_dot, rho_clf_dot
 
-    def adaptation_cracbf(self, x):
+    def adaptation_cracbf(self, x, a_hat_cbf, rho_cbf):
         """CRaCBF adaptation law"""
-        h = self.cbf(x, self.a_hat_cbf)
-        dcbfda = self.dcbfda(x, self.a_hat_cbf)
-        dcbfdx = self.dcbfdx(x, self.a_hat_cbf)
+        h = self.cbf(x, a_hat_cbf)
+        dcbfda = self.dcbfda(x, a_hat_cbf)
+        dcbfdx = self.dcbfdx(x, a_hat_cbf)
 
         # Projection operator to enforce bounds on a_hat_cbf
         #TODO: check sign
-        a_hat_dot = self.nu_cbf() * (self.Gamma_cbf
-                    @ projection_operator(self.a_hat_cbf, -self.Y(x).T @ dcbfdx, self.a_hat_norm_max, self.epsilon))
+        a_hat_cbf_dot = self.nu_cbf(rho_cbf) * (self.Gamma_cbf
+                    @ projection_operator(a_hat_cbf, -self.Y(x).T @ dcbfdx, self.a_hat_norm_max, self.epsilon))
         
-        rho_dot = -self.nu_cbf()/(self.dnu_drho_cbf() * (h + self.eta_cbf)).item() * (dcbfda.T @ a_hat_dot).item()
+        rho_cbf_dot = -self.nu_cbf(rho_cbf)/(self.dnu_drho_cbf(rho_cbf) * (h + self.eta_cbf)).item() * (dcbfda.T @ a_hat_cbf_dot).item()
 
-        self.a_hat_cbf += a_hat_dot * self.dt
-        self.rho_cbf += rho_dot * self.dt
+        return a_hat_cbf_dot, rho_cbf_dot
 
-    def adaptation_craccm(self, x, x_d):
+    def adaptation_craccm(self, x, x_d, a_hat_ccm, rho_ccm, geodesic_solver):
         """CRaCCM adaptation law"""
 
-        a_hat_dot = np.linalg.inv(self.Gamma_ccm) @ projection_operator(self.a_hat_ccm, 
-                                            self.nu_ccm() * self.Y(x).T @ self.gamma_s1_M_x.T, 
-                                            self.a_hat_norm_max, self.epsilon)
-        #a_hat_dot = self.nu_ccm() * np.linalg.inv(self.Gamma_ccm) @ self.Y(x).T @ self.gamma_s1_M_x.T
-        
-        c1 = (2 * self.gamma_s0_M_d @ self.Y(x_d) @ self.a_hat_ccm).item()
-        c2 = (self.dErem_dai @ a_hat_dot).item()
-        # Printing for debugging
-        print("dErem_dai = ", self.dErem_dai, "; a_hat_dot = ", a_hat_dot)
-        print("c1 = ", c1, "; c2 = ", c2)
-        rho_dot = -(self.nu_ccm() * (c1 + c2)) / (self.dnu_drho_ccm() * (self.Erem + self.eta_ccm))
-        
-        # For debugging
-        #self.a_hat_dot = a_hat_dot
-        #self.rho_dot = rho_dot
+        # Make sure self.gamma_s and self.gamma are already updated by calc_geodesic
+        gamma_s1_M_x = self.gamma_s[:, -1].reshape(1,-1) @ np.linalg.inv(self.W_fcn(x, a_hat_ccm))
+        gamma_s0_M_d = self.gamma_s[:, 0].reshape(1,-1) @ np.linalg.inv(self.W_fcn(x_d, a_hat_ccm))
 
-        # Updates
-        self.a_hat_ccm += a_hat_dot * self.dt
-        self.rho_ccm += rho_dot * self.dt
+        # TODO: check correctness
+        dErem_dai = np.zeros(self.adim)
+        for i in range(self.adim):
+            for k in range(geodesic_solver.N + 1):
+                gk = self.gamma[:, k]
+                gsk = self.gamma_s[:, k]
+                dW_dai = self.dW_dai_fcn(i,gk,a_hat_ccm)
+                M = np.linalg.inv(self.W_fcn(gk,a_hat_ccm)) # TODO: check correctness
+                dM_dai = -M @ dW_dai @ M # TODO: check correctness
+                dErem_dai[i] += (gsk.T @ dM_dai @ gsk) * geodesic_solver.w_cheby[k]
+
+        a_hat_ccm_dot = np.linalg.inv(self.Gamma_ccm) @ projection_operator(a_hat_ccm, 
+                                            self.nu_ccm(rho_ccm) * self.Y(x).T @ gamma_s1_M_x.T, 
+                                            self.a_hat_norm_max, self.epsilon)
+        #a_hat_dot = self.nu_ccm(rho_ccm) * np.linalg.inv(self.Gamma_ccm) @ self.Y(x).T @ self.gamma_s1_M_x.T
+        
+        c1 = (2 * gamma_s0_M_d @ self.Y(x_d) @ a_hat_ccm).item()
+        c2 = (dErem_dai @ a_hat_ccm_dot).item()
+        # Printing for debugging
+        #print("dErem_dai = ", dErem_dai, "; a_hat_dot = ", a_hat_ccm_dot)
+        #print("c1 = ", c1, "; c2 = ", c2)
+        rho_ccm_dot = -(self.nu_ccm(rho_ccm) * (c1 + c2)) / (self.dnu_drho_ccm(rho_ccm) * (self.Erem + self.eta_ccm))
+
+        return a_hat_ccm_dot, rho_ccm_dot
 
     # Scaling functions for unmatched adaptive controls
-    def nu_clf(self):
-        nu = np.arctan(self.rho_clf)/np.pi + 1.0
+    def nu_clf(self, rho_clf):
+        nu = np.arctan(rho_clf)/np.pi + 1.0
         return nu
     
-    def dnu_drho_clf(self):
-        dnu_drho = 1/(1+(self.rho_clf)**2)/np.pi
+    def dnu_drho_clf(self, rho_clf):
+        dnu_drho = 1/(1+(rho_clf)**2)/np.pi
         return max(dnu_drho, 1e-20)
 
-    def nu_cbf(self):
-        nu = np.arctan(self.rho_cbf)/np.pi + 1.0
+    def nu_cbf(self, rho_cbf):
+        nu = np.arctan(rho_cbf)/np.pi + 1.0
         return nu
     
-    def dnu_drho_cbf(self):
-        dnu_drho = 1/(1+(self.rho_cbf)**2)/np.pi
+    def dnu_drho_cbf(self, rho_cbf):
+        dnu_drho = 1/(1+(rho_cbf)**2)/np.pi
         return dnu_drho 
         #return max(dnu_drho, 1e-20)
     
-    def nu_ccm(self):
-        nu = 0.9 * np.exp(self.rho_ccm) + 0.1 # must be bounded away from zero
-        #nu = np.arctan(self.rho_ccm)/np.pi + 1.0
+    def nu_ccm(self, rho_ccm):
+        nu = 0.9 * np.exp(rho_ccm) + 0.1 # must be bounded away from zero
+        #nu = np.arctan(rho_ccm)/np.pi + 1.0
         return nu
     
-    def dnu_drho_ccm(self):
-        dnu_drho = 0.9 * np.exp(self.rho_ccm)
-        #dnu_drho = 1/(1+(self.rho_ccm)**2)/np.pi
+    def dnu_drho_ccm(self, rho_ccm):
+        dnu_drho = 0.9 * np.exp(rho_ccm)
+        #dnu_drho = 1/(1+(rho_ccm)**2)/np.pi
         return max(dnu_drho, 1e-20)
         

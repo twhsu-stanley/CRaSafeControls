@@ -34,10 +34,8 @@ params["use_cp"] = USE_CP
 params["Gamma_ccm"] = np.diag(np.array([0.5, 0.5, 0.5])) # adaptive gain matrix for CRaCCM
 params["a_true"] = np.array([[-1.0], [-0.5], [-1.5]]) # true parameters [theta1, theta2, theta3]
 params["a_hat_norm_max"] = np.linalg.norm(np.array([[1.0], [0.5], [1.5]]), 2) # max norm of a_hat
-params["a_0"] = np.array([[0.0], [0.0], [0.0]]) # initial guess for a_hat
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 params["eta_ccm"] = 5.0
-params["rho_ccm"] = 0.0
 
 # Construct the system
 toy = NONLINEAR_TOY(params)
@@ -121,6 +119,9 @@ rho_ccm_hist = np.zeros((T_steps,))
 
 # Initial state
 x = interp_x_d(0).copy() #+ np.array([0.7, 0.5, -0.2])  # initial condition + perturbation
+a_hat_ccm = np.array([[0.0], [0.0], [0.0]]) # initial guess for a_hat
+rho_ccm = 0.0
+x_ext = np.hstack((x, a_hat_ccm.ravel(), rho_ccm)) # extended state with a_hat and rho
 
 # Initialize geodesic solver
 N = toy.params["geodesic"]["N"]
@@ -141,54 +142,48 @@ for i in range(T_steps):
     u_d = interp_u_d(t).reshape(-1,1) #u_d_data[:,i].reshape(-1,1)
 
     # Store adaptation parameters
-    a_hat_ccm_hist[:, i] = toy.a_hat_ccm.ravel()
+    a_hat_ccm_hist[:, i] = a_hat_ccm.ravel()
     a_true_hist[:, i] = toy.a_true.ravel()
-    nu_ccm_hist[i] = toy.nu_ccm()
-    rho_ccm_hist[i] = toy.rho_ccm
-
-    # Compute geodesic
-    toy.calc_geodesic(geodesic_solver, x, x_d, verify_geodesic=VERIFY_GEODESIC)
+    nu_ccm_hist[i] = toy.nu_ccm(rho_ccm)
+    rho_ccm_hist[i] = rho_ccm
 
     # Implement ccm control law
-    uc, slack = toy.ctrl_craccm(x, x_d, u_d, use_qpsolvers=USE_QPSOLVERS)
+    uc, slack = toy.ctrl_craccm(x, a_hat_ccm, x_d, u_d, geodesic_solver, use_qpsolvers=USE_QPSOLVERS)
 
     u_hist[:, i] = uc.ravel()
     slack_hist[i] = slack
     Erem_hist[i] = toy.Erem
 
-    # For debugging #######################################################################
+    # For debugging ###########################################
     # Lyapunov function
-    V1 = toy.nu_ccm() * (toy.Erem + toy.eta_ccm)
-    a_tilde = toy.a_hat_ccm - toy.a_true
+    V1 = toy.nu_ccm(rho_ccm) * (toy.Erem + toy.eta_ccm)
+    a_tilde = a_hat_ccm - toy.a_true
     V2 = a_tilde.T @ toy.Gamma_ccm @ a_tilde
     V1_hist[i] = V1.item()
     V2_hist[i] = V2.item()
+    ###########################################################
 
-    #a_hat_dot = toy.a_hat_dot if USE_ADAPTIVE else np.zeros((toy.adim, 1))
-    #dErem_dai = toy.dErem_dai if USE_ADAPTIVE else np.zeros(toy.adim)
-
-    # Edot error
-    #Erem_dot_fixa = (toy.gamma_s1_M_x @ (toy.f(x) + toy.g(x) @ uc + toy.Y(x) @ toy.a_true)
-    #               - toy.gamma_s0_M_d @ (toy.f(x_d) + toy.g(x_d) @ u_d))
-    #Erem_dot_hist[i] = (Erem_dot_fixa + dErem_dai @ a_hat_dot).item()
-    #######################################################################################
-
-    # Propagate with zero-order hold on control and disturbance
+    # Propagate with zero-order hold on control
     if i < T_steps - 1:
         t_span = (tt[i], tt[i + 1])
         sol = solve_ivp(
-            lambda t, y: toy.dynamics(y, uc) + Delta(t),
+            #lambda t, y: toy.dynamics(y, uc) + Delta(t),
+            lambda t, y: toy.dynamics_extended(y, x_d, uc, geodesic_solver),
             t_span,
-            x,
+            x_ext,
             method="BDF",
             rtol=1e-6,
             atol=1e-6,
             t_eval=[tt[i + 1]],
         )
         try:
-            x = sol.y[:, -1]
+            x_ext = sol.y[:, -1]
         except Exception as e:
             raise ValueError("Error occurred while solving IVP:", e)
+        
+        x = x_ext[0:toy.xdim]
+        a_hat_ccm = x_ext[toy.xdim:(toy.xdim+toy.adim)].reshape(-1,1)
+        rho_ccm = x_ext[(toy.xdim+toy.adim)]
 
 # Plot results
 # x vs. x_d
@@ -221,21 +216,6 @@ axs[0].grid(True)
 axs[1].plot(tt, slack_hist)
 axs[1].set_xlabel('Time (s)')
 axs[1].set_ylabel('QP slack')
-axs[1].grid(True)
-
-# Erem dot error
-Erem_dot_num = np.gradient(Erem_hist, tt)
-fig, axs = plt.subplots(2, 1)
-axs[0].plot(tt, Erem_dot_hist, label='analytic: computed using geodesics')
-axs[0].plot(tt, Erem_dot_num, label='numeric: np.gradient of Erem')
-axs[0].legend()
-axs[0].set_xlabel('Time (s)')
-axs[0].set_ylabel('Erem dot')
-axs[0].grid(True)
-axs[1].plot(tt, Erem_dot_hist - Erem_dot_num)
-axs[1].legend()
-axs[1].set_xlabel('Time (s)')
-axs[1].set_ylabel('Erem dot error')
 axs[1].grid(True)
 
 # Uncertainty parameters

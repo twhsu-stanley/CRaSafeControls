@@ -55,6 +55,25 @@ class NONLINEAR_TOY(CtrlAffineSys):
 
         return x, f, g, Y, a
     
+    def dynamics_extended(self, x_ext, x_d, u, geodesic_solver):
+        x = x_ext[0:self.xdim]
+        a_hat = x_ext[self.xdim:(self.xdim+self.adim)].reshape(-1,1)
+        rho = x_ext[(self.xdim+self.adim)]
+
+        dxdt_ext = np.zeros((self.xdim+self.adim+1,))
+
+        dxdt_ext[0:self.xdim] = self.dynamics(x, u)
+
+        if self.use_adaptive:
+            a_hat_dot, rho_dot = self.adaptation_craccm(x, x_d, a_hat, rho, geodesic_solver)
+        else:
+            a_hat_dot= np.zeros((self.adim,1))
+            rho_dot = 0.0
+        dxdt_ext[self.xdim:(self.xdim+self.adim)] = a_hat_dot.ravel()
+        dxdt_ext[(self.xdim+self.adim)] = rho_dot
+
+        return dxdt_ext
+    
     def W_fcn(self, x, a):
         """Dual CCM metric W(x,a)"""
         x1 = x[0]

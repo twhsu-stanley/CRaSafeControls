@@ -25,6 +25,25 @@ class ACC(CtrlAffineSys):
 
         return x, f, g, Y, a
 
+    def dynamics_extended(self, x_ext, u):
+        x = x_ext[0:self.xdim]
+        a_hat = x_ext[self.xdim:(self.xdim+self.adim)].reshape(-1,1)
+        rho = x_ext[(self.xdim+self.adim)]
+
+        dxdt_ext = np.zeros((self.xdim+self.adim+1,))
+
+        dxdt_ext[0:self.xdim] = self.dynamics(x, u)
+
+        if self.use_adaptive:
+            a_hat_dot, rho_dot = self.adaptation_cracbf(x, a_hat, rho)
+        else:
+            a_hat_dot= np.zeros((self.adim,1))
+            rho_dot = 0.0    
+        dxdt_ext[self.xdim:(self.xdim+self.adim)] = a_hat_dot.ravel()
+        dxdt_ext[(self.xdim+self.adim)] = rho_dot
+
+        return dxdt_ext
+    
     def define_cbf_symbolic(self, x, a):
         v = x[1]
         z = x[2]

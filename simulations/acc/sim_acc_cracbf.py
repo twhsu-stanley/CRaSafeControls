@@ -33,10 +33,8 @@ params["use_cp"] = USE_CP
 params["Gamma_cbf"] = np.diag(np.array([100.0, 100.0, 10.0, 10.0])) # adaptive gain matrix for CRaCCM
 params["a_true"] = np.array([[0.5], [5.0], [1.0], [-4.0]]) # true parameters [theta1, theta2, theta3]
 params["a_hat_norm_max"] = np.linalg.norm(params["a_true"], 2) # TODO: check this
-params["a_0"] = np.array([[0.25], [4.0], [0.0], [0.0]]) # initial guess for a_hat
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 params["eta_cbf"] = 10.0
-params["rho_cbf"] = 0.0
 
 # Construct the system
 acc = ACC(params)
@@ -55,10 +53,13 @@ acc.cp_quantile = Delta_max * 0.95
 # Simulation
 x0 = np.array([0.0, 30.0, 50.0])
 x = x0.copy()
+a_hat_cbf = np.array([[0.25], [4.0], [0.0], [0.0]]) # initial guess for a_hat
+rho_cbf = 0.0
+x_ext = np.hstack((x, a_hat_cbf.ravel(), rho_cbf)) # extended state with a_hat and rho
 
 # Check if Gamma_cbf is valid
 if USE_ADAPTIVE:
-    if np.min(np.linalg.eigvals(acc.Gamma_cbf)) < np.linalg.norm(acc.a_err_max, 2)**2 / (2 * acc.nu_cbf() * acc.cbf(x, acc.a_hat_cbf).item()):
+    if np.min(np.linalg.eigvals(acc.Gamma_cbf)) < np.linalg.norm(acc.a_err_max, 2)**2 / (2 * acc.nu_cbf(rho_cbf) * acc.cbf(x, a_hat_cbf).item()):
         raise RuntimeError("Gamma_cbf is not valid: minimal eigenvalue is too small")
 
 x_hist = np.zeros((len(tt), 3))
@@ -71,36 +72,43 @@ rho_cbf_hist = np.zeros((len(tt),))
 
 for k in range(len(tt)):
     t = tt[k]
+    print("Time: ", t)
+
     x_hist[k, :] = x
 
     # Store adaptation parameters
-    a_hat_cbf_hist[:, k] = acc.a_hat_cbf.ravel()
+    a_hat_cbf_hist[:, k] = a_hat_cbf.ravel()
     a_true_hist[:, k] = acc.a_true.ravel()
-    nu_cbf_hist[k] = acc.nu_cbf()
-    rho_cbf_hist[k] = acc.rho_cbf
+    nu_cbf_hist[k] = acc.nu_cbf(rho_cbf)
+    rho_cbf_hist[k] = rho_cbf
 
     u_ref = acc.ctrl_nominal(x)
-    u = acc.ctrl_cracbf(x, u_ref)
+    u = acc.ctrl_cracbf(x, a_hat_cbf, u_ref)
     u_hist[k] = u.item()
-    h_hist[k] = acc.cbf(x, acc.a_hat_cbf).item()
+    h_hist[k] = acc.cbf(x, a_hat_cbf).item()
 
     # Propagate with zero-order hold on control and disturbance
     if k < len(tt) - 1:
         t_span = (tt[k], tt[k + 1])
         
         sol = solve_ivp(
-            lambda t, y: acc.dynamics(y, u),
+            #lambda t, y: acc.dynamics(y, u),
+            lambda t, y: acc.dynamics_extended(y, u),
             t_span,
-            x,
+            x_ext,
             method = "BDF", #"LSODA", #"Radau",  # stiff solver
             rtol = 1e-6, # 1e-6
             atol = 1e-6, # 1e-6
             t_eval = [tt[k + 1]],
         )
         try:
-            x = sol.y[:, -1]
+            x_ext = sol.y[:, -1]
         except Exception as e:
             raise ValueError("Error occurred while solving IVP:", e)
+        
+        x = x_ext[0:acc.xdim]
+        a_hat_cbf = x_ext[acc.xdim:(acc.xdim+acc.adim)].reshape(-1,1)
+        rho_cbf = x_ext[(acc.xdim+acc.adim)]
 
 # Plotting
 plt.figure()
@@ -124,6 +132,7 @@ plt.title("Control Input - Wheel Force")
 plt.grid(True)
 plt.subplot(4, 1, 4)
 plt.plot(tt, h_hist, color='navy', linewidth=1.5)
+plt.plot(tt, np.ones_like(tt) * 0.5 * (acc.a_err_max.T @ np.linalg.inv(acc.Gamma_cbf) @ acc.a_err_max).item(), 'r--')
 plt.ylabel("CBF (h(x))")
 plt.title("CBF")
 plt.grid(True)
