@@ -192,11 +192,12 @@ class CtrlAffineSys:
     def ctrl_cracbf(self, x, a_hat_cbf, u_ref):
         """CRaCBF QP Controller"""
 
+        #NOTE: using reshape to enforce correct shape
         h = self.cbf(x, a_hat_cbf)
-        Lfh = self.lf_cbf(x, a_hat_cbf)
-        Lgh = self.lg_cbf(x, a_hat_cbf)
-        LYh = self.lY_cbf(x, a_hat_cbf)
-        dcbfdx = self.dcbfdx(x, a_hat_cbf)
+        Lfh = self.lf_cbf(x, a_hat_cbf).reshape(1,1)
+        Lgh = self.lg_cbf(x, a_hat_cbf).reshape(1,self.udim)
+        LYh = self.lY_cbf(x, a_hat_cbf).reshape(1,self.adim)
+        dcbfdx = self.dcbfdx(x, a_hat_cbf).reshape(self.xdim,1)
         
         if self.use_cp:
             tightening =  self.cp_quantile * np.linalg.norm(dcbfdx, 2)
@@ -359,11 +360,11 @@ class CtrlAffineSys:
     def adaptation_craclf(self, x, a_hat_clf, rho_clf):
         """CRaCLF adaptation law"""
         V = self.clf(x, a_hat_clf)
+        #NOTE: using reshape to enforce correct shape
         dclfda = self.dclfda(x, a_hat_clf).reshape(self.adim,1)
         dclfdx = self.dclfdx(x, a_hat_clf).reshape(self.xdim,1)
 
         # Projection operator to enforce bounds on a_hat_clf
-        #TODO: check sign
         a_hat_clf_dot = self.nu_clf(rho_clf) * (self.Gamma_clf
                         @ projection_operator(a_hat_clf, 
                                               self.Y(x).T @ dclfdx, 
@@ -376,11 +377,11 @@ class CtrlAffineSys:
     def adaptation_cracbf(self, x, a_hat_cbf, rho_cbf):
         """CRaCBF adaptation law"""
         h = self.cbf(x, a_hat_cbf)
-        dcbfda = self.dcbfda(x, a_hat_cbf)
-        dcbfdx = self.dcbfdx(x, a_hat_cbf)
+        #NOTE: using reshape to enforce correct shape
+        dcbfda = self.dcbfda(x, a_hat_cbf).reshape(self.adim,1)
+        dcbfdx = self.dcbfdx(x, a_hat_cbf).reshape(self.xdim,1)
 
         # Projection operator to enforce bounds on a_hat_cbf
-        #TODO: check sign
         a_hat_cbf_dot = self.nu_cbf(rho_cbf) * (self.Gamma_cbf
                         @ projection_operator(a_hat_cbf, 
                                               -self.Y(x).T @ dcbfdx, 
