@@ -9,7 +9,7 @@ from dynsys.utils import wrapToPi
 import pickle
 
 USE_CP = False # whether to use conformal prediction
-USE_ADAPTIVE = False # whether to use adaptive control
+USE_ADAPTIVE = True # whether to use adaptive control
 
 # Load the SINDy model #######################################################
 with open('sindy_models/model_inverted_pendulum_traj_sindy', 'rb') as file:
@@ -59,7 +59,7 @@ params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
 params["cp_quantile"] = cp_quantile
 params["Gamma_clf"] = np.diag(np.array([4.0, 4.0, 4.0])) # adaptive gain matrix for CRaCCM
-params["a_true"] = np.array([[0.0], [0.0], [0.0]]) # true parameters
+params["a_true"] = np.array([[0.4], [0.1], [0.1]]) # true parameters
 params["a_hat_norm_max"] = np.linalg.norm(params["a_true"], 2) # TODO: check this
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 params["eta_clf"] = 10.0
