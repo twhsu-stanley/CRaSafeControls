@@ -75,12 +75,9 @@ class CtrlAffineSys:
     def define_cbf_symbolic(self, x_sym, a_hat_cbf=None):
         pass
 
-    def lambdify_symbolic_funcs(self, x_sym, f_sym, g_sym, Y_sym, a_hat_sym, clf_sym=None, cbf_sym=None):
-        if x_sym is None or f_sym is None or g_sym is None or Y_sym is None or a_hat_sym is None:
-            raise ValueError("Symbolic x, f, and g must be provided.")
-
-        self.xdim = len(x_sym)
-        self.udim = g_sym.shape[1] if isinstance(g_sym, sp.Matrix) else np.shape(g_sym)[1]
+    def lambdify_symbolic_funcs(self, x_sym, f_sym, g_sym, Y_sym, a_sym, clf_sym=None, cbf_sym=None):
+        if x_sym is None or f_sym is None or g_sym is None or Y_sym is None or a_sym is None:
+            raise ValueError("Symbolic x, f, g, Y, and a must be defined")
 
         self.f = sp.lambdify([x_sym], f_sym, modules='numpy')
         self.g = sp.lambdify([x_sym], g_sym, modules='numpy')
@@ -88,42 +85,40 @@ class CtrlAffineSys:
 
         # CBF
         if cbf_sym is not None:
-            self.cbf = sp.lambdify([x_sym, a_hat_sym], cbf_sym, modules='numpy')
+            self.cbf = sp.lambdify([x_sym, a_sym], cbf_sym, modules='numpy')
 
             dcbfdx = sp.simplify(sp.derive_by_array(cbf_sym, x_sym))
             dcbfdx = sp.Matrix(dcbfdx)  # Convert to Matrix for compatibility
-            self.dcbfdx = sp.lambdify([x_sym, a_hat_sym], dcbfdx, modules='numpy')
-            self.lf_cbf = sp.lambdify([x_sym, a_hat_sym], dcbfdx.T @ f_sym, modules='numpy')
-            self.lg_cbf = sp.lambdify([x_sym, a_hat_sym], dcbfdx.T @ g_sym, modules='numpy')
-            self.lY_cbf = sp.lambdify([x_sym, a_hat_sym], dcbfdx.T @ Y_sym, modules='numpy') if Y_sym is not None else None
+            self.dcbfdx = sp.lambdify([x_sym, a_sym], dcbfdx, modules='numpy')
+            # Extract [0,0] for scalar lf_cbf to avoid shape issues from matrix differentiation
+            lf_cbf_sym = dcbfdx.T @ f_sym
+            self.lf_cbf = sp.lambdify([x_sym, a_sym], lf_cbf_sym[0, 0] if lf_cbf_sym.shape == (1, 1) else lf_cbf_sym, modules='numpy')
+            self.lg_cbf = sp.lambdify([x_sym, a_sym], dcbfdx.T @ g_sym, modules='numpy')
+            self.lY_cbf = sp.lambdify([x_sym, a_sym], dcbfdx.T @ Y_sym, modules='numpy')
 
-            dcbfda = sp.simplify(sp.derive_by_array(cbf_sym, a_hat_sym))
+            dcbfda = sp.simplify(sp.derive_by_array(cbf_sym, a_sym))
             dcbfda = sp.Matrix(dcbfda)  # Convert to Matrix for compatibility
-            self.dcbfda = sp.lambdify([x_sym, a_hat_sym], dcbfda, modules='numpy')
+            self.dcbfda = sp.lambdify([x_sym, a_sym], dcbfda, modules='numpy')
 
         # CLF
         if clf_sym is not None:
-            self.clf = sp.lambdify([x_sym, a_hat_sym], clf_sym, modules='numpy')
+            self.clf = sp.lambdify([x_sym, a_sym], clf_sym, modules='numpy')
             dclfdx = sp.simplify(sp.derive_by_array(clf_sym, x_sym))
             dclfdx = sp.Matrix(dclfdx)  # Convert to Matrix for compatibility
-            self.dclfdx = sp.lambdify([x_sym, a_hat_sym], dclfdx, modules='numpy')
-            self.lf_clf = sp.lambdify([x_sym, a_hat_sym], dclfdx.T @ f_sym, modules='numpy')
-            self.lg_clf = sp.lambdify([x_sym, a_hat_sym], dclfdx.T @ g_sym, modules='numpy')
-            self.lY_clf = sp.lambdify([x_sym, a_hat_sym], dclfdx.T @ Y_sym, modules='numpy') if Y_sym is not None else None
+            self.dclfdx = sp.lambdify([x_sym, a_sym], dclfdx, modules='numpy')
+            # Extract [0,0] for scalar lf_clf to avoid shape issues from matrix differentiation
+            lf_clf_sym = dclfdx.T @ f_sym
+            self.lf_clf = sp.lambdify([x_sym, a_sym], lf_clf_sym[0, 0] if lf_clf_sym.shape == (1, 1) else lf_clf_sym, modules='numpy')
+            self.lg_clf = sp.lambdify([x_sym, a_sym], dclfdx.T @ g_sym, modules='numpy')
+            self.lY_clf = sp.lambdify([x_sym, a_sym], dclfdx.T @ Y_sym, modules='numpy')
     
-            dclfda = sp.simplify(sp.derive_by_array(clf_sym, a_hat_sym))
+            dclfda = sp.simplify(sp.derive_by_array(clf_sym, a_sym))
             dclfda = sp.Matrix(dclfda)
-            self.dclfda = sp.lambdify([x_sym, a_hat_sym], dclfda, modules='numpy')            
+            self.dclfda = sp.lambdify([x_sym, a_sym], dclfda, modules='numpy')            
 
     # Control laws
     def ctrl_craclf(self, x, a_hat_clf, u_ref, use_slack=True):
-        """CRaCLF-QP Controller"""
-        if self.clf is None:
-            raise ValueError("aCLF not defined.")
-        if u_ref is None:
-            u_ref = np.zeros((self.udim, 1))
-        if u_ref.shape[0] != self.udim:
-            raise ValueError("u_ref shape mismatch.")
+        """CRaCLF-QP Controller"""  
 
         V = self.clf(x, a_hat_clf)
         LfV = self.lf_clf(x, a_hat_clf)
@@ -179,7 +174,7 @@ class CtrlAffineSys:
         if use_slack:
             P = np.block([
                 [np.eye(self.udim), np.zeros((self.udim, 1))],
-                [np.zeros((1, self.udim)), self.params["weight"]["slack"]],
+                [np.zeros((1, self.udim)), self.weight_slack],
             ])
             f = np.concatenate([-u_ref, [0]])
 
@@ -205,12 +200,6 @@ class CtrlAffineSys:
     
     def ctrl_cracbf(self, x, a_hat_cbf, u_ref):
         """CRaCBF QP Controller"""
-        if self.cbf is None:
-            raise ValueError("CBF not defined")
-        if u_ref is None:
-            u_ref = np.zeros((self.udim, 1))
-        if u_ref.shape[0] != self.udim:
-            raise ValueError("u_ref shape mismatch")
 
         h = self.cbf(x, a_hat_cbf)
         Lfh = self.lf_cbf(x, a_hat_cbf)
