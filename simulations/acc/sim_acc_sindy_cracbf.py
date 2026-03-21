@@ -65,6 +65,7 @@ params["a_hat_norm_max"] = np.linalg.norm(params["a_true"], 2) # TODO: check thi
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 params["eta_cbf"] = 10.0
 
+# For SINDy model
 params["feature_names"] = feature_names
 params["coefficients"] = coefficients
 params["idx_x"] = idx_x

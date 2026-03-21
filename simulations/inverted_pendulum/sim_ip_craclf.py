@@ -4,6 +4,7 @@ import sys
 import os
 from scipy.integrate import solve_ivp
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+from dynsys.utils import wrapToPi
 from dynsys.inverted_pendulum.ip import IP
 
 USE_CP = False # whether to use conformal prediction
@@ -15,10 +16,10 @@ sim_T = 25
 tt = np.arange(0, sim_T, dt)
 
 params = {
-    "l": 1.0,    # length of pendulum [m]
-    "m": 1.0,    # mass [kg]
-    "grav": 9.81,   # gravity [m/s^2]
-    "b": 0.01,   # friction [s*Nm/rad]
+    "l": 1.0,     # length of pendulum [m]
+    "m": 1.0,     # mass [kg]
+    "grav": 9.81, # gravity [m/s^2]
+    "b": 0.01,    # friction [s*Nm/rad]
     "u_max": 7.0,
     "u_min": -7.0,
     "Kp": 8.0,
@@ -105,6 +106,7 @@ for k in range(len(tt)):
             raise ValueError("Error occurred while solving IVP:", e)
         
         x = x_ext[0:ip.xdim]
+        x[0] = wrapToPi(x[0])  # wrap angle to [-pi, pi]
         a_hat_clf = x_ext[ip.xdim:(ip.xdim+ip.adim)].reshape(-1,1)
         rho_clf = x_ext[(ip.xdim+ip.adim)]
 
