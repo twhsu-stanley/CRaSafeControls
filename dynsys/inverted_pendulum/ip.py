@@ -8,6 +8,9 @@ class IP(CtrlAffineSys):
     def __init__(self, params=None):
         super().__init__(params)
 
+        self.A = None # Placeholder for the linearized system matrix
+        self.B = None # Placeholder for the linearized input matrix
+
     def define_system_symbolic(self):
         # Symbolic states
         theta, theta_dot = sp.symbols('theta theta_dot')
@@ -15,10 +18,9 @@ class IP(CtrlAffineSys):
         
         l = self.params['l']    # length of pendulum (m)
         m = self.params['m']    # mass of pendulum (kg)
-        grav = self.params['g']    # gravity (m/s^2)
-        b = self.params['b']    # friction coefficient (s*Nm/rad)
-        I = self.params['I']    # moment of inertia (kg*m^2)
-        assert I == m * l**2 / 3, "I = m*l^2/3"
+        grav = self.params['grav'] # gravity (m/s^2)
+        b = self.params['b']    # friction coefficient (s*Nm/rad) 
+        I = m * l**2 / 3        # moment of inertia (kg*m^2)
 
         f = sp.Matrix([
             [x[1]],
@@ -29,50 +31,86 @@ class IP(CtrlAffineSys):
             [-1 / I]
         ])
 
-        # Define the symbolic uncertainty term Y(x)
-        Y = sp.Matrix([[0, 0], [0, 0]])
+        # Define the symbolic uncertainty matrix Y(x)
+        Y = sp.Matrix([[x[0], 0, 0], 
+                       [0, sp.sin(x[0]), x[1]]])
+        a0, a1, a2 = sp.symbols('a0 a1 a2')
+        a = sp.Matrix([a0, a1, a2])
+        #Y = sp.Matrix([[x[0], 0],
+        #               [0, x[1]]])
+        #a0, a1 = sp.symbols('a0 a1')
+        #a = sp.Matrix([a0, a1])
 
-        a0, a1 = sp.symbols('a0 a1')
-        a = sp.Matrix([a0, a1])
-        
         return x, f, g, Y, a
+    
+    def dynamics_extended(self, x_ext, u):
+        x = x_ext[0:self.xdim]
+        a_hat = x_ext[self.xdim:(self.xdim+self.adim)].reshape(-1,1)
+        rho = x_ext[(self.xdim+self.adim)]
 
-    def define_clf_symbolic(self, x):
-        I = self.params['I'] # moment of inertia (kg*m^2)
-        c_bar = self.params['m'] * self.params['g'] * self.params['l'] / (2 * I)
-        b_bar = self.params['b'] / I
+        dxdt_ext = np.zeros((self.xdim+self.adim+1,))
+
+        dxdt_ext[0:self.xdim] = self.dynamics(x, u)
+
+        if self.use_adaptive:
+            a_hat_dot, rho_dot = self.adaptation_craclf(x, a_hat, rho)
+        else:
+            a_hat_dot= np.zeros((self.adim,1))
+            rho_dot = 0.0    
+        dxdt_ext[self.xdim:(self.xdim+self.adim)] = a_hat_dot.ravel()
+        dxdt_ext[(self.xdim+self.adim)] = rho_dot
+
+        return dxdt_ext
+    
+    def define_clf_symbolic(self, x, a):
+        a0 = a[0]
+        a1 = a[1]
+        a2 = a[2]
+        
+        l = self.params['l']    # length of pendulum (m)
+        m = self.params['m']    # mass of pendulum (kg)
+        grav = self.params['grav'] # gravity (m/s^2)
+        b = self.params['b']    # friction coefficient (s*Nm/rad) 
+        I = m * l**2 / 3        # moment of inertia (kg*m^2)
+        c_bar = m * grav * l / (2 * I)
+        b_bar = b / I
 
         # Linearized Dynamics with state feedback : u0 = params.Kp * x0 + params.Kd * x1
-        A = np.array([
-            [0, 1],
-            [c_bar - self.params['Kp'] / I, -b_bar - self.params['Kd'] / I]
+        A = sp.Matrix([[a0, 1],
+                       [c_bar - self.params['Kp']/I + a1, -b_bar - self.params['Kd']/I + a2]
         ])
-        Q = self.params['clf']['rate'] * np.eye(A.shape[0])
-        P = lyap(A.T, -Q)
-        clf = (x.T @ P @ x)[0,0]
+        Q = self.params['clf']['rate'] * sp.eye(2)
 
-        # Find c1: c1*||x||^2 <= V(x) = x'Px <= c2*||x||^2
-        # TODO: iniitialize c1 and c2 in the superclass constructor
-        self.c1 = np.min(np.linalg.eigvals(P))
-        self.c2 = np.max(np.linalg.eigvals(P))
-
-        # LQR
-        """
-        A = np.array([
-            [0, 1],
-            [c_bar, -b_bar]
+        # Get P(a) by solving the Lyapunov equation: A^T P(a) + P(a) A + Q = 0
+        p11, p12, p22 = sp.symbols('p11 p12 p22', real=True)
+        P = sp.Matrix([
+            [p11, p12],
+            [p12, p22]
         ])
-        B = np.array([[0], [-1 / I]])
-        Q = params['clf']['Q']
-        R = params['clf']['R']
-        P_lqr = solve_continuous_are(A, B, Q, R)
-        K_lqr = np.linalg.inv(R) @ B.T @ P_lqr
-        self.K_lqr = K_lqr
-        self.P_lqr = P_lqr
-        clf = x.T * sp.Matrix(P_lqr) * x
-        """
 
+        lyap_mat = sp.expand(A.T @ P + P @ A + Q)
+
+        eqs = [
+            sp.Eq(lyap_mat[0, 0], 0),
+            sp.Eq(lyap_mat[0, 1], 0),
+            sp.Eq(lyap_mat[1, 1], 0),
+        ]
+
+        sol = sp.solve(eqs, (p11, p12, p22), dict=True)
+        if not sol:
+            raise ValueError("Could not solve the parameter-dependent Lyapunov equation.")
+
+        P = sp.simplify(P.subs(sol[0]))
+        clf = sp.simplify((x.T @ P @ x)[0, 0])
+
+        #A = np.array([[0, 1],
+        #              [c_bar - self.params['Kp']/I, -b_bar - self.params['Kd']/I]
+        #])
+        #Q = self.params['clf']['rate'] * np.eye(2)
+        #P = lyap(A.T, -Q)
+        #clf = (x.T @ P @ x)[0,0]
+        
         return clf
 
     def ctrl_nominal(self, x):
-        return np.zeros((self.udim, 1))
+        return np.array([0.0])

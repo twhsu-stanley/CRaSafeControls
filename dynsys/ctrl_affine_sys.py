@@ -117,12 +117,12 @@ class CtrlAffineSys:
     def ctrl_craclf(self, x, a_hat_clf, u_ref, use_slack=True):
         """CRaCLF-QP Controller"""  
 
+        #NOTE: using reshape to enforce correct shape
         V = self.clf(x, a_hat_clf)
-        LfV = self.lf_clf(x, a_hat_clf)
-        LgV = self.lg_clf(x, a_hat_clf)
-        LYV = self.lY_clf(x, a_hat_clf)
-        dclfdx = self.dclfdx(x, a_hat_clf)
-        dclfda = self.dclfda(x, a_hat_clf)
+        LfV = self.lf_clf(x, a_hat_clf).reshape(1,1)
+        LgV = self.lg_clf(x, a_hat_clf).reshape(1,self.udim)
+        LYV = self.lY_clf(x, a_hat_clf).reshape(1,self.adim)
+        dclfdx = self.dclfdx(x, a_hat_clf).reshape(self.xdim,1)
 
         if self.use_cp:
             tightening =  self.cp_quantile * np.linalg.norm(dclfdx, 2)
@@ -130,22 +130,16 @@ class CtrlAffineSys:
             tightening = 0.0
 
         if use_slack:
-            # Constraints : A[u; slack] <= b
+            # Constraints: A[u; slack] <= b
             A = np.hstack([LgV, np.array([[-1]])])
-            b = (
-                -LfV
-                -tightening
-                -LYV @ (a_hat_clf + self.Gamma_clf @ dclfda) #TODO: check sign
-                - self.params["clf"]["rate"] * V
-            ).item()
         else:
             A = LgV
-            b = (
-                -LfV
-                -LYV @ (a_hat_clf + self.Gamma_clf @ dclfda)
-                - tightening
-                - self.params["clf"]["rate"] * V
-            ).item()
+
+        b = (-LfV
+            -LYV @ a_hat_clf
+            -tightening
+            -self.params["clf"]["rate"] * V
+        )
 
         if "u_max" in self.params:
             A = np.vstack([A, np.hstack([np.eye(self.udim), np.zeros((self.udim, 1))])]) if use_slack else np.vstack([A, np.eye(self.udim)])
@@ -365,8 +359,8 @@ class CtrlAffineSys:
     def adaptation_craclf(self, x, a_hat_clf, rho_clf):
         """CRaCLF adaptation law"""
         V = self.clf(x, a_hat_clf)
-        dclfda = self.dclfda(x, a_hat_clf)
-        dclfdx = self.dclfdx(x, a_hat_clf)
+        dclfda = self.dclfda(x, a_hat_clf).reshape(self.adim,1)
+        dclfdx = self.dclfdx(x, a_hat_clf).reshape(self.xdim,1)
 
         # Projection operator to enforce bounds on a_hat_clf
         #TODO: check sign

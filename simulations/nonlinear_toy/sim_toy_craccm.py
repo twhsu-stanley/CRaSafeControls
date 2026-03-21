@@ -9,7 +9,7 @@ from dynsys.geodesic_solver import GeodesicSolver
 from scipy.interpolate import interp1d
 
 USE_CP = False # whether to use conformal prediction
-USE_ADAPTIVE = False # whether to use adaptive control
+USE_ADAPTIVE = True # whether to use adaptive control
 
 VERIFY_GEODESIC = False
 USE_QPSOLVERS = True
@@ -158,7 +158,7 @@ for i in range(T_steps):
     # Lyapunov function
     V1 = toy.nu_ccm(rho_ccm) * (toy.Erem + toy.eta_ccm)
     a_tilde = a_hat_ccm - toy.a_true
-    V2 = a_tilde.T @ toy.Gamma_ccm @ a_tilde
+    V2 = a_tilde.T @ np.linalg.inv(toy.Gamma_ccm) @ a_tilde
     V1_hist[i] = V1.item()
     V2_hist[i] = V2.item()
     ###########################################################
@@ -253,7 +253,7 @@ axs[1].set_ylabel('Riemann Energy: Erem(t)')
 axs[1].grid(True)
 # Lyapunov
 axs[2].plot(tt, V1_hist, label='V1 = nu(rho)(E+eta)')
-axs[2].plot(tt, V2_hist, label='V2 = a~^T Gamma a~')
+axs[2].plot(tt, V2_hist, label='V2 = a~^T Gamma^-1 a~')
 axs[2].plot(tt, V1_hist + V2_hist, label='V = V1+V2')
 axs[2].set_xlabel('Time (s)')
 axs[2].set_ylabel('Lyapunov: V(t)')

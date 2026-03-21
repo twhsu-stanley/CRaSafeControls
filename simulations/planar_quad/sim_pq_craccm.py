@@ -128,7 +128,7 @@ for i in range(T_steps):
     # Lyapunov function
     V1 = pq.nu_ccm(rho_ccm) * (pq.Erem + pq.eta_ccm)
     a_tilde = a_hat_ccm - pq.a_true
-    V2 = a_tilde.T @ pq.Gamma_ccm @ a_tilde
+    V2 = a_tilde.T @ np.linalg.inv(pq.Gamma_ccm) @ a_tilde
     V1_hist[i] = V1.item()
     V2_hist[i] = V2.item()
     #######################################################################################
@@ -238,7 +238,7 @@ axs[0].set_ylabel('Riemann Energy: Erem(t)')
 axs[0].grid(True)
 # Lyapunov
 axs[1].plot(tt, V1_hist, label='V1 = nu(rho)(E+eta)')
-axs[1].plot(tt, V2_hist, label='V2 = a~^T Gamma a~')
+axs[1].plot(tt, V2_hist, label='V2 = a~^T Gamma^-1 a~')
 axs[1].plot(tt, V1_hist + V2_hist, label='V = V1+V2')
 axs[1].set_xlabel('Time (s)')
 axs[1].set_ylabel('Lyapunov: V(t)')
