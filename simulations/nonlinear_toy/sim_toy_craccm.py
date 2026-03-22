@@ -4,8 +4,8 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 from scipy.integrate import solve_ivp
-from dynsys.nonlinear_toy.nonlinear_toy import NONLINEAR_TOY
-from dynsys.geodesic_solver import GeodesicSolver
+from systems.nonlinear_toy.nonlinear_toy import NONLINEAR_TOY
+from geodesic_solver import GeodesicSolver
 from scipy.interpolate import interp1d
 
 USE_CP = False # whether to use conformal prediction

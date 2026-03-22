@@ -4,8 +4,8 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 from scipy.integrate import solve_ivp
-from dynsys.planar_quad.planar_quad import PLANAR_QUAD
-from dynsys.geodesic_solver import GeodesicSolver
+from systems.planar_quad.planar_quad import PLANAR_QUAD
+from geodesic_solver import GeodesicSolver
 from scipy.io import loadmat
 from scipy.interpolate import interp1d
 

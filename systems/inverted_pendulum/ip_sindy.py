@@ -1,10 +1,10 @@
 import sympy as sp
 import numpy as np
 from scipy.linalg import solve_continuous_lyapunov as lyap
-from dynsys.ctrl_affine_sys import CtrlAffineSys
-from dynsys.utils import sindy_prediction_symbolic
+from systems.control_affine_system import ControlAffineSystem
+from utils import sindy_prediction_symbolic
 
-class IP_SINDY(CtrlAffineSys):
+class IP_SINDY(ControlAffineSystem):
     def __init__(self, params=None):
         super().__init__(params)
 

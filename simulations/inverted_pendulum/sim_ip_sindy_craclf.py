@@ -4,8 +4,8 @@ import sys
 import os
 from scipy.integrate import solve_ivp
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-from dynsys.inverted_pendulum.ip_sindy import IP_SINDY
-from dynsys.utils import wrapToPi
+from systems.inverted_pendulum.ip_sindy import IP_SINDY
+from utils import wrapToPi
 import pickle
 
 USE_CP = False # whether to use conformal prediction

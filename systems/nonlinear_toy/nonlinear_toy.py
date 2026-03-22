@@ -1,9 +1,9 @@
 import sympy as sp
 import numpy as np
-from dynsys.ctrl_affine_sys import CtrlAffineSys
+from systems.control_affine_system import ControlAffineSystem
 
 
-class NONLINEAR_TOY(CtrlAffineSys):
+class NONLINEAR_TOY(ControlAffineSystem):
     """
     Simple 3-state control-affine toy system
 

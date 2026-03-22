@@ -4,7 +4,7 @@ import sys
 import os
 from scipy.integrate import solve_ivp
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-from dynsys.acc.acc_sindy import ACC_SINDY
+from systems.acc.acc_sindy import ACC_SINDY
 import pickle
 
 USE_CP = True # whether to use conformal prediction

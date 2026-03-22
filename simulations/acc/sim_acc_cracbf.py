@@ -4,7 +4,7 @@ import sys
 import os
 from scipy.integrate import solve_ivp
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-from dynsys.acc.acc import ACC
+from systems.acc.acc import ACC
 
 USE_CP = False # whether to use conformal prediction
 USE_ADAPTIVE = True # whether to use adaptive control

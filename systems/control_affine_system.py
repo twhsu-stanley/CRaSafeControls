@@ -1,9 +1,9 @@
 import numpy as np
 import sympy as sp
 from qpsolvers import solve_qp
-from dynsys.utils import *
+from utils import *
 
-class CtrlAffineSys:
+class ControlAffineSystem:
     def __init__(self, params=None):
         # System parameters
         if params is None:

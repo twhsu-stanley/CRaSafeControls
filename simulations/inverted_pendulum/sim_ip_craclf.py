@@ -4,8 +4,8 @@ import sys
 import os
 from scipy.integrate import solve_ivp
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-from dynsys.utils import wrapToPi
-from dynsys.inverted_pendulum.ip import IP
+from utils import wrapToPi
+from systems.inverted_pendulum.ip import IP
 
 USE_CP = False # whether to use conformal prediction
 USE_ADAPTIVE = True # whether to use adaptive control
