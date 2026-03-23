@@ -1,0 +1,144 @@
+import numpy as np
+from collections import deque
+
+class ACP:
+    """
+    Time-interval-wise Adaptive Conformal Prediction (ACP) with online parameter fitting,
+    following Algorithm 1 in the paper.
+
+    Notes
+    1) The paper allows delta_k to temporarily leave [0, 1]. To keep the order
+       statistic well-defined, this implementation clamps the quantile rank to
+       [1, |S_cal| + 1]. If the requested rank is |S_cal| + 1, the returned
+       quantile is +inf, matching the "union infinity" construction.
+    2) This class only manages ACP and the interval-wise online learning step.
+       Your controller can simply read `acp.Q_k` (or the value returned
+       by `acc.compute_quantile()`) and write it into `system.cp_quantile`.
+    3) If `N_cal` is provided, S_cal is maintained as a
+       moving FIFO window. Once the window is full, appending a new score
+       automatically drops the oldest score.
+    """
+
+    def __init__(
+        self,
+        S_cal_init, # numpy array or list
+        N_cal: int = 100,
+        lr: float = 0.5, # learning rate
+        delta_target: float = 0.05,
+        delta_init: float = 0.1,
+        ridge = 1e-8,
+    ):
+        if N_cal < 100:
+            raise ValueError("N_cal must be at least 100")
+        if len(S_cal_init) == 0:
+            raise ValueError("S_cal_init must be nonempty")
+        if lr <= 0.0:
+            raise ValueError("lr must be positive")
+        if delta_target >= 1.0 or delta_target <= 0.0:
+            raise ValueError("delta_target must be in (0,1)")
+        if delta_init >= 1.0 or delta_init <= 0.0:
+            raise ValueError("delta_init must be in (0,1)")
+        if ridge < 0.0:
+            raise ValueError("ridge must be nonnegative")
+        
+        if len(S_cal_init) > N_cal:
+            S_cal_init = S_cal_init[-N_cal:]
+        self.S_cal = deque(S_cal_init, maxlen=N_cal)
+
+        self.N_cal = N_cal
+        self.lr = lr
+        self.delta_target = float(delta_target)
+        self.delta = delta_init
+        self.Q_k = None
+        self.ridge = float(ridge)
+
+        self._x_buffer = [] # to store x_t for t in I_k
+        self._xdot_nom_buffer = [] # to store f(x_t) + g(x_t) u_t for t in I_k
+        self._Y_buffer = [] # to store Y(x_t) for t in I_k
+        self._w_buffer = [] # to store w_t for t in I_k
+
+    def add_data_to_buffers(self, x, xdot_nom, Yx):
+        self._x_buffer.append(x)
+        self._xdot_nom_buffer.append(xdot_nom)
+        self._Y_buffer.append(Yx)
+
+    def clear_buffers(self):
+        self._x_buffer = []
+        self._xdot_nom_buffer = []
+        self._Y_buffer = []
+        self._w_buffer = []
+
+    def estimate_uncertainty(self, dt):
+        """
+        Compute uncertainty data for t in I_k:
+            w_t = xdot_t - (f_bar(x_t) + g_bar(x_t) u_t)
+        """
+        #TODO: Given a state trajectory x_t, for all t in I_k, compute a vector of w_t, for all t in I_k
+        x_dot_buffer = np.gradient(np.array(self._x_buffer), dt, axis=0)
+        self._w_buffer =  [x_dot - x_dot_nom for (x_dot, x_dot_nom) in zip(x_dot_buffer, self._xdot_nom_buffer)] 
+
+    def compute_score(self):
+        """
+        1. Fit the true (fictitious) parameter
+            a_k = argmin_a \sum_{t\in I_k} ||Y(x_t) a - w_t||_2
+        using least squares (optionally ridge-regularized)
+        2. Compute the score:
+            s_k = sup_{t\in I_k} ||Y(x_t) a_k - w_t||_2
+        """
+
+        # Fit true parameter a_k
+        Y_stack = np.vstack(self._Y_buffer)
+        w_stack = np.vstack(self._w_buffer)
+        
+        if self.ridge > 0.0:
+            n_params = Y_stack.shape[1]
+            lhs = Y_stack.T @ Y_stack + self.ridge * np.eye(n_params)
+            rhs = Y_stack.T @ w_stack
+            a_k = np.linalg.solve(lhs, rhs)
+        else:
+            a_k, *_ = np.linalg.lstsq(Y_stack, w_stack, rcond=None)
+
+        # Compute the score s_k
+        residual_norms = []
+        for Y_t, w_t in zip(self._Y_buffer, self._w_buffer):
+            r_t = Y_t @ a_k - w_t
+            residual_norms.append(float(np.linalg.norm(r_t, ord=2)))
+        s_k = np.max(residual_norms)
+
+        return a_k, s_k
+
+    def compute_quantile(self):
+        """
+        Return Q_k, the adaptive conformal quantile computed from the current
+        calibration set and the current ACP failure estimate delta_k.
+        """
+        S_cal_sort = np.sort(self.S_cal)
+        
+        S_cal_size = len(self.S_cal) 
+        assert S_cal_size <= self.N_cal
+        
+        rank = int(np.ceil((1.0 - self.delta) * (S_cal_size + 1)))
+        rank = max(1, min(rank, S_cal_size + 1))
+
+        if rank == S_cal_size + 1:
+            self.Q_k = np.inf
+        else:
+            self.Q_k = float(S_cal_sort[rank - 1])
+
+        return self.Q_k
+
+    def update_delta(self):
+        """
+        Update delta: delta_{k+1} = \delta_k + lr * (delta_taget - e_k) 
+        """
+        if self.Q_k is None:
+            raise ValueError("Call compute_quantile() before update_delta().")
+
+        a_k, s_k = self.compute_score()
+        
+        e_k = int(s_k > self.Q_k) # assuming self.Q_k has already been updated
+
+        self.delta = self.delta + self.lr * (self.delta_target - e_k)
+
+        self.S_cal.append(s_k)
+
