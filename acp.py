@@ -22,11 +22,14 @@ class ACP:
     def __init__(
         self,
         S_cal_init, # numpy array or list
-        N_cal: int = 100,
+        N_cal: int = 1000,
         lr: float = 0.5, # learning rate
         delta_target: float = 0.05,
-        delta_init: float = 0.1,
-        ridge = 1e-8,
+        delta_init: float = 0.05,
+        score_max: float = 1.0, # max possible score
+        score_min: float = 0.0, # min possible score
+        buffer_maxlen: int = 1000,
+        ridge: float = 1e-8,
     ):
         if N_cal < 100:
             raise ValueError("N_cal must be at least 100")
@@ -38,6 +41,8 @@ class ACP:
             raise ValueError("delta_target must be in (0,1)")
         if delta_init >= 1.0 or delta_init <= 0.0:
             raise ValueError("delta_init must be in (0,1)")
+        if buffer_maxlen < 10:
+            raise ValueError("buffer_maxlen must be at least 10")
         if ridge < 0.0:
             raise ValueError("ridge must be nonnegative")
         
@@ -49,13 +54,17 @@ class ACP:
         self.lr = lr
         self.delta_target = float(delta_target)
         self.delta = delta_init
-        self.Q_k = None
+        self.score_max = score_max
+        self.score_min = score_min
+        self.compute_quantile() # update self.Q_k
         self.ridge = float(ridge)
+        self.buffer_maxlen = buffer_maxlen
 
-        self._x_buffer = [] # to store x_t for t in I_k
-        self._xdot_nom_buffer = [] # to store f(x_t) + g(x_t) u_t for t in I_k
-        self._Y_buffer = [] # to store Y(x_t) for t in I_k
-        self._w_buffer = [] # to store w_t for t in I_k
+        # Moving window of data used to solve a_k
+        self._x_buffer = deque(maxlen=self.buffer_maxlen) # to store x_t
+        self._xdot_nom_buffer = deque(maxlen=self.buffer_maxlen) # to store f(x_t) + g(x_t) u_t
+        self._Y_buffer = deque(maxlen=self.buffer_maxlen) # to store Y(x_t)
+        self._w_buffer = deque(maxlen=self.buffer_maxlen) # to store w_t
 
     def add_data_to_buffers(self, x, xdot_nom, Yx):
         self._x_buffer.append(x)
@@ -63,33 +72,35 @@ class ACP:
         self._Y_buffer.append(Yx)
 
     def clear_buffers(self):
-        self._x_buffer = []
-        self._xdot_nom_buffer = []
-        self._Y_buffer = []
-        self._w_buffer = []
+        self._x_buffer = deque(maxlen=self.buffer_maxlen)
+        self._xdot_nom_buffer = deque(maxlen=self.buffer_maxlen)
+        self._Y_buffer = deque(maxlen=self.buffer_maxlen)
+        self._w_buffer = deque(maxlen=self.buffer_maxlen)
 
     def estimate_uncertainty(self, dt):
         """
         Compute uncertainty data for t in I_k:
             w_t = xdot_t - (f_bar(x_t) + g_bar(x_t) u_t)
         """
-        #TODO: Given a state trajectory x_t, for all t in I_k, compute a vector of w_t, for all t in I_k
+        #Given a state trajectory x_t, compute a vector of w_t
         x_dot_buffer = np.gradient(np.array(self._x_buffer), dt, axis=0)
         self._w_buffer =  [x_dot - x_dot_nom for (x_dot, x_dot_nom) in zip(x_dot_buffer, self._xdot_nom_buffer)] 
 
     def compute_score(self):
         """
-        1. Fit the true (fictitious) parameter
-            a_k = argmin_a \sum_{t\in I_k} ||Y(x_t) a - w_t||_2
-        using least squares (optionally ridge-regularized)
-        2. Compute the score:
-            s_k = sup_{t\in I_k} ||Y(x_t) a_k - w_t||_2
+        1. Fit the true (fictitious) parameter: 
+                a_k = argmin_a sum_{t in I_k} ||Y(x_t) a - w_t||_2
+           using least squares (optionally ridge-regularized)
+        2. Compute the score: 
+                s_k = sup_{t in I_k} ||Y(x_t) a_k - w_t||_2
         """
 
         # Fit true parameter a_k
-        Y_stack = np.vstack(self._Y_buffer)
-        w_stack = np.vstack(self._w_buffer)
+        Y_stack = np.vstack(self._Y_buffer) # shape: (#sample * xdim, adim)
+        w_stack = np.hstack(self._w_buffer) # shape: (#sample * xdim, )
         
+        print("Fitting a_k")
+        # TODO: enforce constraint on a_k 
         if self.ridge > 0.0:
             n_params = Y_stack.shape[1]
             lhs = Y_stack.T @ Y_stack + self.ridge * np.eye(n_params)
@@ -97,6 +108,7 @@ class ACP:
             a_k = np.linalg.solve(lhs, rhs)
         else:
             a_k, *_ = np.linalg.lstsq(Y_stack, w_stack, rcond=None)
+        self.a_k = a_k
 
         # Compute the score s_k
         residual_norms = []
@@ -105,7 +117,7 @@ class ACP:
             residual_norms.append(float(np.linalg.norm(r_t, ord=2)))
         s_k = np.max(residual_norms)
 
-        return a_k, s_k
+        return s_k
 
     def compute_quantile(self):
         """
@@ -116,29 +128,31 @@ class ACP:
         
         S_cal_size = len(self.S_cal) 
         assert S_cal_size <= self.N_cal
-        
+
+        if 1.0 - self.delta <= 0.0:
+            self.Q_k = self.score_min #-np.inf
+            return self.Q_k
+        if 1.0 - self.delta >= 1.0:
+            self.Q_k = self.score_max #np.inf
+            return self.Q_k
+
         rank = int(np.ceil((1.0 - self.delta) * (S_cal_size + 1)))
-        rank = max(1, min(rank, S_cal_size + 1))
-
-        if rank == S_cal_size + 1:
-            self.Q_k = np.inf
+        if rank >= S_cal_size + 1:
+            self.Q_k = self.score_max #np.inf
         else:
-            self.Q_k = float(S_cal_sort[rank - 1])
-
+            self.Q_k = S_cal_sort[rank - 1]
         return self.Q_k
 
-    def update_delta(self):
-        """
-        Update delta: delta_{k+1} = \delta_k + lr * (delta_taget - e_k) 
+    def update_delta(self, s_k):
+        """ 
+        Update delta: delta_{k+1} = delta_k + lr * (delta_target - e_k) 
         """
         if self.Q_k is None:
             raise ValueError("Call compute_quantile() before update_delta().")
-
-        a_k, s_k = self.compute_score()
         
         e_k = int(s_k > self.Q_k) # assuming self.Q_k has already been updated
 
         self.delta = self.delta + self.lr * (self.delta_target - e_k)
 
-        self.S_cal.append(s_k)
-
+        #if self.delta < -self.lr or self.delta > 1 + self.lr:
+        #    raise ValueError(f"self.delta = {self.delta} out of [-lr, 1+lr]")
