@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.optimize import lsq_linear
 from collections import deque
 
 class ACP:
@@ -29,7 +30,8 @@ class ACP:
         score_max: float = 1.0, # max possible score
         score_min: float = 0.0, # min possible score
         buffer_maxlen: int = 1000,
-        ridge: float = 1e-8,
+        a_ub: float = -np.inf,
+        a_lb: float = np.inf
     ):
         if N_cal < 100:
             raise ValueError("N_cal must be at least 100")
@@ -43,8 +45,6 @@ class ACP:
             raise ValueError("delta_init must be in (0,1)")
         if buffer_maxlen < 10:
             raise ValueError("buffer_maxlen must be at least 10")
-        if ridge < 0.0:
-            raise ValueError("ridge must be nonnegative")
         
         if len(S_cal_init) > N_cal:
             S_cal_init = S_cal_init[-N_cal:]
@@ -57,8 +57,9 @@ class ACP:
         self.score_max = score_max
         self.score_min = score_min
         self.compute_quantile() # update self.Q_k
-        self.ridge = float(ridge)
         self.buffer_maxlen = buffer_maxlen
+        self.a_lb = a_lb
+        self.a_ub = a_ub
 
         # Moving window of data used to solve a_k
         self._x_buffer = deque(maxlen=self.buffer_maxlen) # to store x_t
@@ -88,9 +89,10 @@ class ACP:
 
     def compute_score(self):
         """
-        1. Fit the true (fictitious) parameter: 
+        1. Fit the true (fictitious) parameter by solving the constrained least squares: 
                 a_k = argmin_a sum_{t in I_k} ||Y(x_t) a - w_t||_2
-           using least squares (optionally ridge-regularized)
+                    s.t. a_lb <= a <= a_ub
+           
         2. Compute the score: 
                 s_k = sup_{t in I_k} ||Y(x_t) a_k - w_t||_2
         """
@@ -100,20 +102,16 @@ class ACP:
         w_stack = np.hstack(self._w_buffer) # shape: (#sample * xdim, )
         
         print("Fitting a_k")
-        # TODO: enforce constraint on a_k 
-        if self.ridge > 0.0:
-            n_params = Y_stack.shape[1]
-            lhs = Y_stack.T @ Y_stack + self.ridge * np.eye(n_params)
-            rhs = Y_stack.T @ w_stack
-            a_k = np.linalg.solve(lhs, rhs)
-        else:
-            a_k, *_ = np.linalg.lstsq(Y_stack, w_stack, rcond=None)
-        self.a_k = a_k
+        # TODO: safeguard shapes of a_lb and a_ub
+        result = lsq_linear(Y_stack, w_stack, bounds=(self.a_lb, self.a_ub))
+        self.a_k = result.x
+        #a_k, *_ = np.linalg.lstsq(Y_stack, w_stack, rcond=None)
+        #self.a_k = a_k
 
         # Compute the score s_k
         residual_norms = []
         for Y_t, w_t in zip(self._Y_buffer, self._w_buffer):
-            r_t = Y_t @ a_k - w_t
+            r_t = Y_t @ self.a_k - w_t
             residual_norms.append(float(np.linalg.norm(r_t, ord=2)))
         s_k = np.max(residual_norms)
 

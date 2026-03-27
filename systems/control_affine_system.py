@@ -49,7 +49,11 @@ class ControlAffineSystem:
         if self.use_adaptive:
             # For projection-based adaptive controls
             self.a_hat_norm_max = self.params["a_hat_norm_max"]
-            self.a_err_max = np.ones((self.adim, 1))/np.sqrt(self.adim) * self.a_hat_norm_max * 2 #TODO: check correctness
+            self.a_ub = self.params["a_ub"]
+            self.a_lb = self.params["a_lb"]
+            self.a_center = 0.5 * (self.a_ub + self.a_lb).reshape(-1,1) # center of the convex set where a_hat belongs to
+            a_err_norm_max = self.a_hat_norm_max + 0.5 * np.linalg.norm(self.a_ub - self.a_lb, ord=2)
+            self.a_err_max = a_err_norm_max * (self.a_ub - self.a_lb)/np.linalg.norm(self.a_ub - self.a_lb, ord=2)
             self.epsilon = self.params.get("epsilon", 1e-3) # a small value for numerical stability of projection operator
         else:
             self.a_err_max = np.zeros((self.adim,1))
@@ -367,8 +371,10 @@ class ControlAffineSystem:
         # Projection operator to enforce bounds on a_hat_clf
         a_hat_clf_dot = self.nu_clf(rho_clf) * (self.Gamma_clf
                         @ projection_operator(a_hat_clf, 
-                                              self.Y(x).T @ dclfdx, 
-                                              self.a_hat_norm_max, self.epsilon))
+                                              self.Y(x).T @ dclfdx,
+                                              self.a_center,
+                                              self.a_hat_norm_max,
+                                              self.epsilon))
         
         rho_clf_dot = -self.nu_clf(rho_clf)/(self.dnu_drho_clf(rho_clf) * (V + self.eta_clf)).item() * (dclfda.T @ a_hat_clf_dot).item()
 
@@ -384,8 +390,10 @@ class ControlAffineSystem:
         # Projection operator to enforce bounds on a_hat_cbf
         a_hat_cbf_dot = self.nu_cbf(rho_cbf) * (self.Gamma_cbf
                         @ projection_operator(a_hat_cbf, 
-                                              -self.Y(x).T @ dcbfdx, 
-                                              self.a_hat_norm_max, self.epsilon))
+                                              -self.Y(x).T @ dcbfdx,
+                                              self.a_center,
+                                              self.a_hat_norm_max,
+                                              self.epsilon))
         
         rho_cbf_dot = -self.nu_cbf(rho_cbf)/(self.dnu_drho_cbf(rho_cbf) * (h + self.eta_cbf)).item() * (dcbfda.T @ a_hat_cbf_dot).item()
 
@@ -411,8 +419,10 @@ class ControlAffineSystem:
 
         a_hat_ccm_dot = self.nu_ccm(rho_ccm) * (self.Gamma_ccm 
                         @ projection_operator(a_hat_ccm, 
-                                              self.Y(x).T @ gamma_s1_M_x.T, 
-                                              self.a_hat_norm_max, self.epsilon))
+                                              self.Y(x).T @ gamma_s1_M_x.T,
+                                              self.a_center,
+                                              self.a_hat_norm_max,
+                                              self.epsilon))
         #a_hat_dot = self.nu_ccm(rho_ccm) * self.Gamma_ccm @ self.Y(x).T @ self.gamma_s1_M_x.T
         
         c1 = (2 * gamma_s0_M_d @ self.Y(x_d) @ a_hat_ccm).item()

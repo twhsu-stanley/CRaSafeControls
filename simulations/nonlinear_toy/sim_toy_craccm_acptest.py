@@ -36,6 +36,8 @@ params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
 params["Gamma_ccm"] = np.diag(np.array([2.0, 2.0, 2.0])) # adaptive gain matrix for CRaCCM
 params["a_true"] = np.array([[-1.0], [-0.5], [-1.5]]) # true parameters [theta1, theta2, theta3]
+params["a_ub"] = np.array([0.5, 0.5, 0.5])
+params["a_lb"] = np.array([-2.5, -1.5, -3.5])
 params["a_hat_norm_max"] = np.linalg.norm(np.array([[1.0], [0.5], [1.5]]), 2) # max norm of a_hat
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 params["eta_ccm"] = 5.0
@@ -117,8 +119,11 @@ acp = ACP(S_cal_init,
           delta_init = 0.2,
           score_max = max(S_cal_init) * 2, # max possible score
           score_min = 0.0, # min possible score
-          buffer_maxlen = 500,
-          ridge = 1e-3)
+          buffer_maxlen = 800,
+          a_ub = toy.a_ub,
+          a_lb = toy.a_lb,
+          )
+# TODO: set a_lb and a_ub; a_hat_norm_max should be based on these bounds
 
 toy.cp_quantile = acp.Q_k
 
