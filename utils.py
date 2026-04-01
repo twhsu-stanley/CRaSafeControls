@@ -31,41 +31,6 @@ def sindy_prediction_symbolic(x, u, feature_names, coefficients, feature_indices
     
     return f
 
-# Functions for adaptive controls
-# TODO: Migrate these to be under control_affine_system
-def phi(a_hat, a_center, a_hat_norm_max, epsilon):
-    """Compute the barrier function φ(â)"""
-    return (np.linalg.norm(a_hat - a_center, ord=2)**2 - a_hat_norm_max**2) / (2 * epsilon * a_hat_norm_max + epsilon**2)
-
-def grad_phi(a_hat, a_center, a_hat_norm_max, epsilon):
-    """Compute the gradient ∇φ(â)"""
-    return (2 * (a_hat - a_center)) / (2 * epsilon * a_hat_norm_max + epsilon**2)
-
-def projection_operator(a_hat, y, a_center, a_hat_norm_max, epsilon):
-    """
-    Implements the adaptive control projection operator:
-    Proj(a_hat, y, φ)
-
-    Parameters:
-    - a_hat: current parameter estimate (np.ndarray)
-    - y: nominal adaptation signal (np.ndarray)
-    - a_hat_norm_max: upper bound on norm of a_hat
-    - epsilon: small positive scalar (for soft boundary enforcement)
-
-    Returns:
-    - projected update (np.ndarray)
-    """
-    phi_val = phi(a_hat, a_center, a_hat_norm_max, epsilon)
-    grad_phi_val = grad_phi(a_hat, a_center, a_hat_norm_max, epsilon)
-
-    if phi_val > 0 and (y.T @ grad_phi_val).item() > 0:
-        projection_matrix = (grad_phi_val @ grad_phi_val.T) / np.linalg.norm(grad_phi_val,2)**2
-        #projection_matrix = np.outer(grad_phi_val, grad_phi_val) / np.dot(grad_phi_val, grad_phi_val)
-        correction = projection_matrix @ y * phi_val
-        return y - correction
-    else:
-        return y
-
 def wrapToPi(angle):
     """Wrap angle to (-pi, pi]."""
     return (angle + np.pi) % (2 * np.pi) - np.pi

@@ -7,7 +7,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'
 from systems.acc.acc import ACC
 
 USE_CP = False # whether to use conformal prediction
-USE_ADAPTIVE = False # whether to use adaptive control
+USE_ADAPTIVE = True # whether to use adaptive control
 
 # Parameters and Initialization
 dt = 0.01
