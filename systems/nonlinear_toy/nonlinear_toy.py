@@ -38,9 +38,9 @@ class NONLINEAR_TOY(ControlAffineSystem):
 
         # Drift dynamics (nominal)
         f = sp.Matrix([
-            x3,
-            x1**2 - x2,
-            sp.tanh(x2)
+            [x3],
+            [x1**2 - x2],
+            [sp.tanh(x2)]
         ])
 
         # Control influence (enters only in x3)

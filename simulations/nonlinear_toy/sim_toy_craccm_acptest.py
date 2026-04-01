@@ -7,10 +7,11 @@ from scipy.integrate import solve_ivp
 from systems.nonlinear_toy.nonlinear_toy import NONLINEAR_TOY
 from geodesic_solver import GeodesicSolver
 from acp import ACP
+from motion_planner import MotionPlanner
 from scipy.interpolate import interp1d
 
-USE_CP = True # whether to use conformal prediction
-USE_ADAPTIVE = True # whether to use adaptive control
+USE_CP = False # whether to use conformal prediction
+USE_ADAPTIVE = False # whether to use adaptive control
 
 I_length = 200 # number of time steps in I_k
 
@@ -21,14 +22,14 @@ weight_slack = 1000.0
 
 # Time setup
 dt = 0.01
-sim_T = 10.0 # Simulation time
+sim_T = 4.0 # Simulation time
 tt = np.arange(0, sim_T, dt)
 T_steps = len(tt)
 
 # Prior knowledge of the uncertainty parameter
 a_true = np.array([[-1.0], [-0.5], [-1.5]]) # unknown to the controller
 a_ub = np.array([0.5, 0.5, 0.5])
-a_lb = np.array([-2.5, -1.5, -3.5])
+a_lb = np.array([-1.5, -1.5, -3.5])
 
 # System parameters
 params = {
@@ -43,64 +44,62 @@ params["Gamma_ccm"] = np.diag(np.array([2.0, 2.0, 2.0]))
 params["a_true"] = a_true
 params["a_ub"] = a_ub
 params["a_lb"] = a_lb
-params["a_hat_norm_max"] = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) * 1.5
-params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
+params["a_hat_norm_max"] = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) * 1.2
+params["epsilon"] = 1e-3 # small value for numerical stability of projection operator
 params["eta_ccm"] = 5.0
 
-# Construct the system
+# Construct the system 
 toy = NONLINEAR_TOY(params)
 
-# Compute x_d using the nominal dynamics with u_d to make sure the trajectory follows the nominal dynamics
-def u_d_fcn(t, x):
-    # Simple reference control
-    #u_d = np.array([[0.02 * np.sin(2 * np.pi / 2.0 * t)]])
-    u_d = (-np.array([0.3162, 0.5396, 0.8558]) @ x).reshape(-1,1) # some LQR gain
-    return u_d
+# Motion planner: plan x_d and u_d
+planner = MotionPlanner(
+    system = toy,
+    dt = dt,
+    horizon_steps = T_steps,
+    x_goal = np.array([3.0, 2.0, 1.5], dtype=float)*0, # TODO: make this an input to plan?
+    Qx = np.eye(toy.xdim),
+    Ru = np.eye(toy.udim) * 0.1,
+    Qf = np.eye(toy.xdim) * 10.0,
+    u_min = np.array([[-15.0]]),
+    u_max = np.array([[15.0]]),
+)
 
-x_d_data = np.zeros((toy.xdim, T_steps))
-u_d_data = np.zeros((toy.udim, T_steps))
-x_d = np.array([1.0, -1.8, -1.2]) # initial state [x1, x2, x3]
-for i in range(T_steps):
-    t = tt[i]
-    print("Time: ", t)
-    u_d = u_d_fcn(t, x_d)
-    u_d_data[:,i] = u_d
-    x_d_data[:,i] = x_d
-    # Propagate with zero-order hold on control
-    if i < T_steps - 1:
-        t_span = (tt[i], tt[i + 1])
-        sol = solve_ivp(
-            lambda t, y: toy.dynamics_nominal(y, u_d),
-            t_span,
-            x_d,
-            method="BDF",
-            rtol=1e-9,
-            atol=1e-9,
-            t_eval=[tt[i + 1]],
-        )
-        x_d = sol.y[:, -1]
+x0 = np.array([1.0, -1.8, -1.2], dtype=float)
+t0 = 0.0
+horizon_steps = T_steps # TODO: duplicated
+x_guess = np.tile(x0.reshape(-1,1), (1, horizon_steps + 1))
+u_guess = np.zeros((toy.udim, horizon_steps))
+t_planned, x_d_planned, u_d_planned = planner.plan(x0, t0, horizon_steps, x_guess, u_guess)
+
 interp_x_d = interp1d(
-    tt, x_d_data, kind='linear', axis=1,
+    t_planned, x_d_planned, kind='linear', axis=1,
     bounds_error=False, fill_value='extrapolate'
 )
 interp_u_d = interp1d(
-    tt, u_d_data, kind='linear', axis=1,
+    t_planned[:-1], u_d_planned, kind='linear', axis=1,
     bounds_error=False, fill_value='extrapolate'
 )
 
 fig, axs = plt.subplots(3, 1)
 axs = axs.flatten()
-axs[0].plot(tt, x_d_data[0, :], '--')
+axs[0].plot(t_planned, x_d_planned[0, :], '--')
 axs[0].set_ylabel('x1'); 
 axs[0].grid(True)
-axs[1].plot(tt, x_d_data[1, :], '--')
+axs[1].plot(t_planned, x_d_planned[1, :], '--')
 axs[1].set_ylabel('x2')
 axs[1].grid(True)
-axs[2].plot(tt, x_d_data[2, :], '--')
+axs[2].plot(t_planned, x_d_planned[2, :], '--')
 axs[2].set_ylabel('x3')
 axs[2].set_xlabel('Time (s)')
 axs[2].grid(True)
 plt.suptitle('Nominal Trajectory: x_d')
+
+plt.figure()
+plt.plot(t_planned[:-1], u_d_planned[0, :], '--')
+plt.ylabel('u'); 
+plt.grid(True)
+plt.xlabel('Time (s)')
+plt.title('Nominal Control: u_d')
 plt.show()
 
 # Disturbance (non-parametric uncertainty)
@@ -126,7 +125,6 @@ acp = ACP(S_cal_init,
           score_min = 0.0, # min possible score
           buffer_maxlen = 800
           )
-# TODO: set a_lb and a_ub; a_hat_norm_max should be based on these bounds
 
 toy.cp_quantile = acp.Q_k
 
@@ -217,8 +215,8 @@ for i in range(T_steps):
             t_span,
             x_ext,
             method="BDF",
-            rtol=1e-6,
-            atol=1e-6,
+            rtol=1e-8,
+            atol=1e-8,
             t_eval=[tt[i + 1]],
         )
         try:
@@ -234,16 +232,16 @@ for i in range(T_steps):
 # x vs. x_d
 fig, axs = plt.subplots(3, 1)
 axs = axs.flatten()
-axs[0].plot(tt, x_d_data[0, :], '--', label='Nominal')
+axs[0].plot(t_planned, x_d_planned[0, :], '--', label='Nominal')
 axs[0].plot(tt, x_hist[0, :], '-', label='CCM')
 axs[0].set_ylabel('x1'); 
 axs[0].legend()
 axs[0].grid(True)
-axs[1].plot(tt, x_d_data[1, :], '--')
+axs[1].plot(t_planned, x_d_planned[1, :], '--')
 axs[1].plot(tt, x_hist[1, :], '-')
 axs[1].set_ylabel('x2')
 axs[1].grid(True)
-axs[2].plot(tt, x_d_data[2, :], '--')
+axs[2].plot(t_planned, x_d_planned[2, :], '--')
 axs[2].plot(tt, x_hist[2, :], '-') 
 axs[2].set_ylabel('x3')
 axs[2].set_xlabel('Time (s)')
@@ -254,7 +252,7 @@ plt.suptitle('State: Actual vs. Nominal')
 fig, axs = plt.subplots(2, 1)
 axs = axs.flatten()
 axs[0].plot(tt, u_hist[0, :], 'r-', label='u: CCM')
-axs[0].plot(tt, u_d_data[0, :], 'k--', label='u_d')
+axs[0].plot(t_planned[:-1], u_d_planned[0, :], 'k--', label='u_d')
 axs[0].set_ylabel('Control u')
 axs[0].legend()
 axs[0].grid(True)
@@ -289,7 +287,7 @@ axs[1].grid(True)
 # Tracking error norm
 fig, axs = plt.subplots(3, 1)
 axs = axs.flatten()
-err_norm = np.linalg.norm(x_d_data - x_hist, ord=2, axis=0)  # column-wise 2-norm
+err_norm = np.linalg.norm(x_d_planned[:,:-1] - x_hist, ord=2, axis=0)  # column-wise 2-norm
 axs[0].plot(tt, err_norm)
 axs[0].set_ylabel('||x-x_d||_2')
 axs[0].grid(True)

@@ -53,32 +53,33 @@ class ControlAffineSystem:
         # TODO: also handle symbolic CCMs
         self.lambdify_symbolic_funcs(x_sym, f_sym, g_sym, Y_sym, a_sym, clf_sym, cbf_sym)
 
+        self.a_ub = self.params["a_ub"]
+        self.a_lb = self.params["a_lb"]
+        if self.a_ub.shape != self.a_lb.shape:
+            raise ValueError("a_ub and a_lb must have the same shape")
+        if np.any(self.a_lb > self.a_ub):
+            raise ValueError("a_lb must be less than or equal to a_ub")
+        if self.a_lb.shape[0] != Y_sym.shape[1] or self.a_ub.shape[0] != Y_sym.shape[1]:
+            raise ValueError(f"Dimension mismatch: Y(x) has {Y_sym.shape[1]} columns, but a_lb has length {self.a_lb.shape[0]} and a_ub has length {self.a_ub.shape[0]}")
+        
+        self.a_center = 0.5 * (self.a_ub + self.a_lb).reshape(-1,1) # center of the convex set where a_hat belongs to
+
         if self.use_adaptive:
             # For projection-based adaptive controls
-            self.a_ub = self.params["a_ub"]
-            self.a_lb = self.params["a_lb"]
-            if self.a_ub.shape != self.a_lb.shape:
-                raise ValueError("a_ub and a_lb must have the same shape")
-            if np.any(self.a_lb > self.a_ub):
-                raise ValueError("a_lb must be less than or equal to a_ub")
-            if self.a_lb.shape[0] != Y_sym.shape[1] or self.a_ub.shape[0] != Y_sym.shape[1]:
-                raise ValueError(f"Dimension mismatch: Y(x) has {Y_sym.shape[1]} columns, but a_lb has length {self.a_lb.shape[0]} and a_ub has length {self.a_ub.shape[0]}")
-            
-            self.a_center = 0.5 * (self.a_ub + self.a_lb).reshape(-1,1) # center of the convex set where a_hat belongs to
             self.a_hat_norm_max = self.params["a_hat_norm_max"] # upper bound of ||a_hat - a_center||
             a_err_norm_max = self.a_hat_norm_max + 0.5 * np.linalg.norm(self.a_ub - self.a_lb, ord=2)
-            
+            self.epsilon = self.params.get("epsilon", 1e-3) # a small value for numerical stability of projection operator
+
             if self.Gamma_cbf is not None:
+                # NOTE: self.a_err_max is only used by the CRaCBF
                 # NOTE: assuming Gamma_cbf is positive definite and symmetric
                 # Find min_a a^T @ inv(Gamma_cbf) @ a subject to ||a|| == a_err_norm_max
                 eigvals, eigvecs = np.linalg.eigh(np.linalg.inv(self.Gamma_cbf))
                 self.a_err_max = a_err_norm_max * eigvecs[:,np.argmin(eigvals)]
-            else:
-                self.a_err_max = a_err_norm_max * (self.a_ub - self.a_lb)/np.linalg.norm(self.a_ub - self.a_lb, ord=2)
-            
-            self.epsilon = self.params.get("epsilon", 1e-3) # a small value for numerical stability of projection operator
-        else:
-            self.a_err_max = np.zeros((self.adim,))
+                #self.a_err_max = a_err_norm_max * (self.a_ub - self.a_lb)/np.linalg.norm(self.a_ub - self.a_lb, ord=2)
+
+        #else:
+        #    self.a_err_max = np.zeros((self.adim,))
 
     def dynamics(self, x, u):
         return (self.f(x) + self.g(x) @ u + self.Y(x) @ self.a_true).ravel()
