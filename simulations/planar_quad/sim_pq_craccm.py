@@ -10,7 +10,7 @@ from scipy.io import loadmat
 from scipy.interpolate import interp1d
 
 USE_CP = False # whether to use conformal prediction
-USE_ADAPTIVE = False # whether to use adaptive control
+USE_ADAPTIVE = True # whether to use adaptive control
 
 VERIFY_GEODESIC = False
 USE_QPSOLVERS = False
@@ -38,6 +38,11 @@ sim_T = t_d_data[-1] # Simulation time
 tt = np.arange(0, sim_T, dt)
 T_steps = len(tt)
 
+# Prior knowledge of the uncertainty parameter
+a_true = np.array([[-0.0], [-0.6]])
+a_ub = np.array([1.0, 1.0])
+a_lb = np.array([-1.0, -1.0])
+
 # System parameters
 params = {
     "l": 0.25,
@@ -51,9 +56,11 @@ params = {
 }
 params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
-params["Gamma_ccm"] = np.diag(np.array([1/15.0, 1/15.0])) # adaptive gain matrix for CRaCCM
-params["a_true"] = np.array([[-0.0], [-0.6]]) # true parameters
-params["a_hat_norm_max"] = np.linalg.norm(np.array([[1.0], [0.6]]), 2) # max norm of a_hat
+params["Gamma_ccm"] = np.diag(np.array([1/15.0, 1/15.0]))
+params["a_true"] = a_true
+params["a_ub"] = a_ub
+params["a_lb"] = a_lb
+params["a_hat_norm_max"] = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) * 1.5
 params["epsilon"] = 1e-3 # small value for numerical stability of projection operator
 params["eta_ccm"] = 5.0
 

@@ -7,12 +7,17 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'
 from systems.acc.acc import ACC
 
 USE_CP = False # whether to use conformal prediction
-USE_ADAPTIVE = True # whether to use adaptive control
+USE_ADAPTIVE = False # whether to use adaptive control
 
 # Parameters and Initialization
 dt = 0.01
 sim_T = 10
 tt = np.arange(0, sim_T, dt)
+
+# Prior knowledge of the uncertainty parameter
+a_true = np.array([[0.5], [5.0], [1.0], [-4.0]]) # unknown to the controller
+a_ub = np.array([0.7, 7.0, 1.5, -2.0])
+a_lb = np.array([0.2, 2.0, 0.5, -5.0])
 
 params = {
     "v0": 15.0,
@@ -30,9 +35,11 @@ params = {
 #params["u_min"] = -params["cd"] * params["m"] * params["grav"]
 params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
-params["Gamma_cbf"] = np.diag(np.array([100.0, 100.0, 10.0, 10.0])) # adaptive gain matrix for CRaCCM
-params["a_true"] = np.array([[0.5], [5.0], [1.0], [-4.0]]) # true parameters
-params["a_hat_norm_max"] = np.linalg.norm(params["a_true"], 2) # TODO: check this
+params["Gamma_cbf"] = np.diag(np.array([100.0, 100.0, 10.0, 10.0]))
+params["a_true"] = a_true
+params["a_ub"] = a_ub
+params["a_lb"] = a_lb
+params["a_hat_norm_max"] = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) * 1.2
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 params["eta_cbf"] = 10.0
 
@@ -136,7 +143,8 @@ plt.title("Control Input - Wheel Force")
 plt.grid(True)
 plt.subplot(4, 1, 4)
 plt.plot(tt, h_hist, color='navy', linewidth=1.5)
-plt.plot(tt, np.ones_like(tt) * 0.5 * (acc.a_err_max.T @ np.linalg.inv(acc.Gamma_cbf) @ acc.a_err_max).item(), 'r--')
+plt.plot(tt, np.ones_like(tt) * 0.0, 'r--')
+#plt.plot(tt, np.ones_like(tt) * 0.5 * (acc.a_err_max.T @ np.linalg.inv(acc.Gamma_cbf) @ acc.a_err_max).item(), 'r--')
 plt.ylabel("CBF (h(x))")
 plt.title("CBF")
 plt.grid(True)

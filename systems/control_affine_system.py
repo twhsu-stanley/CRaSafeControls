@@ -23,11 +23,14 @@ class ControlAffineSystem:
         self.xdim = x_sym.shape[0]
         self.udim = g_sym.shape[1]
         self.adim = Y_sym.shape[1]
-        assert(f_sym.shape[0] == x_sym.shape[0])
-        assert(g_sym.shape[0] == x_sym.shape[0])
-        assert(Y_sym.shape[1] == a_sym.shape[0])
+        if f_sym.shape[0] != x_sym.shape[0]:
+            raise ValueError(f"Dimension mismatch: f(x) has {f_sym.shape[0]} rows, but x has {x_sym.shape[0]} elements")
+        if g_sym.shape[0] != x_sym.shape[0]:
+            raise ValueError(f"Dimension mismatch: g(x) has {g_sym.shape[0]} rows, but x has {x_sym.shape[0]} elements")
+        if Y_sym.shape[1] != a_sym.shape[0]:
+            raise ValueError(f"Dimension mismatch: Y(x) has {Y_sym.shape[1]} columns, but a has {a_sym.shape[0]} elements")
 
-        # Treu uncertainty parameters
+        # True uncertainty parameters
         self.a_true = np.copy(self.params["a_true"]) if "a_true" in self.params else np.zeros((self.adim,1))
 
         # Constant term for the adaptation laws
@@ -46,20 +49,36 @@ class ControlAffineSystem:
         clf_sym = self.define_clf_symbolic(x_sym, a_sym)
         cbf_sym = self.define_cbf_symbolic(x_sym, a_sym)
 
+        # Convert symbolic functions into Python functions
+        # TODO: also handle symbolic CCMs
+        self.lambdify_symbolic_funcs(x_sym, f_sym, g_sym, Y_sym, a_sym, clf_sym, cbf_sym)
+
         if self.use_adaptive:
             # For projection-based adaptive controls
-            self.a_hat_norm_max = self.params["a_hat_norm_max"]
             self.a_ub = self.params["a_ub"]
             self.a_lb = self.params["a_lb"]
+            if self.a_ub.shape != self.a_lb.shape:
+                raise ValueError("a_ub and a_lb must have the same shape")
+            if np.any(self.a_lb > self.a_ub):
+                raise ValueError("a_lb must be less than or equal to a_ub")
+            if self.a_lb.shape[0] != Y_sym.shape[1] or self.a_ub.shape[0] != Y_sym.shape[1]:
+                raise ValueError(f"Dimension mismatch: Y(x) has {Y_sym.shape[1]} columns, but a_lb has length {self.a_lb.shape[0]} and a_ub has length {self.a_ub.shape[0]}")
+            
             self.a_center = 0.5 * (self.a_ub + self.a_lb).reshape(-1,1) # center of the convex set where a_hat belongs to
+            self.a_hat_norm_max = self.params["a_hat_norm_max"] # upper bound of ||a_hat - a_center||
             a_err_norm_max = self.a_hat_norm_max + 0.5 * np.linalg.norm(self.a_ub - self.a_lb, ord=2)
-            self.a_err_max = a_err_norm_max * (self.a_ub - self.a_lb)/np.linalg.norm(self.a_ub - self.a_lb, ord=2)
+            
+            if self.Gamma_cbf is not None:
+                # NOTE: assuming Gamma_cbf is positive definite and symmetric
+                # Find min_a a^T @ inv(Gamma_cbf) @ a subject to ||a|| == a_err_norm_max
+                eigvals, eigvecs = np.linalg.eigh(np.linalg.inv(self.Gamma_cbf))
+                self.a_err_max = a_err_norm_max * eigvecs[:,np.argmin(eigvals)]
+            else:
+                self.a_err_max = a_err_norm_max * (self.a_ub - self.a_lb)/np.linalg.norm(self.a_ub - self.a_lb, ord=2)
+            
             self.epsilon = self.params.get("epsilon", 1e-3) # a small value for numerical stability of projection operator
         else:
-            self.a_err_max = np.zeros((self.adim,1))
-
-        # Convert symbolic functions into Python functions
-        self.lambdify_symbolic_funcs(x_sym, f_sym, g_sym, Y_sym, a_sym, clf_sym, cbf_sym)
+            self.a_err_max = np.zeros((self.adim,))
 
     def dynamics(self, x, u):
         return (self.f(x) + self.g(x) @ u + self.Y(x) @ self.a_true).ravel()
@@ -180,7 +199,7 @@ class ControlAffineSystem:
             P = np.eye(self.udim)
             f = -u_ref
 
-        qp_sol = solve_qp(P, f, A, b, solver='quadprog')
+        qp_sol = solve_qp(P=P, q=f, G=A, h=b, solver='quadprog')
         if qp_sol is None:
             raise ValueError("solve_qp returns None")
         
@@ -238,7 +257,7 @@ class ControlAffineSystem:
         # Solve QP: min_u 0.5 * u^T P u + f^T u  subject to A u <= b
         P = np.eye(self.udim)
         f = -u_ref
-        qp_sol = solve_qp(P, f, A, b, solver='quadprog')
+        qp_sol = solve_qp(P=P, q=f, G=A, h=b, solver='quadprog')
         if qp_sol is None:
             raise ValueError("solve_qp returns None")
         u_qp = qp_sol.reshape(-1,1)
@@ -406,7 +425,6 @@ class ControlAffineSystem:
         gamma_s1_M_x = self.gamma_s[:, -1].reshape(1,-1) @ np.linalg.inv(self.W_fcn(x, a_hat_ccm))
         gamma_s0_M_d = self.gamma_s[:, 0].reshape(1,-1) @ np.linalg.inv(self.W_fcn(x_d, a_hat_ccm))
 
-        # TODO: check correctness
         dErem_dai = np.zeros(self.adim)
         for i in range(self.adim):
             for k in range(geodesic_solver.N + 1):

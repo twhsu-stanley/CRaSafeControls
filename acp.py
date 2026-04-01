@@ -29,9 +29,7 @@ class ACP:
         delta_init: float = 0.05,
         score_max: float = 1.0, # max possible score
         score_min: float = 0.0, # min possible score
-        buffer_maxlen: int = 1000,
-        a_ub: float = -np.inf,
-        a_lb: float = np.inf
+        buffer_maxlen: int = 1000
     ):
         if N_cal < 100:
             raise ValueError("N_cal must be at least 100")
@@ -58,8 +56,6 @@ class ACP:
         self.score_min = score_min
         self.compute_quantile() # update self.Q_k
         self.buffer_maxlen = buffer_maxlen
-        self.a_lb = a_lb
-        self.a_ub = a_ub
 
         # Moving window of data used to solve a_k
         self._x_buffer = deque(maxlen=self.buffer_maxlen) # to store x_t
@@ -87,7 +83,7 @@ class ACP:
         x_dot_buffer = np.gradient(np.array(self._x_buffer), dt, axis=0)
         self._w_buffer =  [x_dot - x_dot_nom for (x_dot, x_dot_nom) in zip(x_dot_buffer, self._xdot_nom_buffer)] 
 
-    def compute_score(self):
+    def compute_score(self, a_ub, a_lb):
         """
         1. Fit the true (fictitious) parameter by solving the constrained least squares: 
                 a_k = argmin_a sum_{t in I_k} ||Y(x_t) a - w_t||_2
@@ -102,8 +98,7 @@ class ACP:
         w_stack = np.hstack(self._w_buffer) # shape: (#sample * xdim, )
         
         print("Fitting a_k")
-        # TODO: safeguard shapes of a_lb and a_ub
-        result = lsq_linear(Y_stack, w_stack, bounds=(self.a_lb, self.a_ub))
+        result = lsq_linear(Y_stack, w_stack, bounds=(a_lb, a_ub))
         self.a_k = result.x
         #a_k, *_ = np.linalg.lstsq(Y_stack, w_stack, rcond=None)
         #self.a_k = a_k

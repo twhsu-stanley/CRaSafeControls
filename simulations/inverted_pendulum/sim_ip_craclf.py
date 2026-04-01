@@ -15,6 +15,11 @@ dt = 0.01
 sim_T = 25
 tt = np.arange(0, sim_T, dt)
 
+# Prior knowledge of the uncertainty parameter
+a_true = np.array([[0.4], [0.1], [0.1]]) # unknown to the controller
+a_ub = np.array([0.8, 0.8, 0.8])
+a_lb = np.array([-0.8, -0.8, -0.8])
+
 params = {
     "l": 1.0,     # length of pendulum [m]
     "m": 1.0,     # mass [kg]
@@ -29,9 +34,11 @@ params = {
 }
 params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
-params["Gamma_clf"] = np.diag(np.array([4.0, 4.0, 4.0])) # adaptive gain matrix for CRaCCM
-params["a_true"] = np.array([[0.4], [0.1], [0.1]]) # true parameters
-params["a_hat_norm_max"] = np.linalg.norm(params["a_true"], 2) # TODO: check this
+params["Gamma_clf"] = np.diag(np.array([4.0, 4.0, 4.0]))
+params["a_true"] = a_true
+params["a_ub"] = a_ub
+params["a_lb"] = a_lb
+params["a_hat_norm_max"] = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) * 1.5
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 params["eta_clf"] = 10.0
 

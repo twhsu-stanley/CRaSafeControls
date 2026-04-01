@@ -25,6 +25,11 @@ sim_T = 10.0 # Simulation time
 tt = np.arange(0, sim_T, dt)
 T_steps = len(tt)
 
+# Prior knowledge of the uncertainty parameter
+a_true = np.array([[-1.0], [-0.5], [-1.5]]) # unknown to the controller
+a_ub = np.array([0.5, 0.5, 0.5])
+a_lb = np.array([-2.5, -1.5, -3.5])
+
 # System parameters
 params = {
     "ccm": {"rate": 0.8},
@@ -34,11 +39,11 @@ params = {
 }
 params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
-params["Gamma_ccm"] = np.diag(np.array([2.0, 2.0, 2.0])) # adaptive gain matrix for CRaCCM
-params["a_true"] = np.array([[-1.0], [-0.5], [-1.5]]) # true parameters [theta1, theta2, theta3]
-params["a_ub"] = np.array([0.5, 0.5, 0.5])
-params["a_lb"] = np.array([-2.5, -1.5, -3.5])
-params["a_hat_norm_max"] = np.linalg.norm(np.array([[1.0], [0.5], [1.5]]), 2) # max norm of a_hat
+params["Gamma_ccm"] = np.diag(np.array([2.0, 2.0, 2.0]))
+params["a_true"] = a_true
+params["a_ub"] = a_ub
+params["a_lb"] = a_lb
+params["a_hat_norm_max"] = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) * 1.5
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 params["eta_ccm"] = 5.0
 
@@ -119,9 +124,7 @@ acp = ACP(S_cal_init,
           delta_init = 0.2,
           score_max = max(S_cal_init) * 2, # max possible score
           score_min = 0.0, # min possible score
-          buffer_maxlen = 800,
-          a_ub = toy.a_ub,
-          a_lb = toy.a_lb,
+          buffer_maxlen = 800
           )
 # TODO: set a_lb and a_ub; a_hat_norm_max should be based on these bounds
 
@@ -188,7 +191,7 @@ for i in range(T_steps):
     acp.add_data_to_buffers(x, toy.dynamics_nominal(x,uc), toy.Y(x))
     if (i+1) % I_length == 0:
         acp.estimate_uncertainty(dt)
-        s_k = acp.compute_score() # acp.a_k is updated here
+        s_k = acp.compute_score(toy.a_ub, toy.a_lb,) # acp.a_k is updated here
         acp.update_delta(s_k)
         acp.S_cal.append(s_k)
         toy.cp_quantile = acp.compute_quantile()
