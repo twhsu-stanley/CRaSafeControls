@@ -10,8 +10,8 @@ from acp import ACP
 from motion_planner import MotionPlanner
 from scipy.interpolate import interp1d
 
-USE_CP = False # whether to use conformal prediction
-USE_ADAPTIVE = False # whether to use adaptive control
+USE_CP = True # whether to use conformal prediction
+USE_ADAPTIVE = True # whether to use adaptive control
 
 I_length = 200 # number of time steps in I_k
 
@@ -22,7 +22,7 @@ weight_slack = 1000.0
 
 # Time setup
 dt = 0.01
-sim_T = 4.0 # Simulation time
+sim_T = 6.0 # Simulation time
 tt = np.arange(0, sim_T, dt)
 T_steps = len(tt)
 
@@ -55,21 +55,19 @@ toy = NONLINEAR_TOY(params)
 planner = MotionPlanner(
     system = toy,
     dt = dt,
-    horizon_steps = T_steps,
-    x_goal = np.array([3.0, 2.0, 1.5], dtype=float)*0, # TODO: make this an input to plan?
-    Qx = np.eye(toy.xdim),
-    Ru = np.eye(toy.udim) * 0.1,
-    Qf = np.eye(toy.xdim) * 10.0,
-    u_min = np.array([[-15.0]]),
-    u_max = np.array([[15.0]]),
+    Q = np.eye(toy.xdim),
+    R = np.eye(toy.udim) * 0.1,
+    Q_f = np.eye(toy.xdim) * 10.0
 )
 
-x0 = np.array([1.0, -1.8, -1.2], dtype=float)
+x_init = np.array([1.0, -1.8, -1.2])
+x_goal = np.array([2.0, 1.0, 1.5])
 t0 = 0.0
-horizon_steps = T_steps # TODO: duplicated
-x_guess = np.tile(x0.reshape(-1,1), (1, horizon_steps + 1))
+horizon_steps = T_steps
+x_guess = np.tile(x_init.reshape(-1,1), (1, horizon_steps + 1))
 u_guess = np.zeros((toy.udim, horizon_steps))
-t_planned, x_d_planned, u_d_planned = planner.plan(x0, t0, horizon_steps, x_guess, u_guess)
+x_d_planned, u_d_planned = planner.plan(x_init, x_goal, horizon_steps, x_guess, u_guess)
+t_planned = t0 + dt * np.arange(horizon_steps + 1)
 
 interp_x_d = interp1d(
     t_planned, x_d_planned, kind='linear', axis=1,
