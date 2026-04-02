@@ -144,6 +144,7 @@ class ControlAffineSystem:
 
         # CCM
         if ccm_sym is not None:
+            ccm_sym = sp.simplify(ccm_sym)
             self.W_fcn = sp.lambdify([x_sym, a_sym], ccm_sym, modules='numpy')
             
             # Partial derivative of W with respect to x
