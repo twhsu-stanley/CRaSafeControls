@@ -57,7 +57,7 @@ class NONLINEAR_TOY(ControlAffineSystem):
     
     def dynamics_extended(self, x_ext, x_d, u, geodesic_solver):
         x = x_ext[0:self.xdim]
-        a_hat = x_ext[self.xdim:(self.xdim+self.adim)].reshape(-1,1)
+        a_hat = x_ext[self.xdim:(self.xdim+self.adim)]
         rho = x_ext[(self.xdim+self.adim)]
 
         dxdt_ext = np.zeros((self.xdim+self.adim+1,))
@@ -67,15 +67,25 @@ class NONLINEAR_TOY(ControlAffineSystem):
         if self.use_adaptive:
             a_hat_dot, rho_dot = self.adaptation_craccm(x, x_d, a_hat, rho, geodesic_solver)
         else:
-            a_hat_dot= np.zeros((self.adim,1))
+            a_hat_dot= np.zeros(self.adim)
             rho_dot = 0.0
-        dxdt_ext[self.xdim:(self.xdim+self.adim)] = a_hat_dot.ravel()
+        dxdt_ext[self.xdim:(self.xdim+self.adim)] = a_hat_dot
         dxdt_ext[(self.xdim+self.adim)] = rho_dot
 
         return dxdt_ext
     
+    def define_ccm_symbolic(self, x, a):
+        """Symbolic dual CCM metric W(x,a)"""
+        x1 = x[0]
+        a1 = a[0]
+        return sp.Matrix([
+            [             1.42,        0.0,                              1.42 * (a1 - 1.0)],
+            [              0.0,       6.21,                                     -2.85 * x1],
+            [1.42 * (a1 - 1.0), -2.85 * x1, 1.42 * a1**2 - 2.84 * a1 + 1.30 * x1**2 + 5.79]
+        ])
+    
+    """
     def W_fcn(self, x, a):
-        """Dual CCM metric W(x,a)"""
         x1 = x[0]
         a1 = a[0].item()
         return np.array([
@@ -85,7 +95,6 @@ class NONLINEAR_TOY(ControlAffineSystem):
         ])
 
     def dW_dx1_fcn(self, x, a):
-        """Partial derivative of W with respect to x1"""
         x1 = x[0]
         return np.array([
             [0.0,   0.0,       0.0],
@@ -101,7 +110,6 @@ class NONLINEAR_TOY(ControlAffineSystem):
             return np.zeros((3, 3))
     
     def dW_da1_fcn(self, x, a):
-        """Partial derivative of W with respect to a1"""
         a1 = a[0].item()
         return np.array([
             [0.0,  0.0,             1.42],
@@ -114,4 +122,4 @@ class NONLINEAR_TOY(ControlAffineSystem):
             return self.dW_da1_fcn(x, a)
         else:
             return np.zeros((3, 3))
-
+    """

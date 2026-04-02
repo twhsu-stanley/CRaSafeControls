@@ -39,19 +39,20 @@ class ControlAffineSystem:
         self.eta_ccm = self.params.get("eta_ccm", 0.1)
 
         # Adaptation gain matrices
-        self.Gamma_cbf = self.params.get("Gamma_cbf", np.eye(self.adim))
-        self.Gamma_clf = self.params.get("Gamma_clf", np.eye(self.adim))
-        self.Gamma_ccm = self.params.get("Gamma_ccm", np.eye(self.adim))
+        self.Gamma_cbf = self.params.get("Gamma_cbf", None)
+        self.Gamma_clf = self.params.get("Gamma_clf", None)
+        self.Gamma_ccm = self.params.get("Gamma_ccm", None)
 
-        # Define symbolic CLF and CBF 
-        # NOTE: To be general and to handle both regular and adaptive CLF/CBF, 
+        # Define symbolic CLF, CBF, and CCM
+        # NOTE: To be general and to handle both regular and adaptive CLF/CBF/CCM, 
         #       these functions depend on the uncertainty parameters. 
         clf_sym = self.define_clf_symbolic(x_sym, a_sym)
         cbf_sym = self.define_cbf_symbolic(x_sym, a_sym)
+        ccm_sym = self.define_ccm_symbolic(x_sym, a_sym)
 
         # Convert symbolic functions into Python functions
         # TODO: also handle symbolic CCMs
-        self.lambdify_symbolic_funcs(x_sym, f_sym, g_sym, Y_sym, a_sym, clf_sym, cbf_sym)
+        self.lambdify_symbolic_funcs(x_sym, f_sym, g_sym, Y_sym, a_sym, clf_sym, cbf_sym, ccm_sym)
 
         self.a_ub = self.params["a_ub"]
         self.a_lb = self.params["a_lb"]
@@ -62,7 +63,7 @@ class ControlAffineSystem:
         if self.a_lb.shape[0] != Y_sym.shape[1] or self.a_ub.shape[0] != Y_sym.shape[1]:
             raise ValueError(f"Dimension mismatch: Y(x) has {Y_sym.shape[1]} columns, but a_lb has length {self.a_lb.shape[0]} and a_ub has length {self.a_ub.shape[0]}")
         
-        self.a_center = 0.5 * (self.a_ub + self.a_lb).reshape(-1,1) # center of the convex set where a_hat belongs to
+        self.a_center = 0.5 * (self.a_ub + self.a_lb) # center of the convex set where a_hat belongs to
 
         if self.use_adaptive:
             # For projection-based adaptive controls
@@ -78,11 +79,12 @@ class ControlAffineSystem:
                 self.a_err_max = a_err_norm_max * eigvecs[:,np.argmin(eigvals)]
                 #self.a_err_max = a_err_norm_max * (self.a_ub - self.a_lb)/np.linalg.norm(self.a_ub - self.a_lb, ord=2)
 
-        #else:
-        #    self.a_err_max = np.zeros((self.adim,))
+        else:
+            if self.Gamma_cbf is not None:
+                self.a_err_max = np.zeros(self.adim)
 
     def dynamics(self, x, u):
-        return (self.f(x) + self.g(x) @ u + self.Y(x) @ self.a_true).ravel()
+        return (self.f(x) + self.g(x) @ u + self.Y(x) @ self.a_true.reshape(-1,1)).ravel()
     
     def dynamics_nominal(self, x, u):
         return (self.f(x) + self.g(x) @ u).ravel()
@@ -99,7 +101,10 @@ class ControlAffineSystem:
     def define_cbf_symbolic(self, x_sym, a_hat_cbf=None):
         pass
 
-    def lambdify_symbolic_funcs(self, x_sym, f_sym, g_sym, Y_sym, a_sym, clf_sym=None, cbf_sym=None):
+    def define_ccm_symbolic(self, x_sym, a_sym=None):
+        pass
+
+    def lambdify_symbolic_funcs(self, x_sym, f_sym, g_sym, Y_sym, a_sym, clf_sym=None, cbf_sym=None, ccm_sym=None):
         if x_sym is None or f_sym is None or g_sym is None or Y_sym is None or a_sym is None:
             raise ValueError("Symbolic x, f, g, Y, and a must be defined")
 
@@ -135,7 +140,27 @@ class ControlAffineSystem:
     
             dclfda = sp.simplify(sp.derive_by_array(clf_sym, a_sym))
             dclfda = sp.Matrix(dclfda)
-            self.dclfda = sp.lambdify([x_sym, a_sym], dclfda, modules='numpy')            
+            self.dclfda = sp.lambdify([x_sym, a_sym], dclfda, modules='numpy')
+
+        # CCM
+        if ccm_sym is not None:
+            self.W_fcn = sp.lambdify([x_sym, a_sym], ccm_sym, modules='numpy')
+            
+            # Partial derivative of W with respect to x
+            dWdx = []
+            for i in range(self.xdim):
+                dWdxi = sp.simplify(sp.derive_by_array(ccm_sym, x_sym[i]))
+                dWdxi = sp.Matrix(dWdxi)  # Convert to Matrix for compatibility
+                dWdx.append(sp.lambdify([x_sym, a_sym], dWdxi, modules='numpy'))
+            self.dW_dxi_fcn = lambda i, x, a: dWdx[i](x, a)
+
+            # Partial derivative of W with respect to a
+            dWda = []
+            for i in range(self.adim):
+                dWdai = sp.simplify(sp.derive_by_array(ccm_sym, a_sym[i]))
+                dWdai = sp.Matrix(dWdai)  # Convert to Matrix for compatibility
+                dWda.append(sp.lambdify([x_sym, a_sym], dWdai, modules='numpy'))
+            self.dW_dai_fcn = lambda i, x, a: dWda[i](x, a)
 
     # Control laws
     def ctrl_craclf(self, x, a_hat_clf, u_ref, use_slack=True):
@@ -143,7 +168,7 @@ class ControlAffineSystem:
 
         #NOTE: using reshape to enforce correct shape
         V = self.clf(x, a_hat_clf)
-        LfV = self.lf_clf(x, a_hat_clf).reshape(1,1)
+        LfV = self.lf_clf(x, a_hat_clf)
         LgV = self.lg_clf(x, a_hat_clf).reshape(1,self.udim)
         LYV = self.lY_clf(x, a_hat_clf).reshape(1,self.adim)
         dclfdx = self.dclfdx(x, a_hat_clf).reshape(self.xdim,1)
@@ -218,7 +243,7 @@ class ControlAffineSystem:
 
         #NOTE: using reshape to enforce correct shape
         h = self.cbf(x, a_hat_cbf)
-        Lfh = self.lf_cbf(x, a_hat_cbf).reshape(1,1)
+        Lfh = self.lf_cbf(x, a_hat_cbf)
         Lgh = self.lg_cbf(x, a_hat_cbf).reshape(1,self.udim)
         LYh = self.lY_cbf(x, a_hat_cbf).reshape(1,self.adim)
         dcbfdx = self.dcbfdx(x, a_hat_cbf).reshape(self.xdim,1)
@@ -269,7 +294,9 @@ class ControlAffineSystem:
         """CRaCCM control law"""
         # x: current state
         # x_d: desired state
-        # u_d: nominal control input; u_d.shape = (self.udim, 1)
+        # u_d: nominal control input; u_d.shape = (self.udim,) or (self.udim, 1)
+
+        u_d = u_d.reshape(self.udim, 1) # ensure correct shape
 
         # Compute geodesic
         self.calc_geodesic(geodesic_solver, x, x_d, a_hat_ccm, verify_geodesic) # update gamma, gamma_s, and E_rem
@@ -278,8 +305,8 @@ class ControlAffineSystem:
         gamma_s0_M_d = self.gamma_s[:, 0].reshape(1,-1) @ np.linalg.inv(self.W_fcn(x_d, a_hat_ccm))
         
         if self.use_adaptive: 
-            Y_x_a = self.Y(x) @ a_hat_ccm
-            Y_d_a = self.Y(x_d) @ a_hat_ccm
+            Y_x_a = (self.Y(x) @ a_hat_ccm).reshape(-1,1)
+            Y_d_a = (self.Y(x_d) @ a_hat_ccm).reshape(-1,1)
         else:
             Y_x_a = 0.0
             Y_d_a = 0.0
@@ -398,7 +425,7 @@ class ControlAffineSystem:
         
         rho_clf_dot = -self.nu_clf(rho_clf)/(self.dnu_drho_clf(rho_clf) * (V + self.eta_clf)).item() * (dclfda.T @ a_hat_clf_dot).item()
 
-        return a_hat_clf_dot, rho_clf_dot
+        return a_hat_clf_dot.ravel(), rho_clf_dot
 
     def adaptation_cracbf(self, x, a_hat_cbf, rho_cbf):
         """CRaCBF adaptation law"""
@@ -417,7 +444,7 @@ class ControlAffineSystem:
         
         rho_cbf_dot = -self.nu_cbf(rho_cbf)/(self.dnu_drho_cbf(rho_cbf) * (h + self.eta_cbf)).item() * (dcbfda.T @ a_hat_cbf_dot).item()
 
-        return a_hat_cbf_dot, rho_cbf_dot
+        return a_hat_cbf_dot.ravel(), rho_cbf_dot
 
     def adaptation_craccm(self, x, x_d, a_hat_ccm, rho_ccm, geodesic_solver):
         """CRaCCM adaptation law"""
@@ -451,7 +478,7 @@ class ControlAffineSystem:
         #print("c1 = ", c1, "; c2 = ", c2)
         rho_ccm_dot = -(self.nu_ccm(rho_ccm) * (c1 + c2)) / (self.dnu_drho_ccm(rho_ccm) * (self.Erem + self.eta_ccm))
 
-        return a_hat_ccm_dot, rho_ccm_dot
+        return a_hat_ccm_dot.ravel(), rho_ccm_dot
 
     # Scaling functions for unmatched adaptive controls
     @staticmethod
@@ -496,7 +523,7 @@ class ControlAffineSystem:
     @staticmethod
     def grad_phi(a_hat, a_center, a_hat_norm_max, epsilon):
         """Compute the gradient ∇φ(â)"""
-        return (2 * (a_hat - a_center)) / (2 * epsilon * a_hat_norm_max + epsilon**2)
+        return (2 * (a_hat - a_center)).reshape(-1,1) / (2 * epsilon * a_hat_norm_max + epsilon**2)
 
     @staticmethod
     def projection_operator(a_hat, y, a_center, a_hat_norm_max, epsilon):

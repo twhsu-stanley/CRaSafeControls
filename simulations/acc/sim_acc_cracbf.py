@@ -7,7 +7,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'
 from systems.acc.acc import ACC
 
 USE_CP = False # whether to use conformal prediction
-USE_ADAPTIVE = True # whether to use adaptive control
+USE_ADAPTIVE = False # whether to use adaptive control
 
 # Parameters and Initialization
 dt = 0.01
@@ -15,7 +15,7 @@ sim_T = 10
 tt = np.arange(0, sim_T, dt)
 
 # Prior knowledge of the uncertainty parameter
-a_true = np.array([[0.5], [5.0], [1.0], [-4.0]]) # unknown to the controller
+a_true = np.array([0.5, 5.0, 1.0, -4.0]) # unknown to the controller
 a_ub = np.array([0.7, 7.0, 1.5, -2.0])
 a_lb = np.array([0.2, 2.0, 0.5, -5.0])
 
@@ -60,9 +60,9 @@ acc.cp_quantile = Delta_max * 0.95
 # Simulation
 x0 = np.array([0.0, 30.0, 50.0])
 x = x0.copy()
-a_hat_cbf = np.array([[0.25], [4.0], [0.0], [0.0]]) # initial guess for a_hat
+a_hat_cbf = np.array([0.25, 4.0, 0.0, 0.0]) # initial guess for a_hat
 rho_cbf = 0.0
-x_ext = np.hstack((x, a_hat_cbf.ravel(), rho_cbf)) # extended state with a_hat and rho
+x_ext = np.hstack((x, a_hat_cbf, rho_cbf)) # extended state with a_hat and rho
 
 # Check if Gamma_cbf is valid
 if USE_ADAPTIVE:
@@ -70,7 +70,7 @@ if USE_ADAPTIVE:
         raise RuntimeError("Gamma_cbf is not valid: minimal eigenvalue is too small")
     
 # Check if the initial state is in the safe set
-if (acc.cbf(x, a_hat_cbf).item() - 0.5 * acc.a_err_max.T @ np.linalg.inv(acc.Gamma_cbf) @ acc.a_err_max) < 1e-3:
+if (acc.cbf(x, a_hat_cbf).item() - 0) < 1e-3:
     raise ValueError("Initial condition unsafe")
 
 x_hist = np.zeros((len(tt), 3))
@@ -88,8 +88,8 @@ for k in range(len(tt)):
     x_hist[k, :] = x
 
     # Store adaptation parameters
-    a_hat_cbf_hist[:, k] = a_hat_cbf.ravel()
-    a_true_hist[:, k] = acc.a_true.ravel()
+    a_hat_cbf_hist[:, k] = a_hat_cbf
+    a_true_hist[:, k] = acc.a_true
     nu_cbf_hist[k] = acc.nu_cbf(rho_cbf)
     rho_cbf_hist[k] = rho_cbf
 
@@ -118,7 +118,7 @@ for k in range(len(tt)):
             raise ValueError("Error occurred while solving IVP:", e)
         
         x = x_ext[0:acc.xdim]
-        a_hat_cbf = x_ext[acc.xdim:(acc.xdim+acc.adim)].reshape(-1,1)
+        a_hat_cbf = x_ext[acc.xdim:(acc.xdim+acc.adim)]
         rho_cbf = x_ext[(acc.xdim+acc.adim)]
 
 # Plotting

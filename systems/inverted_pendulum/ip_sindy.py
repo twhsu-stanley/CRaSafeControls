@@ -38,7 +38,7 @@ class IP_SINDY(ControlAffineSystem):
     
     def dynamics_extended(self, x_ext, u):
         x = x_ext[0:self.xdim]
-        a_hat = x_ext[self.xdim:(self.xdim+self.adim)].reshape(-1,1)
+        a_hat = x_ext[self.xdim:(self.xdim+self.adim)]
         rho = x_ext[(self.xdim+self.adim)]
 
         dxdt_ext = np.zeros((self.xdim+self.adim+1,))
@@ -51,14 +51,14 @@ class IP_SINDY(ControlAffineSystem):
         I = m * l**2 / 3        # moment of inertia (kg*m^2)
         fx = np.array([x[1], (-b * x[1] + m * grav * l * sp.sin(x[0]) / 2) / I])
         gx = np.array([[0], [-1 / I]])
-        dxdt_ext[0:self.xdim] = fx + (gx @ u).ravel() + (self.Y(x) @ self.a_true).ravel()
+        dxdt_ext[0:self.xdim] = fx + (gx @ u).ravel() + self.Y(x) @ self.a_true
 
         if self.use_adaptive:
             a_hat_dot, rho_dot = self.adaptation_craclf(x, a_hat, rho)
         else:
-            a_hat_dot= np.zeros((self.adim,1))
+            a_hat_dot= np.zeros(self.adim)
             rho_dot = 0.0    
-        dxdt_ext[self.xdim:(self.xdim+self.adim)] = a_hat_dot.ravel()
+        dxdt_ext[self.xdim:(self.xdim+self.adim)] = a_hat_dot
         dxdt_ext[(self.xdim+self.adim)] = rho_dot
 
         return dxdt_ext

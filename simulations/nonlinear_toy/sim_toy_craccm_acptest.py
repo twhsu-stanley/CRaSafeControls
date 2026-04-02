@@ -27,7 +27,7 @@ tt = np.arange(0, sim_T, dt)
 T_steps = len(tt)
 
 # Prior knowledge of the uncertainty parameter
-a_true = np.array([[-1.0], [-0.5], [-1.5]]) # unknown to the controller
+a_true = np.array([-1.0, -0.5, -1.5]) # unknown to the controller
 a_ub = np.array([0.5, 0.5, 0.5])
 a_lb = np.array([-1.5, -1.5, -3.5])
 
@@ -146,9 +146,9 @@ delta_k_hist = np.zeros((T_steps,))
 
 # Initial state
 x = interp_x_d(0).copy() #+ np.array([0.7, 0.5, -0.2])  # initial condition + perturbation
-a_hat_ccm = np.array([[0.0], [0.0], [0.0]]) # initial guess for a_hat
+a_hat_ccm = np.array([0.0, 0.0, 0.0]) # initial guess for a_hat
 rho_ccm = 0.0
-x_ext = np.hstack((x, a_hat_ccm.ravel(), rho_ccm)) # extended state with a_hat and rho
+x_ext = np.hstack((x, a_hat_ccm, rho_ccm)) # extended state with a_hat and rho
 
 # Initialize geodesic solver
 N = toy.params["geodesic"]["N"]
@@ -165,12 +165,12 @@ for i in range(T_steps):
     x_hist[:, i] = x
 
     # Nominal trajectory
-    x_d = interp_x_d(t) # x_d_data[:,i]
-    u_d = interp_u_d(t).reshape(-1,1) #u_d_data[:,i].reshape(-1,1)
+    x_d = interp_x_d(t)
+    u_d = interp_u_d(t)
 
     # Store adaptation parameters
-    a_hat_ccm_hist[:, i] = a_hat_ccm.ravel()
-    a_true_hist[:, i] = toy.a_true.ravel()
+    a_hat_ccm_hist[:, i] = a_hat_ccm
+    a_true_hist[:, i] = toy.a_true
     nu_ccm_hist[i] = toy.nu_ccm(rho_ccm)
     rho_ccm_hist[i] = rho_ccm
 
@@ -223,7 +223,7 @@ for i in range(T_steps):
             raise ValueError("Error occurred while solving IVP:", e)
         
         x = x_ext[0:toy.xdim]
-        a_hat_ccm = x_ext[toy.xdim:(toy.xdim+toy.adim)].reshape(-1,1)
+        a_hat_ccm = x_ext[toy.xdim:(toy.xdim+toy.adim)]
         rho_ccm = x_ext[(toy.xdim+toy.adim)]
 
 # Plot results

@@ -16,7 +16,7 @@ sim_T = 25
 tt = np.arange(0, sim_T, dt)
 
 # Prior knowledge of the uncertainty parameter
-a_true = np.array([[0.4], [0.1], [0.1]]) # unknown to the controller
+a_true = np.array([0.4, 0.1, 0.1]) # unknown to the controller
 a_ub = np.array([0.8, 0.8, 0.8])
 a_lb = np.array([-0.8, -0.8, -0.8])
 
@@ -58,9 +58,9 @@ ip.cp_quantile = Delta_max * 0.95
 # Simulation
 x0 = np.array([0.05, 0.0])
 x = x0.copy()
-a_hat_clf = np.array([[0.0], [0.0], [0.0]]) # initial guess for a_hat
+a_hat_clf = np.array([0.0, 0.0, 0.0]) # initial guess for a_hat
 rho_clf = 0.0
-x_ext = np.hstack((x, a_hat_clf.ravel(), rho_clf)) # extended state with a_hat and rho
+x_ext = np.hstack((x, a_hat_clf, rho_clf)) # extended state with a_hat and rho
 
 x_hist = np.zeros((len(tt), 2))
 u_hist = np.zeros(len(tt))
@@ -79,8 +79,8 @@ for k in range(len(tt)):
     x_hist[k, :] = x
 
     # Store adaptation parameters
-    a_hat_clf_hist[:, k] = a_hat_clf.ravel()
-    a_true_hist[:, k] = ip.a_true.ravel()
+    a_hat_clf_hist[:, k] = a_hat_clf
+    a_true_hist[:, k] = ip.a_true
     nu_clf_hist[k] = ip.nu_clf(rho_clf)
     rho_clf_hist[k] = rho_clf
 
@@ -114,7 +114,7 @@ for k in range(len(tt)):
         
         x = x_ext[0:ip.xdim]
         x[0] = wrapToPi(x[0])  # wrap angle to [-pi, pi]
-        a_hat_clf = x_ext[ip.xdim:(ip.xdim+ip.adim)].reshape(-1,1)
+        a_hat_clf = x_ext[ip.xdim:(ip.xdim+ip.adim)]
         rho_clf = x_ext[(ip.xdim+ip.adim)]
 
 # Plotting

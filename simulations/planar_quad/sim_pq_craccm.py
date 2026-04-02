@@ -39,7 +39,7 @@ tt = np.arange(0, sim_T, dt)
 T_steps = len(tt)
 
 # Prior knowledge of the uncertainty parameter
-a_true = np.array([[-0.0], [-0.6]])
+a_true = np.array([-0.0, -0.6])
 a_ub = np.array([1.0, 1.0])
 a_lb = np.array([-1.0, -1.0])
 
@@ -96,9 +96,9 @@ rho_ccm_hist = np.zeros((T_steps,))
 
 # Initial state
 x = interp_x_d(0).copy() + np.array([-1.0, -0.0, 0.0, -1.2, -0.5, 0.0])  # initial condition + perturbation
-a_hat_ccm = np.array([[0.0], [0.0]]) # initial guess for a_hat
+a_hat_ccm = np.array([0.0, 0.0]) # initial guess for a_hat
 rho_ccm = 0.0
-x_ext = np.hstack((x, a_hat_ccm.ravel(), rho_ccm)) # extended state with a_hat and rho
+x_ext = np.hstack((x, a_hat_ccm, rho_ccm)) # extended state with a_hat and rho
 
 # Initialize geodesic solver
 N = pq.params["geodesic"]["N"]
@@ -119,8 +119,8 @@ for i in range(T_steps):
     u_d = interp_u_d(t)
 
     # Store adaptation parameters
-    a_hat_ccm_hist[:, i] = a_hat_ccm.ravel()
-    a_true_hist[:,i] = pq.a_true.ravel() # TODO: just to verify that a_true is constant; can remove later
+    a_hat_ccm_hist[:, i] = a_hat_ccm
+    a_true_hist[:,i] = pq.a_true
     nu_ccm_hist[i] = pq.nu_ccm(rho_ccm)
     rho_ccm_hist[i] = rho_ccm
 
@@ -160,7 +160,7 @@ for i in range(T_steps):
             raise ValueError("Error occurred while solving IVP:", e)
         
         x = x_ext[0:pq.xdim]
-        a_hat_ccm = x_ext[pq.xdim:(pq.xdim+pq.adim)].reshape(-1,1)
+        a_hat_ccm = x_ext[pq.xdim:(pq.xdim+pq.adim)]
         rho_ccm = x_ext[(pq.xdim+pq.adim)]
 
 # Plot results
