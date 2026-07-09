@@ -64,10 +64,10 @@ class ControlAffineSystem:
             raise ValueError(f"Dimension mismatch: Y(x) has {Y_sym.shape[1]} columns, but a_lb has length {self.a_lb.shape[0]} and a_ub has length {self.a_ub.shape[0]}")
         
         self.a_center = 0.5 * (self.a_ub + self.a_lb) # center of the convex set where a_hat belongs to
+        self.a_hat_norm_max = self.params["a_hat_norm_max"] # upper bound of ||a_hat - a_center||
 
         if self.use_adaptive:
             # For projection-based adaptive controls
-            self.a_hat_norm_max = self.params["a_hat_norm_max"] # upper bound of ||a_hat - a_center||
             a_err_norm_max = self.a_hat_norm_max + 0.5 * np.linalg.norm(self.a_ub - self.a_lb, ord=2)
             self.epsilon = self.params.get("epsilon", 1e-3) # a small value for numerical stability of projection operator
 
@@ -175,7 +175,7 @@ class ControlAffineSystem:
         dclfdx = self.dclfdx(x, a_hat_clf).reshape(self.xdim,1)
 
         if self.use_cp:
-            tightening =  self.cp_quantile * np.linalg.norm(dclfdx, 2)
+            tightening = self.cp_quantile * np.linalg.norm(dclfdx, 2)
         else:
             tightening = 0.0
 
@@ -415,14 +415,12 @@ class ControlAffineSystem:
         #NOTE: using reshape to enforce correct shape
         dclfda = self.dclfda(x, a_hat_clf).reshape(self.adim,1)
         dclfdx = self.dclfdx(x, a_hat_clf).reshape(self.xdim,1)
-
-        # Projection operator to enforce bounds on a_hat_clf
-        a_hat_clf_dot = self.nu_clf(rho_clf) * (self.Gamma_clf
-                        @ ControlAffineSystem.projection_operator(a_hat_clf, 
-                                              self.Y(x).T @ dclfdx,
+        
+        a_hat_clf_dot =  ControlAffineSystem.projection_operator(a_hat_clf, 
+                                              self.nu_clf(rho_clf) * self.Gamma_clf @ self.Y(x).T @ dclfdx,
                                               self.a_center,
                                               self.a_hat_norm_max,
-                                              self.epsilon))
+                                              self.epsilon)
         
         rho_clf_dot = -self.nu_clf(rho_clf)/(self.dnu_drho_clf(rho_clf) * (V + self.eta_clf)).item() * (dclfda.T @ a_hat_clf_dot).item()
 
@@ -436,12 +434,11 @@ class ControlAffineSystem:
         dcbfdx = self.dcbfdx(x, a_hat_cbf).reshape(self.xdim,1)
 
         # Projection operator to enforce bounds on a_hat_cbf
-        a_hat_cbf_dot = self.nu_cbf(rho_cbf) * (self.Gamma_cbf
-                        @ ControlAffineSystem.projection_operator(a_hat_cbf, 
-                                              -self.Y(x).T @ dcbfdx,
+        a_hat_cbf_dot = ControlAffineSystem.projection_operator(a_hat_cbf, 
+                                              -self.nu_cbf(rho_cbf) * self.Gamma_cbf @ self.Y(x).T @ dcbfdx,
                                               self.a_center,
                                               self.a_hat_norm_max,
-                                              self.epsilon))
+                                              self.epsilon)
         
         rho_cbf_dot = -self.nu_cbf(rho_cbf)/(self.dnu_drho_cbf(rho_cbf) * (h + self.eta_cbf)).item() * (dcbfda.T @ a_hat_cbf_dot).item()
 
@@ -464,13 +461,12 @@ class ControlAffineSystem:
                 dM_dai = -M @ dW_dai @ M # TODO: check correctness
                 dErem_dai[i] += (gsk.T @ dM_dai @ gsk) * geodesic_solver.w_cheby[k]
 
-        a_hat_ccm_dot = self.nu_ccm(rho_ccm) * (self.Gamma_ccm 
-                        @ ControlAffineSystem.projection_operator(a_hat_ccm, 
-                                              self.Y(x).T @ gamma_s1_M_x.T,
+        a_hat_ccm_dot = ControlAffineSystem.projection_operator(a_hat_ccm, 
+                                              self.nu_ccm(rho_ccm) * self.Gamma_ccm @ self.Y(x).T @ gamma_s1_M_x.T,
                                               self.a_center,
                                               self.a_hat_norm_max,
-                                              self.epsilon))
-        #a_hat_dot = self.nu_ccm(rho_ccm) * self.Gamma_ccm @ self.Y(x).T @ self.gamma_s1_M_x.T
+                                              self.epsilon)
+        #a_hat_dot = self.nu_ccm(rho_ccm) * self.Gamma_ccm @ self.Y(x).T @ gamma_s1_M_x.T
         
         c1 = (2 * gamma_s0_M_d @ self.Y(x_d) @ a_hat_ccm).item()
         c2 = (dErem_dai @ a_hat_ccm_dot).item()

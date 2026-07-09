@@ -7,7 +7,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'
 from systems.acc.acc import ACC
 
 USE_CP = False # whether to use conformal prediction
-USE_ADAPTIVE = False # whether to use adaptive control
+USE_ADAPTIVE = True # whether to use adaptive control
 
 # Parameters and Initialization
 dt = 0.01
@@ -39,7 +39,7 @@ params["Gamma_cbf"] = np.diag(np.array([100.0, 100.0, 10.0, 10.0]))
 params["a_true"] = a_true
 params["a_ub"] = a_ub
 params["a_lb"] = a_lb
-params["a_hat_norm_max"] = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) * 1.2
+params["a_hat_norm_max"] = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) * 1.5
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
 params["eta_cbf"] = 10.0
 
@@ -60,7 +60,7 @@ acc.cp_quantile = Delta_max * 0.95
 # Simulation
 x0 = np.array([0.0, 30.0, 50.0])
 x = x0.copy()
-a_hat_cbf = np.array([0.25, 4.0, 0.0, 0.0]) # initial guess for a_hat
+a_hat_cbf = np.array([0.45, 4.0, 0.1, -3.0]) # initial guess for a_hat
 rho_cbf = 0.0
 x_ext = np.hstack((x, a_hat_cbf, rho_cbf)) # extended state with a_hat and rho
 
@@ -151,7 +151,7 @@ plt.grid(True)
 plt.tight_layout()
 
 # Uncertainty parameters
-fig, axs = plt.subplots(acc.adim, 1)
+fig, axs = plt.subplots(acc.adim+1, 1)
 axs = axs.flatten()
 for i in range(acc.adim):
     axs[i].plot(tt, a_hat_cbf_hist[i, :], label='a_hat')
@@ -159,7 +159,11 @@ for i in range(acc.adim):
     axs[i].legend()
     axs[i].grid(True)
     axs[i].set_ylabel(f"a{i}")
-axs[acc.adim-1].set_xlabel('Time (s)')
+axs[acc.adim].plot(tt, np.linalg.norm(a_hat_cbf_hist - acc.a_center.reshape((-1,1)), ord=2, axis=0), label='||a_hat - a_center||')
+axs[acc.adim].hlines(acc.a_hat_norm_max, 0, tt[-1], colors='r', linestyles='--', label='||a_hat||_max')
+axs[acc.adim].legend()
+axs[acc.adim].grid(True)
+axs[acc.adim].set_xlabel('Time (s)')
 
 # Scaling function and parameter
 fig, axs = plt.subplots(2, 1)

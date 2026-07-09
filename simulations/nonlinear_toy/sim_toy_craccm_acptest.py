@@ -10,8 +10,8 @@ from acp import ACP
 from motion_planner import MotionPlanner
 from scipy.interpolate import interp1d
 
-USE_CP = True # whether to use conformal prediction
-USE_ADAPTIVE = True # whether to use adaptive control
+USE_CP = False # whether to use conformal prediction
+USE_ADAPTIVE = False # whether to use adaptive control
 
 I_length = 200 # number of time steps in I_k
 
@@ -260,7 +260,7 @@ axs[1].set_ylabel('QP slack')
 axs[1].grid(True)
 
 # Uncertainty parameters
-fig, axs = plt.subplots(toy.adim, 1)
+fig, axs = plt.subplots(toy.adim+1, 1)
 axs = axs.flatten()
 for i in range(toy.adim):
     axs[i].plot(tt, a_hat_ccm_hist[i, :], label='a_hat')
@@ -269,7 +269,11 @@ for i in range(toy.adim):
     axs[i].legend()
     axs[i].grid(True)
     axs[i].set_ylabel(f"a{i}")
-axs[toy.adim-1].set_xlabel('Time (s)')
+axs[toy.adim].plot(tt, np.linalg.norm(a_hat_ccm_hist - toy.a_center.reshape((-1,1)), ord=2, axis=0), label='||a_hat - a_center||')
+axs[toy.adim].hlines(toy.a_hat_norm_max, 0, tt[-1], colors='r', linestyles='--', label='||a_hat||_max')
+axs[toy.adim].legend()
+axs[toy.adim].grid(True)
+axs[toy.adim].set_xlabel('Time (s)')
 
 # Scaling function and parameter
 fig, axs = plt.subplots(2, 1)

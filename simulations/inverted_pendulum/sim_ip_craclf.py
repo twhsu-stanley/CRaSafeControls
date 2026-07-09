@@ -34,7 +34,7 @@ params = {
 }
 params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
-params["Gamma_clf"] = np.diag(np.array([4.0, 4.0, 4.0]))
+params["Gamma_clf"] = np.diag(np.array([5.0, 5.0, 5.0]))
 params["a_true"] = a_true
 params["a_ub"] = a_ub
 params["a_lb"] = a_lb
@@ -56,7 +56,7 @@ Delta_max = np.max([np.linalg.norm(Delta(t), 2) for t in np.arange(0.0, sim_T, 0
 ip.cp_quantile = Delta_max * 0.95
 
 # Simulation
-x0 = np.array([0.05, 0.0])
+x0 = np.array([0.1, 0.0])
 x = x0.copy()
 a_hat_clf = np.array([0.0, 0.0, 0.0]) # initial guess for a_hat
 rho_clf = 0.0
@@ -156,7 +156,7 @@ plt.xlabel("Time (s)")
 plt.grid(True)
 
 # Uncertainty parameters
-fig, axs = plt.subplots(ip.adim, 1)
+fig, axs = plt.subplots(ip.adim+1, 1)
 axs = axs.flatten()
 for i in range(ip.adim):
     axs[i].plot(tt, a_hat_clf_hist[i, :], label='a_hat')
@@ -164,7 +164,11 @@ for i in range(ip.adim):
     axs[i].legend()
     axs[i].grid(True)
     axs[i].set_ylabel(f"a{i}")
-axs[ip.adim-1].set_xlabel('Time (s)')
+axs[ip.adim].plot(tt, np.linalg.norm(a_hat_clf_hist - ip.a_center.reshape((3,1)), ord=2, axis=0), label='||a_hat - a_center||')
+axs[ip.adim].hlines(ip.a_hat_norm_max, 0, tt[-1], colors='r', linestyles='--', label='||a_hat||_max')
+axs[ip.adim].legend()
+axs[ip.adim].grid(True)
+axs[ip.adim].set_xlabel('Time (s)')
 
 # Scaling function and parameter
 fig, axs = plt.subplots(2, 1)
