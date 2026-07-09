@@ -76,12 +76,14 @@ class ControlAffineSystem:
                 # NOTE: assuming Gamma_cbf is positive definite and symmetric
                 # Find min_a a^T @ inv(Gamma_cbf) @ a subject to ||a|| == a_err_norm_max
                 eigvals, eigvecs = np.linalg.eigh(np.linalg.inv(self.Gamma_cbf))
-                self.a_err_max = a_err_norm_max * eigvecs[:,np.argmin(eigvals)]
+                #self.a_err_max = a_err_norm_max * eigvecs[:,np.argmin(eigvals)]
                 #self.a_err_max = a_err_norm_max * (self.a_ub - self.a_lb)/np.linalg.norm(self.a_ub - self.a_lb, ord=2)
+                self.safe_set_tightening = (a_err_norm_max ** 2) * np.max(eigvals)
 
         else:
             if self.Gamma_cbf is not None:
-                self.a_err_max = np.zeros(self.adim)
+                #self.a_err_max = np.zeros(self.adim)
+                self.safe_set_tightening = 0.0
 
     def dynamics(self, x, u):
         return (self.f(x) + self.g(x) @ u + self.Y(x) @ self.a_true.reshape(-1,1)).ravel()
@@ -239,7 +241,7 @@ class ControlAffineSystem:
 
         return u_qp, slack
     
-    def ctrl_cracbf(self, x, a_hat_cbf, u_ref):
+    def ctrl_cracbf(self, x, a_hat_cbf, u_ref, rho_cbf):
         """CRaCBF QP Controller"""
 
         #NOTE: using reshape to enforce correct shape
@@ -253,6 +255,20 @@ class ControlAffineSystem:
             tightening =  self.cp_quantile * np.linalg.norm(dcbfdx, 2)
         else:
             tightening = 0.0
+
+        ####################################################################################
+        dcbfda = self.dcbfda(x, a_hat_cbf).reshape(self.adim,1)
+        dcbfdx = self.dcbfdx(x, a_hat_cbf).reshape(self.xdim,1)
+
+        # Projection operator to enforce bounds on a_hat_cbf
+        a_hat_cbf_dot = ControlAffineSystem.projection_operator(a_hat_cbf, 
+                                              -self.nu_cbf(rho_cbf) * self.Gamma_cbf @ self.Y(x).T @ dcbfdx,
+                                              self.a_center,
+                                              self.a_hat_norm_max,
+                                              self.epsilon)
+        
+        correction_term = -1/(h + self.eta_cbf).item() * (dcbfda.T @ a_hat_cbf_dot).item()
+        ####################################################################################
         
         # A u <= b
         A = -Lgh
@@ -260,7 +276,9 @@ class ControlAffineSystem:
             Lfh 
             + LYh @ a_hat_cbf #TODO: check sign
             - tightening
-            + self.params["cbf"]["rate"] * (h - 0.5 * self.a_err_max.T @ np.linalg.inv(self.Gamma_cbf) @ self.a_err_max)
+            #+ self.params["cbf"]["rate"] * (h - 0.5 * self.a_err_max.T @ np.linalg.inv(self.Gamma_cbf) @ self.a_err_max)
+            + self.params["cbf"]["rate"] * (h - 0.5 / self.nu_cbf(rho_cbf) * self.safe_set_tightening)
+            - correction_term
         )
         if "u_max" in self.params:
             A = np.vstack([A, np.eye(self.udim)])

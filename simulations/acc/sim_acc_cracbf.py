@@ -11,7 +11,7 @@ USE_ADAPTIVE = True # whether to use adaptive control
 
 # Parameters and Initialization
 dt = 0.01
-sim_T = 10
+sim_T = 5
 tt = np.arange(0, sim_T, dt)
 
 # Prior knowledge of the uncertainty parameter
@@ -26,7 +26,7 @@ params = {
     "grav": 9.81,
     "ca": 0.3,
     "cd": 0.3,
-    "Kp": 100.0, # P gain for the nominal controller
+    "Kp": 200.0, # P gain for the nominal controller
     "T": 1.0, # look-ahead time
     "cbf": {"rate": 2.0},
     "dt": dt
@@ -35,13 +35,13 @@ params = {
 #params["u_min"] = -params["cd"] * params["m"] * params["grav"]
 params["use_adaptive"] = USE_ADAPTIVE
 params["use_cp"] = USE_CP
-params["Gamma_cbf"] = np.diag(np.array([100.0, 100.0, 10.0, 10.0]))
+params["Gamma_cbf"] = np.diag(np.array([50.0, 50.0, 50.0, 50.0]))
 params["a_true"] = a_true
 params["a_ub"] = a_ub
 params["a_lb"] = a_lb
 params["a_hat_norm_max"] = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) * 1.5
 params["epsilon"] = 1e-2 # small value for numerical stability of projection operator
-params["eta_cbf"] = 10.0
+params["eta_cbf"] = 5.0
 
 # Construct the system
 acc = ACC(params)
@@ -65,17 +65,14 @@ rho_cbf = 0.0
 x_ext = np.hstack((x, a_hat_cbf, rho_cbf)) # extended state with a_hat and rho
 
 # Check if Gamma_cbf is valid
-if USE_ADAPTIVE:
-    if np.min(np.linalg.eigvals(acc.Gamma_cbf)) < np.linalg.norm(acc.a_err_max, 2)**2 / (2 * acc.nu_cbf(rho_cbf) * acc.cbf(x, a_hat_cbf).item()):
-        raise RuntimeError("Gamma_cbf is not valid: minimal eigenvalue is too small")
-    
-# Check if the initial state is in the safe set
-if (acc.cbf(x, a_hat_cbf).item() - 0) < 1e-3:
-    raise ValueError("Initial condition unsafe")
+#if USE_ADAPTIVE:
+#    if np.min(np.linalg.eigvals(acc.Gamma_cbf)) < np.linalg.norm(acc.a_err_max, 2)**2 / (2 * acc.nu_cbf(rho_cbf) * acc.cbf(x, a_hat_cbf).item()):
+#        raise RuntimeError("Gamma_cbf is not valid: minimal eigenvalue is too small")
 
 x_hist = np.zeros((len(tt), 3))
 u_hist = np.zeros(len(tt))
 h_hist = np.zeros(len(tt))
+z_hist = np.zeros(len(tt))
 a_hat_cbf_hist = np.zeros((acc.adim, len(tt)))
 a_true_hist = np.zeros((acc.adim, len(tt)))
 nu_cbf_hist = np.zeros((len(tt),))
@@ -94,9 +91,16 @@ for k in range(len(tt)):
     rho_cbf_hist[k] = rho_cbf
 
     u_ref = acc.ctrl_nominal(x)
-    u = acc.ctrl_cracbf(x, a_hat_cbf, u_ref)
+    u = acc.ctrl_cracbf(x, a_hat_cbf, u_ref, rho_cbf)
     u_hist[k] = u.item()
+    
     h_hist[k] = acc.cbf(x, a_hat_cbf).item()
+    if k == 0 and h_hist[k] < 1e-3:
+        raise ValueError(f"Initial condition unsafe: h < 0, h = {h_hist[k]:.2f}")
+    
+    z_hist[k] = h_hist[k] * nu_cbf_hist[k] - 0.5 * (a_hat_cbf - acc.a_true).T @ np.linalg.inv(acc.Gamma_cbf) @ (a_hat_cbf - acc.a_true)
+    if k == 0 and USE_ADAPTIVE and z_hist[k] < 0:
+        raise ValueError(f"Initial condition unsafe: z < 0, z = {z_hist[k]:.2f}")
 
     # Propagate with zero-order hold on control and disturbance
     if k < len(tt) - 1:
@@ -149,6 +153,14 @@ plt.ylabel("CBF (h(x))")
 plt.title("CBF")
 plt.grid(True)
 plt.tight_layout()
+
+
+plt.figure()
+plt.plot(tt, z_hist)
+plt.plot(tt, np.zeros_like(tt), 'r', linewidth=1.5)
+plt.plot(tt, z_hist[0] * np.exp(-params["cbf"]["rate"] * tt), 'k--', linewidth=1.5)
+plt.grid(True)
+plt.title("z = cbf * nu(rho) - 0.5 * a_err.T @ Gamma^{-1} @ a_err")
 
 # Uncertainty parameters
 fig, axs = plt.subplots(acc.adim+1, 1)
