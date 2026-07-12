@@ -116,13 +116,13 @@ S_cal_init = np.asarray(S_cal_init)
 acp = ACP(
     S_cal_init,
     N_cal=N_cal,
-    lr=0.02,
+    acp_lr=0.02,
     delta_target=0.1,
     delta_init=0.1,
     buffer_maxlen=I_length,
     theta_init=Theta_init,
     representation_period=B,
-    representation_learning_rate=lambda j: 2e-4 / j,
+    representation_lr=lambda j: 2e-4 / j,
     theta_lb=-2.0,
     theta_ub=2.0,
 )
