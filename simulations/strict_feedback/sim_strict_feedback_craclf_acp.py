@@ -119,7 +119,6 @@ acp = ACP(
     lr=0.02,
     delta_target=0.1,
     delta_init=0.1,
-    score_min=0.0,
     buffer_maxlen=I_length,
     theta_init=Theta_init,
     representation_period=B,
