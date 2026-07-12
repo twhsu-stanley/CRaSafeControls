@@ -119,7 +119,6 @@ acp = ACP(S_cal_init,
           lr = 0.05, # learning rate
           delta_target = 0.05,
           delta_init = 0.2,
-          score_max = max(S_cal_init) * 2, # max possible score
           score_min = 0.0, # min possible score
           buffer_maxlen = 800
           )

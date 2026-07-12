@@ -86,7 +86,8 @@ class ControlAffineSystem:
                 self.safe_set_tightening = 0.0
 
     def dynamics(self, x, u):
-        return (self.f(x) + self.g(x) @ u + self.Y(x) @ self.a_true.reshape(-1,1)).ravel()
+        pass
+        #return (self.f(x) + self.g(x) @ u + self.Y(x) @ self.a_true.reshape(-1,1)).ravel()
     
     def dynamics_nominal(self, x, u):
         return (self.f(x) + self.g(x) @ u).ravel()

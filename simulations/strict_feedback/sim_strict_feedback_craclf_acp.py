@@ -34,8 +34,9 @@ if len(tt) != K * I_length:
 # coefficients change at the start of each time interval I_k.
 true_uncertainty = lambda x, t: np.array(
     [
-        -(1.0 + 0.1 * np.floor(t / interval_duration)) * np.sin(x[0])
-        - (0.6 + 0.05 * np.floor(t / interval_duration)) * x[0] ** 2,
+        #-(0.01 - 0.1 * np.floor(t / interval_duration)) * np.sin(x[0])
+        #-(0.06 - 0.05 * np.floor(t / interval_duration)) * x[0] ** 2,
+        -0.01 * np.sin(2*np.pi*1*x[0]) - 0.05 * x[0] ** 2,
         0.0,
         0.0,
     ]
@@ -45,13 +46,13 @@ true_uncertainty = lambda x, t: np.array(
 # initially missing cubic term gives representation learning useful work.
 Theta_init = np.array(
     [
-        [-1.0, 0.0],
-        [0.0, -1.0],
-        [0.0, 0.0],
+        [1.0, 0.001],
+        [0.001, 1.0],
+        [-1/6, 0.001],
     ]
 )
-a_lb = np.array([0.0, 0.0])
-a_ub = np.array([1.6, 1.2])
+a_lb = np.array([-0.1, -0.1])
+a_ub = np.array([0.1, 0.1])
 a_center = 0.5 * (a_lb + a_ub)
 a_radius = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + 0.2
 
@@ -118,7 +119,6 @@ acp = ACP(
     lr=0.02,
     delta_target=0.1,
     delta_init=0.1,
-    score_max=max(1.0, 4.0 * float(np.max(S_cal_init))),
     score_min=0.0,
     buffer_maxlen=I_length,
     theta_init=Theta_init,
@@ -126,9 +126,6 @@ acp = ACP(
     representation_learning_rate=lambda j: 2e-4 / j,
     theta_lb=-2.0,
     theta_ub=2.0,
-    # A configured finite score cap keeps the online QP numerically defined
-    # if ACP requests the appended-infinity order statistic.
-    quantile_edge_policy="bounds",
 )
 system.cp_quantile = acp.Q_k
 

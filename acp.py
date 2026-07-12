@@ -10,9 +10,8 @@ class ACP:
     Notes
     1) The paper allows delta_k to temporarily leave [0, 1]. To keep the order
        statistic well-defined, this implementation clamps the quantile rank to
-       [1, |S_cal| + 1]. The ``quantile_edge_policy`` option chooses either
-       the supplied finite score bounds or +inf for the appended-infinity
-       order statistic.
+       [1, |S_cal| + 1]. For the appended-infinity order statistic, it uses the
+       largest score in the current calibration set.
     2) The controller can read ``acp.Q_k`` and write it into
        ``system.cp_quantile`` at the beginning of every interval.
     3) If `N_cal` is provided, S_cal is maintained as a
@@ -28,45 +27,37 @@ class ACP:
         self,
         S_cal_init, # numpy array or list
         N_cal: int = 1000,
-        lr: float = 0.5, # learning rate
+        acp_lr: float = 0.5, # learning rate
         delta_target: float = 0.05,
         delta_init: float = 0.05,
-        score_max: float = 1.0, # max possible score
-        score_min: float = 0.0, # min possible score
         buffer_maxlen: int = 1000,
         theta_init=None,
         representation_period: int = 1,
-        representation_learning_rate=1e-3,
+        representation_lr=1e-3,
         theta_lb=None,
         theta_ub=None,
-        quantile_edge_policy: str = "bounds",
     ):
         if N_cal < 100:
             raise ValueError("N_cal must be at least 100")
         if len(S_cal_init) == 0:
             raise ValueError("S_cal_init must be nonempty")
-        if lr <= 0.0:
-            raise ValueError("lr must be positive")
+        if acp_lr <= 0.0:
+            raise ValueError("acp_lr must be positive")
         if delta_target >= 1.0 or delta_target <= 0.0:
             raise ValueError("delta_target must be in (0,1)")
         if delta_init >= 1.0 or delta_init <= 0.0:
             raise ValueError("delta_init must be in (0,1)")
         if buffer_maxlen < 10:
             raise ValueError("buffer_maxlen must be at least 10")
-        if quantile_edge_policy not in {"bounds", "infinity"}:
-            raise ValueError("quantile_edge_policy must be 'bounds' or 'infinity'")
         
         if len(S_cal_init) > N_cal:
             S_cal_init = S_cal_init[-N_cal:]
         self.S_cal = deque(S_cal_init, maxlen=N_cal)
 
         self.N_cal = N_cal
-        self.lr = lr
+        self.acp_lr = acp_lr
         self.delta_target = float(delta_target)
         self.delta = delta_init
-        self.score_max = score_max
-        self.score_min = score_min
-        self.quantile_edge_policy = quantile_edge_policy
         self.compute_quantile() # update self.Q_k
         self.buffer_maxlen = buffer_maxlen
 
@@ -81,7 +72,7 @@ class ACP:
         # Optional block-wise representation learning (lines 19--23).
         self.Theta = None if theta_init is None else np.asarray(theta_init, dtype=float).copy()
         self.representation_period = int(representation_period)
-        self.representation_learning_rate = representation_learning_rate
+        self.representation_lr = representation_lr
         self.theta_lb = theta_lb
         self.theta_ub = theta_ub
         self.interval_index = 0
@@ -238,8 +229,8 @@ class ACP:
                 gradient += 2.0 * np.outer(Psi_t.T @ residual, a_interval)
 
         self.representation_update_index += 1
-        learning_rate = self._representation_step_size(self.representation_update_index)
-        theta_next = self.Theta - learning_rate * gradient
+        representation_lr = self._representation_learning_rate(self.representation_update_index)
+        theta_next = self.Theta - representation_lr * gradient
         if self.theta_lb is not None:
             theta_next = np.clip(theta_next, self.theta_lb, self.theta_ub)
 
@@ -250,12 +241,12 @@ class ACP:
         return {
             "Theta": self.Theta.copy(),
             "gradient": gradient.copy(),
-            "learning_rate": learning_rate,
+            "representation_lr": representation_lr,
             "update_index": self.representation_update_index,
         }
 
-    def _representation_step_size(self, update_index):
-        schedule = self.representation_learning_rate
+    def _representation_learning_rate(self, update_index):
+        schedule = self.representation_lr
         if callable(schedule):
             value = schedule(update_index)
         elif np.isscalar(schedule):
@@ -283,22 +274,20 @@ class ACP:
         rank = int(np.ceil((1.0 - self.delta) * (S_cal_size + 1)))
         rank = min(max(rank, 1), S_cal_size + 1)
         if rank == S_cal_size + 1:
-            self.Q_k = (
-                np.inf if self.quantile_edge_policy == "infinity" else self.score_max
-            )
+            self.Q_k = S_cal_sort[-1]
         else:
             self.Q_k = S_cal_sort[rank - 1]
         return self.Q_k
 
     def update_delta(self, s_k):
         """ 
-        Update delta: delta_{k+1} = delta_k + lr * (delta_target - e_k) 
+        Update delta: delta_{k+1} = delta_k + acp_lr * (delta_target - e_k) 
         """
         if self.Q_k is None:
             raise ValueError("Call compute_quantile() before update_delta().")
         
         e_k = int(s_k > self.Q_k) # assuming self.Q_k has already been updated
 
-        self.delta = self.delta + self.lr * (self.delta_target - e_k)
+        self.delta = self.delta + self.acp_lr * (self.delta_target - e_k)
 
         return e_k
