@@ -189,11 +189,13 @@ for i in range(T_steps):
         acp.estimate_uncertainty(dt)
         s_k = acp.compute_score(toy.a_ub, toy.a_lb,) # acp.a_k is updated here
         acp.update_delta(s_k)
-        acp.S_cal.append(s_k)
+        acp.append_score(s_k)
         toy.cp_quantile = acp.compute_quantile()
 
         a_k_hist[:,(i-I_length+1):(i+1)] = acp.a_k.reshape(-1,1)
         s_k_hist[(i-I_length+1):(i+1)] = s_k
+        # Algorithm 1 fits a_k and s_k from the just-completed interval only.
+        acp.clear_buffers()
 
     # For debugging ###########################################
     # Lyapunov function

@@ -1,0 +1,186 @@
+import numpy as np
+import sympy as sp
+
+from systems.control_affine_system import ControlAffineSystem
+
+
+class StrictFeedbackSystem(ControlAffineSystem):
+    """Strict-feedback system and backstepping CRaCLF from Example 1.
+
+    The learned parametric model is
+
+        Y_Theta(x) a = Psi(x) Theta a,
+
+    where Psi has the polynomial features [x1, x1**2, x1**3] in its
+    first row. The physical uncertainty remains the sinusoidal model from
+    Section V-A and is intentionally unknown to the controller.
+    """
+
+    theta_shape = (3, 2)
+
+    def __init__(self, params=None):
+        if params is None:
+            params = {}
+        self.Theta_hat = np.asarray(
+            params.get(
+                "Theta_init",
+                np.array([[-1.0, 0.0], [0.0, -1.0], [0.0, 0.0]]),
+            ),
+            dtype=float,
+        ).reshape(self.theta_shape)
+        self.true_uncertainty_fcn = params.get("true_uncertainty")
+        if self.true_uncertainty_fcn is None:
+            self.true_uncertainty_fcn = lambda x, t: np.array(
+                [-np.sin(x[0]) - 0.5 * x[0] ** 2, 0.0, 0.0]
+            )
+        if not callable(self.true_uncertainty_fcn):
+            raise TypeError("true_uncertainty must be callable as w(x, t)")
+
+        super().__init__(params)
+        self._lambdify_backstepping_coordinates()
+
+    @staticmethod
+    def psi(x):
+        """Return the Example 1 feature matrix Psi(x)."""
+        x1 = float(np.asarray(x).reshape(-1)[0])
+        return np.array(
+            [
+                [x1, x1**2, x1**3],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            dtype=float,
+        )
+
+    def set_representation(self, Theta_hat):
+        """Install a new representation and regenerate symbolic derivatives."""
+        Theta_hat = np.asarray(Theta_hat, dtype=float)
+        if Theta_hat.shape != self.theta_shape:
+            raise ValueError(f"Theta_hat must have shape {self.theta_shape}")
+        self.Theta_hat = Theta_hat.copy()
+
+        x_sym, f_sym, g_sym, Y_sym, a_sym = self.define_system_symbolic()
+        clf_sym = self.define_clf_symbolic(x_sym, a_sym)
+        self.lambdify_symbolic_funcs(
+            x_sym,
+            f_sym,
+            g_sym,
+            Y_sym,
+            a_sym,
+            clf_sym,
+            None,
+            None,
+        )
+        self._lambdify_backstepping_coordinates()
+
+    def define_system_symbolic(self):
+        x1, x2, x3 = sp.symbols("x1 x2 x3", real=True)
+        x = sp.Matrix([x1, x2, x3])
+
+        f = sp.Matrix([x2, x3, 0])
+        g = sp.Matrix([0, 0, 1])
+        Psi = sp.Matrix(
+            [
+                [x1, x1**2, x1**3],
+                [0, 0, 0],
+                [0, 0, 0],
+            ]
+        )
+        Theta = sp.Matrix(self.Theta_hat.tolist())
+        Y = Psi @ Theta
+
+        a1, a2 = sp.symbols("a1 a2", real=True)
+        a = sp.Matrix([a1, a2])
+
+        return x, f, g, Y, a
+
+    def define_clf_symbolic(self, x, a):
+        x1, x2, x3 = x
+        feature = sp.Matrix([[x1, x1**2, x1**3]])
+        feature_prime = sp.Matrix([[1, 2 * x1, 3 * x1**2]])
+        Theta = sp.Matrix(self.Theta_hat.tolist())
+
+        d = (feature @ Theta @ a)[0]
+        d_prime = (feature_prime @ Theta @ a)[0]
+
+        z1 = x1
+        z2 = x2 + 2 * x1 + d
+        z3 = x1 + x3 + 2 * z2 + (2 + d_prime) * (x2 + d)
+        clf = sp.Rational(1, 2) * (z1**2 + z2**2 + z3**2)
+
+        dz3_dx1 = sp.diff(z3, x1)
+        dz3_dx2 = sp.diff(z3, x2)
+        u_backstepping = (
+            -dz3_dx1 * (x2 + d)
+            - dz3_dx2 * x3
+            - z2
+            - 2 * z3
+        )
+
+        self._z_sym = sp.Matrix([z1, z2, z3])
+        self._u_backstepping_sym = sp.simplify(u_backstepping)
+        self._clf_rate_backstepping = 4.0
+
+        return sp.simplify(clf)
+
+    def _lambdify_backstepping_coordinates(self):
+        x_sym, _, _, _, a_sym = self.define_system_symbolic()
+        # Rebuild these expressions using the same symbolic state objects.
+        self.define_clf_symbolic(x_sym, a_sym)
+        self._z_function = sp.lambdify(
+            [x_sym, a_sym], self._z_sym, modules="numpy"
+        )
+        self._u_backstepping_function = sp.lambdify(
+            [x_sym, a_sym], self._u_backstepping_sym, modules="numpy"
+        )
+
+    def backstepping_coordinates(self, x, a_hat):
+        return np.asarray(self._z_function(x, a_hat), dtype=float).reshape(3)
+
+    def backstepping_control(self, x, a_hat):
+        return np.array(
+            [float(np.asarray(self._u_backstepping_function(x, a_hat)).item())]
+        )
+
+    def true_uncertainty(self, x, t):
+        uncertainty = np.asarray(self.true_uncertainty_fcn(x, t), dtype=float)
+        if uncertainty.shape != (self.xdim,):
+            raise ValueError(
+                f"true_uncertainty(x, t) must return shape ({self.xdim},)"
+            )
+        return uncertainty
+
+    def dynamics(self, x, u, t=0.0):
+        return (
+            np.asarray(self.f(x), dtype=float).reshape(self.xdim)
+            + (
+                np.asarray(self.g(x), dtype=float) @ np.asarray(u).reshape(-1)
+            ).reshape(self.xdim)
+            + self.true_uncertainty(x, t)
+        )
+
+    def dynamics_extended(self, x_ext, u, t=0.0):
+        x = x_ext[: self.xdim]
+        a_hat = x_ext[self.xdim : self.xdim + self.adim]
+        rho = x_ext[self.xdim + self.adim]
+
+        dxdt_ext = np.zeros(self.xdim + self.adim + 1)
+        dxdt_ext[: self.xdim] = self.dynamics(x, u, t)
+        if self.use_adaptive:
+            a_hat_dot, rho_dot = self.adaptation_craclf(x, a_hat, rho)
+        else:
+            a_hat_dot = np.zeros(self.adim)
+            rho_dot = 0.0
+        dxdt_ext[self.xdim : self.xdim + self.adim] = a_hat_dot
+        dxdt_ext[self.xdim + self.adim] = rho_dot
+
+        return dxdt_ext
+
+    def ctrl_nominal(self, x):
+        # The backstepping controller establishes the CLF property; the
+        # implemented control is the min-norm solution of the CRaCLF-QP.
+        return np.zeros(self.udim)
+
+
+# Short alias consistent with the existing IP class naming style.
+StrictFeedback = StrictFeedbackSystem

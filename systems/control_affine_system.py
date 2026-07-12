@@ -265,7 +265,8 @@ class ControlAffineSystem:
                                               -self.nu_cbf(rho_cbf) * self.Gamma_cbf @ self.Y(x).T @ dcbfdx,
                                               self.a_center,
                                               self.a_hat_norm_max,
-                                              self.epsilon)
+                                              self.epsilon,
+                                              self.Gamma_cbf)
         
         correction_term = -1/(h + self.eta_cbf).item() * (dcbfda.T @ a_hat_cbf_dot).item()
         ####################################################################################
@@ -438,7 +439,8 @@ class ControlAffineSystem:
                                               self.nu_clf(rho_clf) * self.Gamma_clf @ self.Y(x).T @ dclfdx,
                                               self.a_center,
                                               self.a_hat_norm_max,
-                                              self.epsilon)
+                                              self.epsilon,
+                                              self.Gamma_clf)
         
         rho_clf_dot = -self.nu_clf(rho_clf)/(self.dnu_drho_clf(rho_clf) * (V + self.eta_clf)).item() * (dclfda.T @ a_hat_clf_dot).item()
 
@@ -456,7 +458,8 @@ class ControlAffineSystem:
                                               -self.nu_cbf(rho_cbf) * self.Gamma_cbf @ self.Y(x).T @ dcbfdx,
                                               self.a_center,
                                               self.a_hat_norm_max,
-                                              self.epsilon)
+                                              self.epsilon,
+                                              self.Gamma_cbf)
         
         rho_cbf_dot = -self.nu_cbf(rho_cbf)/(self.dnu_drho_cbf(rho_cbf) * (h + self.eta_cbf)).item() * (dcbfda.T @ a_hat_cbf_dot).item()
 
@@ -483,7 +486,8 @@ class ControlAffineSystem:
                                               self.nu_ccm(rho_ccm) * self.Gamma_ccm @ self.Y(x).T @ gamma_s1_M_x.T,
                                               self.a_center,
                                               self.a_hat_norm_max,
-                                              self.epsilon)
+                                              self.epsilon,
+                                              self.Gamma_ccm)
         #a_hat_dot = self.nu_ccm(rho_ccm) * self.Gamma_ccm @ self.Y(x).T @ gamma_s1_M_x.T
         
         c1 = (2 * gamma_s0_M_d @ self.Y(x_d) @ a_hat_ccm).item()
@@ -498,7 +502,9 @@ class ControlAffineSystem:
     # Scaling functions for unmatched adaptive controls
     @staticmethod
     def nu_clf(rho_clf):
-        nu = np.arctan(rho_clf)/np.pi + 1.0
+        # Smooth, strictly increasing, and bounded in (1, 2), as required by
+        # Definition 1 of the paper.
+        nu = np.arctan(rho_clf)/np.pi + 1.5
         return nu
     
     @staticmethod
@@ -508,40 +514,42 @@ class ControlAffineSystem:
 
     @staticmethod
     def nu_cbf(rho_cbf):
-        nu = np.arctan(rho_cbf)/np.pi + 1.0
+        nu = np.arctan(rho_cbf)/np.pi + 1.5
         return nu
     
     @staticmethod
     def dnu_drho_cbf(rho_cbf):
         dnu_drho = 1/(1+(rho_cbf)**2)/np.pi
-        return dnu_drho 
-        #return max(dnu_drho, 1e-20)
+        return max(dnu_drho, 1e-20)
     
     @staticmethod
     def nu_ccm(rho_ccm):
-        nu = 0.9 * np.exp(rho_ccm) + 0.1 # must be bounded away from zero
-        #nu = np.arctan(rho_ccm)/np.pi + 1.0
+        nu = np.arctan(rho_ccm)/np.pi + 1.5
         return nu
     
     @staticmethod
     def dnu_drho_ccm(rho_ccm):
-        dnu_drho = 0.9 * np.exp(rho_ccm)
-        #dnu_drho = 1/(1+(rho_ccm)**2)/np.pi
+        dnu_drho = 1/(1+(rho_ccm)**2)/np.pi
         return max(dnu_drho, 1e-20)
     
     # Functions for projection-based adaptive controls
     @staticmethod
     def phi(a_hat, a_center, a_hat_norm_max, epsilon):
         """Compute the barrier function φ(â)"""
-        return (np.linalg.norm(a_hat - a_center, ord=2)**2 - a_hat_norm_max**2) / (2 * epsilon * a_hat_norm_max + epsilon**2)
+        denominator = 2 * epsilon * a_hat_norm_max - epsilon**2
+        return (
+            np.linalg.norm(a_hat - a_center, ord=2)**2
+            - (a_hat_norm_max - epsilon)**2
+        ) / denominator
 
     @staticmethod
     def grad_phi(a_hat, a_center, a_hat_norm_max, epsilon):
         """Compute the gradient ∇φ(â)"""
-        return (2 * (a_hat - a_center)).reshape(-1,1) / (2 * epsilon * a_hat_norm_max + epsilon**2)
+        denominator = 2 * epsilon * a_hat_norm_max - epsilon**2
+        return (2 * (a_hat - a_center)).reshape(-1,1) / denominator
 
     @staticmethod
-    def projection_operator(a_hat, y, a_center, a_hat_norm_max, epsilon):
+    def projection_operator(a_hat, y, a_center, a_hat_norm_max, epsilon, Gamma=None):
         """
         Implements the adaptive control projection operator:
         Proj(a_hat, y, φ)
@@ -552,18 +560,29 @@ class ControlAffineSystem:
         - a_center: center of the box-linit set where the true parameter belongs to
         - a_hat_norm_max: upper bound on ||a_hat - a_center||
         - epsilon: small positive scalar (for soft boundary enforcement)
+        - Gamma: symmetric positive-definite adaptation gain matrix
 
         Returns:
         - projected update (np.ndarray)
         """
+        if not 0.0 < epsilon < a_hat_norm_max:
+            raise ValueError("epsilon must satisfy 0 < epsilon < a_hat_norm_max")
+
+        y = np.asarray(y, dtype=float).reshape(-1, 1)
+        if Gamma is None:
+            Gamma = np.eye(y.shape[0])
+        Gamma = np.asarray(Gamma, dtype=float)
+
         phi_val = ControlAffineSystem.phi(a_hat, a_center, a_hat_norm_max, epsilon)
         grad_phi_val = ControlAffineSystem.grad_phi(a_hat, a_center, a_hat_norm_max, epsilon)
 
         if phi_val > 0 and (y.T @ grad_phi_val).item() > 0:
-            projection_matrix = (grad_phi_val @ grad_phi_val.T) / np.linalg.norm(grad_phi_val,2)**2
-            #projection_matrix = np.outer(grad_phi_val, grad_phi_val) / np.dot(grad_phi_val, grad_phi_val)
-            correction = projection_matrix @ y * phi_val
+            denominator = (grad_phi_val.T @ Gamma @ grad_phi_val).item()
+            correction = (
+                Gamma @ grad_phi_val
+                * ((grad_phi_val.T @ y).item() / denominator)
+                * phi_val
+            )
             return y - correction
         else:
             return y
-            
