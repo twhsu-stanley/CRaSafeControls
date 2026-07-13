@@ -2,11 +2,11 @@ import unittest
 
 import numpy as np
 
-from acp import ACP
+from olacp import OLACP
 from systems.strict_feedback.strict_feedback import StrictFeedbackSystem
 
 
-class TestACPRepresentation(unittest.TestCase):
+class TestOLACPRepresentation(unittest.TestCase):
     @staticmethod
     def calibration_scores():
         return np.linspace(0.01, 1.0, 100)
@@ -26,7 +26,7 @@ class TestACPRepresentation(unittest.TestCase):
             residual = Y_theta(x, theta_value) @ a_value - w_value
             return 2.0 * np.outer(psi(x).T @ residual, a_value)
 
-        acp = ACP(
+        olacp = OLACP(
             self.calibration_scores(),
             N_cal=100,
             buffer_maxlen=10,
@@ -40,11 +40,11 @@ class TestACPRepresentation(unittest.TestCase):
         for index in range(10):
             x = np.array([0.1 * index, -0.05 * index])
             w = Y_theta(x, theta) @ a + np.array([0.02, -0.01])
-            acp.add_data_to_buffers(x, np.zeros(2), xdot=w)
+            olacp.add_data_to_buffers(x, np.zeros(2), xdot=w)
             expected_gradient += loss_gradient(x, theta, a, w)
 
-        acp.estimate_uncertainty(dt=0.1)
-        update = acp.update_representation(a)
+        olacp.estimate_uncertainty(dt=0.1)
+        update = olacp.update_representation(a)
 
         np.testing.assert_allclose(update["gradient"], expected_gradient)
         np.testing.assert_allclose(
@@ -76,7 +76,7 @@ class TestACPRepresentation(unittest.TestCase):
                 ]
             )
 
-        acp = ACP(
+        olacp = OLACP(
             self.calibration_scores(),
             N_cal=100,
             buffer_maxlen=10,
@@ -89,7 +89,7 @@ class TestACPRepresentation(unittest.TestCase):
         for x_value in np.linspace(-1.0, 1.0, 10):
             x = np.array([x_value])
             w = forward(x, theta) @ a + np.array([0.03])
-            acp.add_data_to_buffers(x, np.zeros(1), xdot=w)
+            olacp.add_data_to_buffers(x, np.zeros(1), xdot=w)
 
             analytic = backprop(x, theta, a, w)
             finite_difference = np.zeros_like(theta)
@@ -109,14 +109,14 @@ class TestACPRepresentation(unittest.TestCase):
                 analytic, finite_difference, rtol=1e-6, atol=1e-8
             )
 
-        acp.estimate_uncertainty(dt=0.1)
-        update = acp.update_representation(a)
+        olacp.estimate_uncertainty(dt=0.1)
+        update = olacp.update_representation(a)
 
         self.assertEqual(update["gradient"].shape, theta.shape)
         self.assertFalse(np.allclose(update["Theta"], theta))
 
     def test_gradient_shape_must_match_theta(self):
-        acp = ACP(
+        olacp = OLACP(
             self.calibration_scores(),
             N_cal=100,
             buffer_maxlen=10,
@@ -126,13 +126,13 @@ class TestACPRepresentation(unittest.TestCase):
         )
 
         for index in range(10):
-            acp.add_data_to_buffers(
+            olacp.add_data_to_buffers(
                 np.array([float(index)]), np.zeros(1), xdot=np.ones(1)
             )
-        acp.estimate_uncertainty(dt=0.1)
+        olacp.estimate_uncertainty(dt=0.1)
 
         with self.assertRaisesRegex(ValueError, "must return an array with shape"):
-            acp.update_representation(np.ones(1))
+            olacp.update_representation(np.ones(1))
 
 
 class TestStrictFeedbackRepresentation(unittest.TestCase):

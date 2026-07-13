@@ -8,7 +8,7 @@ from scipy.optimize import lsq_linear
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-from acp import ACP
+from olacp import OLACP
 from systems.strict_feedback.strict_feedback import StrictFeedbackSystem
 
 
@@ -109,7 +109,7 @@ for k in range(N_cal):
 S_cal_init = np.asarray(S_cal_init)
 
 # Adaptive conformal prediction and Algorithm 1 representation learning.
-acp = ACP(
+olacp = OLACP(
     S_cal_init,
     N_cal=N_cal,
     acp_lr=0.02,
@@ -124,8 +124,8 @@ acp = ACP(
     Y_theta=system.Y_theta,
     representation_loss_gradient=system.representation_loss_gradient,
 )
-system.set_representation(acp.Theta)
-system.cp_quantile = acp.Q_k
+system.set_representation(olacp.Theta)
+system.cp_quantile = olacp.Q_k
 
 # Simulation initialization.
 x = np.array([0.8, 0.6, 0.5])
@@ -163,7 +163,7 @@ for i, t in enumerate(tt):
     u_hist[i] = u.item()
 
     # Store the data required by line 6 of Algorithm 1.
-    acp.add_data_to_buffers(
+    olacp.add_data_to_buffers(
         x,
         system.dynamics_nominal(x, u),
         xdot=system.dynamics(x, u, t),
@@ -191,29 +191,29 @@ for i, t in enumerate(tt):
     # Complete lines 7--23 of Algorithm 1 at the interval boundary.
     if (i + 1) % I_length == 0:
         interval_index = (i + 1) // I_length - 1
-        acp.estimate_uncertainty(dt)
-        s_k = acp.compute_score(system.a_ub, system.a_lb)
-        e_k = acp.update_delta(s_k)
-        acp.append_score(s_k)
-        representation_update = acp.update_representation()
+        olacp.estimate_uncertainty(dt)
+        s_k = olacp.compute_score(system.a_ub, system.a_lb)
+        e_k = olacp.update_delta(s_k)
+        olacp.append_score(s_k)
+        representation_update = olacp.update_representation()
 
         interval_start = i - I_length + 1
-        a_k_hist[interval_start : i + 1] = acp.a_k
+        a_k_hist[interval_start : i + 1] = olacp.a_k
         interval_times.append(t)
         s_k_hist.append(s_k)
-        delta_k_hist.append(acp.delta)
+        delta_k_hist.append(olacp.delta)
         e_k_hist.append(e_k)
 
         if representation_update is not None:
             system.set_representation(representation_update["Theta"])
 
-        system.cp_quantile = acp.compute_quantile()
-        acp.clear_buffers()
+        system.cp_quantile = olacp.compute_quantile()
+        olacp.clear_buffers()
 
         print(
             f"interval={interval_index + 1:02d}, "
             f"score={s_k:.4f}, Q={Q_k_hist[i]:.4f}, "
-            f"delta_next={acp.delta:.3f}, miscoverage={e_k}"
+            f"delta_next={olacp.delta:.3f}, miscoverage={e_k}"
         )
 
 interval_times = np.asarray(interval_times)
@@ -241,7 +241,7 @@ for ax in axs:
     ax.grid(True)
 fig.suptitle("CRaCLF-QP")
 
-# Plot ACP variables.
+# Plot OLACP variables.
 fig, axs = plt.subplots(3, 1, sharex=True)
 axs[0].step(interval_times, s_k_hist, where="post", label="s_k")
 axs[0].step(tt, Q_k_hist, where="post", label="Q_k")

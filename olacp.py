@@ -2,17 +2,18 @@ import numpy as np
 from scipy.optimize import lsq_linear
 from collections import deque
 
-class ACP:
+class OLACP:
     """
-    Time-interval-wise Adaptive Conformal Prediction (ACP), parameter fitting,
-    and optional block-wise representation learning following Algorithm 1.
+    Online Learning with Adaptive Conformal Prediction (OLACP), including
+    interval-wise parameter fitting and optional block-wise representation
+    learning following Algorithm 1.
 
     Notes
     1) The paper allows delta_k to temporarily leave [0, 1]. To keep the order
        statistic well-defined, this implementation clamps the quantile rank to
        [1, |S_cal| + 1]. For the appended-infinity order statistic, it uses the
        largest score in the current calibration set.
-    2) The controller can read ``acp.Q_k`` and write it into
+    2) The controller can read ``olacp.Q_k`` and write it into
        ``system.cp_quantile`` at the beginning of every interval.
     3) If `N_cal` is provided, S_cal is maintained as a
        moving FIFO window. Once the window is full, appending a new score
@@ -321,7 +322,7 @@ class ACP:
     def compute_quantile(self):
         """
         Return Q_k, the adaptive conformal quantile computed from the current
-        calibration set and the current ACP failure estimate delta_k.
+        calibration set and the current OLACP failure estimate delta_k.
         """
         S_cal_sort = np.sort(np.asarray(self.S_cal, dtype=float))
         

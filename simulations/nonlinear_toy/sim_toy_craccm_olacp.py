@@ -6,7 +6,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'
 from scipy.integrate import solve_ivp
 from systems.nonlinear_toy.nonlinear_toy import NONLINEAR_TOY
 from geodesic_solver import GeodesicSolver
-from acp import ACP
+from olacp import OLACP
 from motion_planner import MotionPlanner
 from scipy.interpolate import interp1d
 
@@ -107,23 +107,22 @@ Delta = lambda t: np.array([
     -0.01 + 0.8 * np.sin(2 * np.pi / 0.15 * t + 0.2),
 ], dtype=float)
 
-# Compute the initial calibration set for ACP
+# Compute the initial calibration set for OLACP
 Delta_data = [np.linalg.norm(Delta(t), 2) for t in np.arange(0.0, sim_T*20, 0.01)] 
 S_cal_init = []
 for k in range(0, len(Delta_data), I_length): 
     S_cal_init.append(np.max(Delta_data[k:k + I_length]))
 
-# Initialzie the ACP object
-acp = ACP(S_cal_init,
+# Initialize the OLACP object
+olacp = OLACP(S_cal_init,
           N_cal = 200,
-          lr = 0.05, # learning rate
+          acp_lr = 0.05, # learning rate
           delta_target = 0.05,
           delta_init = 0.2,
-          score_min = 0.0, # min possible score
           buffer_maxlen = 800
           )
 
-toy.cp_quantile = acp.Q_k
+toy.cp_quantile = olacp.Q_k
 
 # Time hisotry of logged data
 x_hist = np.zeros((toy.xdim, T_steps))
@@ -137,7 +136,7 @@ a_hat_ccm_hist = np.zeros((toy.adim, T_steps))
 a_true_hist = np.zeros((toy.adim, T_steps))
 nu_ccm_hist = np.zeros((T_steps,))
 rho_ccm_hist = np.zeros((T_steps,))
-# for acp debugging
+# for OLACP debugging
 a_k_hist = np.zeros((toy.adim, T_steps))
 s_k_hist = np.zeros((T_steps,))
 Q_k_hist = np.zeros((T_steps,))
@@ -182,19 +181,19 @@ for i in range(T_steps):
 
     # Adaptive conformal prediction
     Q_k_hist[i] = toy.cp_quantile
-    delta_k_hist[i] = acp.delta
-    acp.add_data_to_buffers(x, toy.dynamics_nominal(x,uc), toy.Y(x))
+    delta_k_hist[i] = olacp.delta
+    olacp.add_data_to_buffers(x, toy.dynamics_nominal(x,uc), toy.Y(x))
     if (i+1) % I_length == 0:
-        acp.estimate_uncertainty(dt)
-        s_k = acp.compute_score(toy.a_ub, toy.a_lb,) # acp.a_k is updated here
-        acp.update_delta(s_k)
-        acp.append_score(s_k)
-        toy.cp_quantile = acp.compute_quantile()
+        olacp.estimate_uncertainty(dt)
+        s_k = olacp.compute_score(toy.a_ub, toy.a_lb,) # olacp.a_k is updated here
+        olacp.update_delta(s_k)
+        olacp.append_score(s_k)
+        toy.cp_quantile = olacp.compute_quantile()
 
-        a_k_hist[:,(i-I_length+1):(i+1)] = acp.a_k.reshape(-1,1)
+        a_k_hist[:,(i-I_length+1):(i+1)] = olacp.a_k.reshape(-1,1)
         s_k_hist[(i-I_length+1):(i+1)] = s_k
         # Algorithm 1 fits a_k and s_k from the just-completed interval only.
-        acp.clear_buffers()
+        olacp.clear_buffers()
 
     # For debugging ###########################################
     # Lyapunov function
@@ -266,7 +265,7 @@ axs = axs.flatten()
 for i in range(toy.adim):
     axs[i].plot(tt, a_hat_ccm_hist[i, :], label='a_hat')
     axs[i].plot(tt, a_true_hist[i, :], label='a_true')
-    axs[i].plot(tt, a_k_hist[i, :], label='a_k of ACP', linestyle='--')
+    axs[i].plot(tt, a_k_hist[i, :], label='a_k of OLACP', linestyle='--')
     axs[i].legend()
     axs[i].grid(True)
     axs[i].set_ylabel(f"a{i}")
@@ -316,8 +315,8 @@ axs[0].legend()
 axs[0].set_ylabel('Q_k')
 axs[0].grid(True)
 axs[1].plot(tt, delta_k_hist, lw=1)
-axs[1].plot(tt, -np.ones_like(tt) * acp.lr, 'r--')
-axs[1].plot(tt, np.ones_like(tt) * (1+acp.lr), 'r--')
+axs[1].plot(tt, -np.ones_like(tt) * olacp.acp_lr, 'r--')
+axs[1].plot(tt, np.ones_like(tt) * (1+olacp.acp_lr), 'r--')
 axs[1].set_xlabel('Time (s)')
 axs[1].set_ylabel('delta_k')
 axs[1].grid(True)
