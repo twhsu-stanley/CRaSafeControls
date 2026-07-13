@@ -61,7 +61,7 @@ class StrictFeedbackSystem(ControlAffineSystem):
         theta = np.asarray(theta, dtype=float)
         if theta.shape != self.theta_shape:
             raise ValueError(f"theta must have shape {self.theta_shape}")
-        return self.psi(x) @ theta
+        return self._validate_Y_shape(self.psi(x) @ theta)
 
     def representation_loss_gradient(self, x, theta, a, w):
         """Return the analytic strict-feedback representation gradient."""
@@ -83,19 +83,18 @@ class StrictFeedbackSystem(ControlAffineSystem):
             raise ValueError(f"Theta_hat must have shape {self.theta_shape}")
         self.Theta_hat = Theta_hat.copy()
 
-        x_sym, f_sym, g_sym, Y_sym, a_sym = self.define_system_symbolic()
+        x_sym, f_sym, g_sym, a_sym = self.define_system_symbolic()
         clf_sym = self.define_clf_symbolic(x_sym, a_sym)
-        self.lambdify_symbolic_funcs(
+        self.lambdify_certificate_funcs(
             x_sym,
             f_sym,
             g_sym,
-            Y_sym,
             a_sym,
             clf_sym,
             None,
             None,
         )
-        self._lambdify_backstepping_coordinates()
+        self._lambdify_backstepping_coordinates(x_sym, a_sym)
 
     def define_system_symbolic(self):
         x1, x2, x3 = sp.symbols("x1 x2 x3", real=True)
@@ -103,20 +102,11 @@ class StrictFeedbackSystem(ControlAffineSystem):
 
         f = sp.Matrix([x2, x3, 0])
         g = sp.Matrix([0, 0, 1])
-        Psi = sp.Matrix(
-            [
-                [x1, x1**2, x1**3],
-                [0, 0, 0],
-                [0, 0, 0],
-            ]
-        )
-        Theta = sp.Matrix(self.Theta_hat.tolist())
-        Y = Psi @ Theta
 
         a1, a2 = sp.symbols("a1 a2", real=True)
         a = sp.Matrix([a1, a2])
 
-        return x, f, g, Y, a
+        return x, f, g, a
 
     def define_clf_symbolic(self, x, a):
         x1, x2, x3 = x
@@ -147,10 +137,11 @@ class StrictFeedbackSystem(ControlAffineSystem):
 
         return sp.simplify(clf)
 
-    def _lambdify_backstepping_coordinates(self):
-        x_sym, _, _, _, a_sym = self.define_system_symbolic()
-        # Rebuild these expressions using the same symbolic state objects.
-        self.define_clf_symbolic(x_sym, a_sym)
+    def _lambdify_backstepping_coordinates(self, x_sym=None, a_sym=None):
+        if x_sym is None or a_sym is None:
+            x_sym, _, _, a_sym = self.define_system_symbolic()
+            # Build expressions using the same symbolic state objects.
+            self.define_clf_symbolic(x_sym, a_sym)
         self._z_function = sp.lambdify(
             [x_sym, a_sym], self._z_sym, modules="numpy"
         )

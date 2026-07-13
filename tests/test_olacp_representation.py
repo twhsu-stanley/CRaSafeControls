@@ -178,9 +178,13 @@ class TestStrictFeedbackRepresentation(unittest.TestCase):
         x = np.array([0.4, 0.1, -0.2])
         a = np.array([0.2, -0.1])
         theta_next = self.theta + 0.05
+        f_before = self.system.f
+        g_before = self.system.g
 
         self.system.set_representation(theta_next)
 
+        self.assertIs(self.system.f, f_before)
+        self.assertIs(self.system.g, g_before)
         np.testing.assert_allclose(
             self.system.Y(x), self.system.Y_theta(x, theta_next)
         )

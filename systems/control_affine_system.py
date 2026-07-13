@@ -18,17 +18,16 @@ class ControlAffineSystem:
         self.weight_slack = self.params.get("weight_slack", 100)
         self.dt = self.params.get("dt")
 
-        # Let subclass define symbolic system
-        x_sym, f_sym, g_sym, Y_sym, a_sym = self.define_system_symbolic()
+        # Let subclass define the nominal symbolic system and uncertainty
+        # parameter symbols. The uncertainty regressor itself is numerical.
+        x_sym, f_sym, g_sym, a_sym = self.define_system_symbolic()
         self.xdim = x_sym.shape[0]
         self.udim = g_sym.shape[1]
-        self.adim = Y_sym.shape[1]
+        self.adim = a_sym.shape[0]
         if f_sym.shape[0] != x_sym.shape[0]:
             raise ValueError(f"Dimension mismatch: f(x) has {f_sym.shape[0]} rows, but x has {x_sym.shape[0]} elements")
         if g_sym.shape[0] != x_sym.shape[0]:
             raise ValueError(f"Dimension mismatch: g(x) has {g_sym.shape[0]} rows, but x has {x_sym.shape[0]} elements")
-        if Y_sym.shape[1] != a_sym.shape[0]:
-            raise ValueError(f"Dimension mismatch: Y(x) has {Y_sym.shape[1]} columns, but a has {a_sym.shape[0]} elements")
 
         # True uncertainty parameters
         self.a_true = np.copy(self.params["a_true"]) if "a_true" in self.params else np.zeros((self.adim,1))
@@ -52,7 +51,9 @@ class ControlAffineSystem:
 
         # Convert symbolic functions into Python functions
         # TODO: also handle symbolic CCMs
-        self.lambdify_symbolic_funcs(x_sym, f_sym, g_sym, Y_sym, a_sym, clf_sym, cbf_sym, ccm_sym)
+        self.lambdify_symbolic_funcs(
+            x_sym, f_sym, g_sym, a_sym, clf_sym, cbf_sym, ccm_sym
+        )
 
         self.a_ub = self.params["a_ub"]
         self.a_lb = self.params["a_lb"]
@@ -60,8 +61,12 @@ class ControlAffineSystem:
             raise ValueError("a_ub and a_lb must have the same shape")
         if np.any(self.a_lb > self.a_ub):
             raise ValueError("a_lb must be less than or equal to a_ub")
-        if self.a_lb.shape[0] != Y_sym.shape[1] or self.a_ub.shape[0] != Y_sym.shape[1]:
-            raise ValueError(f"Dimension mismatch: Y(x) has {Y_sym.shape[1]} columns, but a_lb has length {self.a_lb.shape[0]} and a_ub has length {self.a_ub.shape[0]}")
+        if self.a_lb.shape[0] != self.adim or self.a_ub.shape[0] != self.adim:
+            raise ValueError(
+                f"Dimension mismatch: a has length {self.adim}, but a_lb has "
+                f"length {self.a_lb.shape[0]} and a_ub has length "
+                f"{self.a_ub.shape[0]}"
+            )
         
         self.a_center = 0.5 * (self.a_ub + self.a_lb) # center of the convex set where a_hat belongs to
         self.a_hat_norm_max = self.params["a_hat_norm_max"] # upper bound of ||a_hat - a_center||
@@ -91,7 +96,17 @@ class ControlAffineSystem:
 
     def Y(self, x):
         """Evaluate the currently installed uncertainty regressor."""
-        return self._Y_fcn(x)
+        raise NotImplementedError("Y is not implemented for this system")
+
+    def _validate_Y_shape(self, Yx):
+        """Validate and return a numerical uncertainty-regressor matrix."""
+        Yx = np.asarray(Yx, dtype=float)
+        expected_shape = (self.xdim, self.adim)
+        if Yx.shape != expected_shape:
+            raise ValueError(
+                f"Y(x) must have shape {expected_shape}, got {Yx.shape}"
+            )
+        return Yx
 
     def Y_theta(self, x, theta):
         """Evaluate a candidate representation Y_theta(x).
@@ -143,13 +158,18 @@ class ControlAffineSystem:
     def define_ccm_symbolic(self, x_sym, a_sym=None):
         pass
 
-    def lambdify_symbolic_funcs(self, x_sym, f_sym, g_sym, Y_sym, a_sym, clf_sym=None, cbf_sym=None, ccm_sym=None):
-        if x_sym is None or f_sym is None or g_sym is None or Y_sym is None or a_sym is None:
-            raise ValueError("Symbolic x, f, g, Y, and a must be defined")
+    def lambdify_symbolic_funcs(self, x_sym, f_sym, g_sym, a_sym, clf_sym=None, cbf_sym=None, ccm_sym=None):
+        if x_sym is None or f_sym is None or g_sym is None or a_sym is None:
+            raise ValueError("Symbolic x, f, g, and a must be defined")
 
         self.f = sp.lambdify([x_sym], f_sym, modules='numpy')
         self.g = sp.lambdify([x_sym], g_sym, modules='numpy')
-        self._Y_fcn = sp.lambdify([x_sym], Y_sym, modules='numpy')
+        self.lambdify_certificate_funcs(
+            x_sym, f_sym, g_sym, a_sym, clf_sym, cbf_sym, ccm_sym
+        )
+
+    def lambdify_certificate_funcs(self, x_sym, f_sym, g_sym, a_sym, clf_sym=None, cbf_sym=None, ccm_sym=None):
+        """Lambdify CLF/CBF/CCM expressions without rebuilding f and g."""
 
         # CBF
         if cbf_sym is not None:
