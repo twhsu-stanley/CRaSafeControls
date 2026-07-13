@@ -52,6 +52,30 @@ class StrictFeedbackSystem(ControlAffineSystem):
             dtype=float,
         )
 
+    def Y(self, x):
+        """Evaluate the currently installed strict-feedback representation."""
+        return self.Y_theta(x, self.Theta_hat)
+
+    def Y_theta(self, x, theta):
+        """Evaluate Y_theta(x) = Psi(x) @ theta."""
+        theta = np.asarray(theta, dtype=float)
+        if theta.shape != self.theta_shape:
+            raise ValueError(f"theta must have shape {self.theta_shape}")
+        return self.psi(x) @ theta
+
+    def representation_loss_gradient(self, x, theta, a, w):
+        """Return the analytic strict-feedback representation gradient."""
+        a = np.asarray(a, dtype=float).reshape(-1)
+        w = np.asarray(w, dtype=float).reshape(-1)
+        if a.size != self.adim:
+            raise ValueError(f"a must have length {self.adim}")
+        if w.size != self.xdim:
+            raise ValueError(f"w must have length {self.xdim}")
+
+        Psi_x = self.psi(x)
+        residual = self.Y_theta(x, theta) @ a - w
+        return 2.0 * np.outer(Psi_x.T @ residual, a)
+
     def set_representation(self, Theta_hat):
         """Install a new representation and regenerate symbolic derivatives."""
         Theta_hat = np.asarray(Theta_hat, dtype=float)

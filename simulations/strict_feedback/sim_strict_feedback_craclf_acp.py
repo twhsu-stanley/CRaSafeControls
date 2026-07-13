@@ -87,17 +87,13 @@ for k in range(N_cal):
     Y_cal = []
     w_cal = []
     for x1 in x1_cal:
-        Psi_x = np.array(
-            [
-                [x1, x1**2, x1**3],
-                [0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0],
-            ]
+        x_cal = np.array([x1, 0.0, 0.0])
+        Y_cal.append(
+            system.Y_theta(x_cal, Theta_init)
         )
-        Y_cal.append(Psi_x @ Theta_init)
         w_cal.append(
             true_uncertainty(
-                np.array([x1, 0.0, 0.0]), k * interval_duration
+                x_cal, k * interval_duration
             )
         )
 
@@ -125,7 +121,10 @@ acp = ACP(
     representation_lr=lambda j: 2e-4 / j,
     theta_lb=-2.0,
     theta_ub=2.0,
+    Y_theta=system.Y_theta,
+    representation_loss_gradient=system.representation_loss_gradient,
 )
+system.set_representation(acp.Theta)
 system.cp_quantile = acp.Q_k
 
 # Simulation initialization.
@@ -167,8 +166,6 @@ for i, t in enumerate(tt):
     acp.add_data_to_buffers(
         x,
         system.dynamics_nominal(x, u),
-        system.Y(x),
-        Psi_x=system.psi(x),
         xdot=system.dynamics(x, u, t),
     )
 
@@ -198,7 +195,7 @@ for i, t in enumerate(tt):
         s_k = acp.compute_score(system.a_ub, system.a_lb)
         e_k = acp.update_delta(s_k)
         acp.append_score(s_k)
-        representation_update = acp.update_representation(acp.a_k)
+        representation_update = acp.update_representation()
 
         interval_start = i - I_length + 1
         a_k_hist[interval_start : i + 1] = acp.a_k

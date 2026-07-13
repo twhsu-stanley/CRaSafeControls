@@ -88,6 +88,42 @@ class ControlAffineSystem:
     def dynamics(self, x, u):
         pass
         #return (self.f(x) + self.g(x) @ u + self.Y(x) @ self.a_true.reshape(-1,1)).ravel()
+
+    def Y(self, x):
+        """Evaluate the currently installed uncertainty regressor."""
+        return self._Y_fcn(x)
+
+    def Y_theta(self, x, theta):
+        """Evaluate a candidate representation Y_theta(x).
+
+        Representation-learning subclasses must override this method. The
+        dependence on ``theta`` may be arbitrary, including a neural network,
+        but the result must have shape ``(xdim, adim)`` so the uncertainty
+        remains linear in the interval parameter ``a``. A numerical neural
+        subclass must also override ``Y`` and ``set_representation`` so the
+        controller uses the installed weights.
+        """
+        raise NotImplementedError("Y_theta is not implemented for this system")
+
+    def representation_loss_gradient(self, x, theta, a, w):
+        """Return grad_theta ||Y_theta(x) @ a - w||_2**2.
+
+        A neural representation can implement this hook with backpropagation
+        and return its weights as one packed NumPy array.
+        """
+        raise NotImplementedError(
+            "Representation-loss gradient is not implemented for this system"
+        )
+
+    def set_representation(self, theta):
+        """Install representation parameters used by the controller.
+
+        If a CLF, CBF, or CCM also depends on ``theta``, a general numerical
+        or neural subclass must refresh or override its corresponding
+        derivatives here. StrictFeedbackSystem demonstrates the symbolic
+        rebuild used for its feature representation.
+        """
+        raise NotImplementedError("Representation updates are not implemented")
     
     def dynamics_nominal(self, x, u):
         return (self.f(x) + self.g(x) @ u).ravel()
@@ -113,7 +149,7 @@ class ControlAffineSystem:
 
         self.f = sp.lambdify([x_sym], f_sym, modules='numpy')
         self.g = sp.lambdify([x_sym], g_sym, modules='numpy')
-        self.Y = sp.lambdify([x_sym], Y_sym, modules='numpy')
+        self._Y_fcn = sp.lambdify([x_sym], Y_sym, modules='numpy')
 
         # CBF
         if cbf_sym is not None:
@@ -124,7 +160,10 @@ class ControlAffineSystem:
             self.dcbfdx = sp.lambdify([x_sym, a_sym], dcbfdx, modules='numpy')
             self.lf_cbf = sp.lambdify([x_sym, a_sym], dcbfdx.T @ f_sym, modules='numpy')
             self.lg_cbf = sp.lambdify([x_sym, a_sym], dcbfdx.T @ g_sym, modules='numpy')
-            self.lY_cbf = sp.lambdify([x_sym, a_sym], dcbfdx.T @ Y_sym, modules='numpy')
+            self.lY_cbf = lambda x, a: (
+                np.asarray(self.dcbfdx(x, a), dtype=float).reshape(self.xdim, 1).T
+                @ np.asarray(self.Y(x), dtype=float).reshape(self.xdim, self.adim)
+            )
 
             dcbfda = sp.simplify(sp.derive_by_array(cbf_sym, a_sym))
             dcbfda = sp.Matrix(dcbfda)  # Convert to Matrix for compatibility
@@ -139,7 +178,10 @@ class ControlAffineSystem:
             self.dclfdx = sp.lambdify([x_sym, a_sym], dclfdx, modules='numpy')
             self.lf_clf = sp.lambdify([x_sym, a_sym], dclfdx.T @ f_sym, modules='numpy')
             self.lg_clf = sp.lambdify([x_sym, a_sym], dclfdx.T @ g_sym, modules='numpy')
-            self.lY_clf = sp.lambdify([x_sym, a_sym], dclfdx.T @ Y_sym, modules='numpy')
+            self.lY_clf = lambda x, a: (
+                np.asarray(self.dclfdx(x, a), dtype=float).reshape(self.xdim, 1).T
+                @ np.asarray(self.Y(x), dtype=float).reshape(self.xdim, self.adim)
+            )
     
             dclfda = sp.simplify(sp.derive_by_array(clf_sym, a_sym))
             dclfda = sp.Matrix(dclfda)

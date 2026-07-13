@@ -17,10 +17,14 @@ class ACP:
     3) If `N_cal` is provided, S_cal is maintained as a
        moving FIFO window. Once the window is full, appending a new score
        automatically drops the oldest score.
-    4) Representation learning is enabled by supplying ``theta_init`` and
-       samples of Psi(x) to ``add_data_to_buffers``. The model is
-       ``Y_Theta(x) = Psi(x) @ Theta``. Call ``update_representation`` once
-       after fitting a_k and before clearing the interval buffers.
+    4) Representation learning is enabled by supplying ``theta_init``, a
+       callable ``Y_theta(x, theta)``, and a callable
+       ``representation_loss_gradient(x, theta, a, w)``. The first callable
+       may have any structure (for example, a feature model or neural network)
+       as long as it returns the matrix Y_Theta(x). The second returns the
+       gradient of ``||Y_Theta(x) @ a - w||_2**2`` with respect to theta.
+       Call ``update_representation`` once after fitting a_k and before
+       clearing the interval buffers.
     """
 
     def __init__(
@@ -36,6 +40,8 @@ class ACP:
         representation_lr=1e-3,
         theta_lb=None,
         theta_ub=None,
+        Y_theta=None,
+        representation_loss_gradient=None,
     ):
         if N_cal < 100:
             raise ValueError("N_cal must be at least 100")
@@ -67,12 +73,13 @@ class ACP:
         self._xdot_nom_buffer = deque(maxlen=self.buffer_maxlen) # to store f(x_t) + g(x_t) u_t
         self._Y_buffer = deque(maxlen=self.buffer_maxlen) # to store Y(x_t)
         self._w_buffer = deque(maxlen=self.buffer_maxlen) # to store w_t
-        self._Psi_buffer = deque(maxlen=self.buffer_maxlen) # to store Psi(x_t)
 
         # Optional block-wise representation learning (lines 19--23).
         self.Theta = None if theta_init is None else np.asarray(theta_init, dtype=float).copy()
         self.representation_period = int(representation_period)
         self.representation_lr = representation_lr
+        self.Y_theta = Y_theta
+        self.representation_loss_gradient = representation_loss_gradient
         self.theta_lb = theta_lb
         self.theta_ub = theta_ub
         self.interval_index = 0
@@ -81,8 +88,15 @@ class ACP:
         self.last_representation_gradient = None
 
         if self.Theta is not None:
-            if self.Theta.ndim != 2:
-                raise ValueError("theta_init must be a two-dimensional matrix")
+            if self.Theta.size == 0:
+                raise ValueError("theta_init must be nonempty")
+            if not callable(self.Y_theta):
+                raise TypeError("Y_theta must be callable when theta_init is provided")
+            if not callable(self.representation_loss_gradient):
+                raise TypeError(
+                    "representation_loss_gradient must be callable when "
+                    "theta_init is provided"
+                )
             if self.representation_period < 1:
                 raise ValueError("representation_period must be at least 1")
             if (theta_lb is None) != (theta_ub is None):
@@ -98,26 +112,45 @@ class ACP:
                     raise ValueError("theta_lb must be less than or equal to theta_ub")
                 self.Theta = np.clip(self.Theta, self.theta_lb, self.theta_ub)
 
-    def add_data_to_buffers(self, x, xdot_nom, Yx=None, Psi_x=None, xdot=None):
+    def add_data_to_buffers(self, x, xdot_nom, Yx=None, xdot=None):
         """Append one sample from the current interval.
 
         ``Yx`` remains optional only when representation learning is enabled;
-        in that case it is evaluated as ``Psi_x @ self.Theta``.
+        in that case it is evaluated as ``Y_theta(x, self.Theta)``.
         """
         if Yx is None:
-            if self.Theta is None or Psi_x is None:
-                raise ValueError("Yx is required unless both theta_init and Psi_x are provided")
-            Yx = np.asarray(Psi_x, dtype=float) @ self.Theta
-        if self.Theta is not None and Psi_x is None:
-            raise ValueError("Psi_x is required when representation learning is enabled")
+            if self.Theta is None:
+                raise ValueError("Yx is required when representation learning is disabled")
+            Yx = self.Y_theta(x, self.Theta)
 
-        self._x_buffer.append(np.asarray(x, dtype=float).copy())
-        self._xdot_nom_buffer.append(np.asarray(xdot_nom, dtype=float).copy())
+        Yx = np.asarray(Yx, dtype=float)
+        if Yx.ndim != 2:
+            raise ValueError("Yx must be a two-dimensional matrix")
+
+        xdot_nom = np.asarray(xdot_nom, dtype=float).reshape(-1)
+        if Yx.shape[0] != xdot_nom.size:
+            raise ValueError(
+                "Yx must have one row per state derivative: expected "
+                f"{xdot_nom.size}, got {Yx.shape[0]}"
+            )
+        if self._Y_buffer and Yx.shape != self._Y_buffer[0].shape:
+            raise ValueError(
+                "Yx shape must remain constant within an interval: expected "
+                f"{self._Y_buffer[0].shape}, got {Yx.shape}"
+            )
+
         if xdot is not None:
-            self._xdot_buffer.append(np.asarray(xdot, dtype=float).copy())
-        self._Y_buffer.append(np.asarray(Yx, dtype=float).copy())
-        if Psi_x is not None:
-            self._Psi_buffer.append(np.asarray(Psi_x, dtype=float).copy())
+            xdot = np.asarray(xdot, dtype=float).reshape(-1)
+            if xdot.size != xdot_nom.size:
+                raise ValueError(
+                    "xdot and xdot_nom must contain the same number of elements"
+                )
+
+        self._x_buffer.append(np.asarray(x, dtype=float).reshape(-1).copy())
+        self._xdot_nom_buffer.append(xdot_nom.copy())
+        if xdot is not None:
+            self._xdot_buffer.append(xdot.copy())
+        self._Y_buffer.append(Yx.copy())
 
     def clear_buffers(self):
         self._x_buffer = deque(maxlen=self.buffer_maxlen)
@@ -125,7 +158,6 @@ class ACP:
         self._xdot_nom_buffer = deque(maxlen=self.buffer_maxlen)
         self._Y_buffer = deque(maxlen=self.buffer_maxlen)
         self._w_buffer = deque(maxlen=self.buffer_maxlen)
-        self._Psi_buffer = deque(maxlen=self.buffer_maxlen)
 
     def estimate_uncertainty(self, dt):
         """
@@ -166,6 +198,20 @@ class ACP:
         if len(self._Y_buffer) != len(self._w_buffer):
             raise ValueError("Y and uncertainty buffers have inconsistent lengths")
 
+        parameter_dimension = self._Y_buffer[0].shape[1]
+        a_lb = np.asarray(a_lb, dtype=float)
+        a_ub = np.asarray(a_ub, dtype=float)
+        if a_lb.size not in {1, parameter_dimension}:
+            raise ValueError(
+                f"a_lb must be scalar or have length {parameter_dimension}"
+            )
+        if a_ub.size not in {1, parameter_dimension}:
+            raise ValueError(
+                f"a_ub must be scalar or have length {parameter_dimension}"
+            )
+        a_lb = float(a_lb.item()) if a_lb.size == 1 else a_lb.reshape(-1)
+        a_ub = float(a_ub.item()) if a_ub.size == 1 else a_ub.reshape(-1)
+
         # Fit the fictitious true parameter a_k.
         Y_stack = np.vstack(self._Y_buffer) # shape: (#sample * xdim, adim)
         w_stack = np.hstack(self._w_buffer) # shape: (#sample * xdim, )
@@ -193,16 +239,16 @@ class ACP:
 
         The gradient treats every fitted a_k as fixed, exactly as line 21:
 
-            grad_Theta sum ||Psi(x_t) Theta a_k - w_t||^2.
+            grad_Theta sum ||Y_Theta(x_t) a_k - w_t||^2.
 
         Returns ``None`` between representation updates. At an update, returns
         a dictionary containing the new Theta, gradient, and learning rate.
         """
         if self.Theta is None:
             return None
-        if len(self._Psi_buffer) != len(self._w_buffer):
-            raise ValueError("Psi and uncertainty buffers have inconsistent lengths")
-        if len(self._Psi_buffer) == 0:
+        if len(self._x_buffer) != len(self._w_buffer):
+            raise ValueError("State and uncertainty buffers have inconsistent lengths")
+        if len(self._x_buffer) == 0:
             raise ValueError("No interval data are available for representation learning")
 
         if a_k is None:
@@ -212,7 +258,7 @@ class ACP:
         a_k = np.asarray(a_k, dtype=float).reshape(-1)
 
         self._representation_intervals.append({
-            "Psi": np.asarray(self._Psi_buffer, dtype=float).copy(),
+            "x": np.asarray(self._x_buffer, dtype=float).copy(),
             "w": np.asarray(self._w_buffer, dtype=float).copy(),
             "a": a_k.copy(),
         })
@@ -224,9 +270,20 @@ class ACP:
         gradient = np.zeros_like(self.Theta)
         for interval in self._representation_intervals:
             a_interval = interval["a"]
-            for Psi_t, w_t in zip(interval["Psi"], interval["w"]):
-                residual = Psi_t @ self.Theta @ a_interval - w_t
-                gradient += 2.0 * np.outer(Psi_t.T @ residual, a_interval)
+            for x_t, w_t in zip(interval["x"], interval["w"]):
+                sample_gradient = np.asarray(
+                    self.representation_loss_gradient(
+                        x_t, self.Theta, a_interval, w_t
+                    ),
+                    dtype=float,
+                )
+                if sample_gradient.shape != self.Theta.shape:
+                    raise ValueError(
+                        "representation_loss_gradient must return an array "
+                        f"with shape {self.Theta.shape}, got "
+                        f"{sample_gradient.shape}"
+                    )
+                gradient += sample_gradient
 
         self.representation_update_index += 1
         representation_lr = self._representation_learning_rate(self.representation_update_index)
