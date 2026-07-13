@@ -178,13 +178,13 @@ class TestStrictFeedbackRepresentation(unittest.TestCase):
         x = np.array([0.4, 0.1, -0.2])
         a = np.array([0.2, -0.1])
         theta_next = self.theta + 0.05
-        f_before = self.system.f
-        g_before = self.system.g
+        clf_function_before = self.system._clf_function
+        gradient_function_before = self.system._dclfdx_function
 
         self.system.set_representation(theta_next)
 
-        self.assertIs(self.system.f, f_before)
-        self.assertIs(self.system.g, g_before)
+        self.assertIs(self.system._clf_function, clf_function_before)
+        self.assertIs(self.system._dclfdx_function, gradient_function_before)
         np.testing.assert_allclose(
             self.system.Y(x), self.system.Y_theta(x, theta_next)
         )
@@ -194,6 +194,44 @@ class TestStrictFeedbackRepresentation(unittest.TestCase):
         )
         np.testing.assert_allclose(
             self.system.lY_clf(x, a), expected_lie_derivative
+        )
+
+    def test_compiled_clf_gradients_match_finite_differences(self):
+        x = np.array([0.35, -0.25, 0.15])
+        a = np.array([0.2, -0.3])
+        epsilon = 1e-6
+
+        state_gradient = np.zeros(self.system.xdim)
+        for index in range(self.system.xdim):
+            x_plus = x.copy()
+            x_minus = x.copy()
+            x_plus[index] += epsilon
+            x_minus[index] -= epsilon
+            state_gradient[index] = (
+                self.system.clf(x_plus, a) - self.system.clf(x_minus, a)
+            ) / (2.0 * epsilon)
+
+        parameter_gradient = np.zeros(self.system.adim)
+        for index in range(self.system.adim):
+            a_plus = a.copy()
+            a_minus = a.copy()
+            a_plus[index] += epsilon
+            a_minus[index] -= epsilon
+            parameter_gradient[index] = (
+                self.system.clf(x, a_plus) - self.system.clf(x, a_minus)
+            ) / (2.0 * epsilon)
+
+        np.testing.assert_allclose(
+            self.system.dclfdx(x, a).reshape(-1),
+            state_gradient,
+            rtol=1e-6,
+            atol=1e-8,
+        )
+        np.testing.assert_allclose(
+            self.system.dclfda(x, a).reshape(-1),
+            parameter_gradient,
+            rtol=1e-6,
+            atol=1e-8,
         )
 
 

@@ -1,7 +1,5 @@
 import numpy as np
-import sympy as sp
 from qpsolvers import solve_qp
-from utils import *
 
 class ControlAffineSystem:
     def __init__(self, params=None):
@@ -18,16 +16,12 @@ class ControlAffineSystem:
         self.weight_slack = self.params.get("weight_slack", 100)
         self.dt = self.params.get("dt")
 
-        # Let subclass define the nominal symbolic system and uncertainty
-        # parameter symbols. The uncertainty regressor itself is numerical.
-        x_sym, f_sym, g_sym, a_sym = self.define_system_symbolic()
-        self.xdim = x_sym.shape[0]
-        self.udim = g_sym.shape[1]
-        self.adim = a_sym.shape[0]
-        if f_sym.shape[0] != x_sym.shape[0]:
-            raise ValueError(f"Dimension mismatch: f(x) has {f_sym.shape[0]} rows, but x has {x_sym.shape[0]} elements")
-        if g_sym.shape[0] != x_sym.shape[0]:
-            raise ValueError(f"Dimension mismatch: g(x) has {g_sym.shape[0]} rows, but x has {x_sym.shape[0]} elements")
+        # Subclasses provide numerical dynamics and explicit dimensions.
+        for name in ("xdim", "udim", "adim"):
+            value = self.params.get(name, getattr(self, name, None))
+            if value is None or int(value) != value or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+            setattr(self, name, int(value))
 
         # True uncertainty parameters
         self.a_true = np.copy(self.params["a_true"]) if "a_true" in self.params else np.zeros((self.adim,1))
@@ -42,21 +36,8 @@ class ControlAffineSystem:
         self.Gamma_clf = self.params.get("Gamma_clf", None)
         self.Gamma_ccm = self.params.get("Gamma_ccm", None)
 
-        # Define symbolic CLF, CBF, and CCM
-        # NOTE: To be general and to handle both regular and adaptive CLF/CBF/CCM, 
-        #       these functions depend on the uncertainty parameters. 
-        clf_sym = self.define_clf_symbolic(x_sym, a_sym)
-        cbf_sym = self.define_cbf_symbolic(x_sym, a_sym)
-        ccm_sym = self.define_ccm_symbolic(x_sym, a_sym)
-
-        # Convert symbolic functions into Python functions
-        # TODO: also handle symbolic CCMs
-        self.lambdify_symbolic_funcs(
-            x_sym, f_sym, g_sym, a_sym, clf_sym, cbf_sym, ccm_sym
-        )
-
-        self.a_ub = self.params["a_ub"]
-        self.a_lb = self.params["a_lb"]
+        self.a_ub = np.asarray(self.params["a_ub"], dtype=float).reshape(-1)
+        self.a_lb = np.asarray(self.params["a_lb"], dtype=float).reshape(-1)
         if self.a_ub.shape != self.a_lb.shape:
             raise ValueError("a_ub and a_lb must have the same shape")
         if np.any(self.a_lb > self.a_ub):
@@ -91,8 +72,15 @@ class ControlAffineSystem:
                 self.safe_set_tightening = 0.0
 
     def dynamics(self, x, u):
-        pass
-        #return (self.f(x) + self.g(x) @ u + self.Y(x) @ self.a_true.reshape(-1,1)).ravel()
+        raise NotImplementedError("Dynamics are not implemented for this system")
+
+    def f(self, x):
+        """Evaluate the nominal drift as an ``xdim``-vector."""
+        raise NotImplementedError("f is not implemented for this system")
+
+    def g(self, x):
+        """Evaluate the control matrix with shape ``(xdim, udim)``."""
+        raise NotImplementedError("g is not implemented for this system")
 
     def Y(self, x):
         """Evaluate the currently installed uncertainty regressor."""
@@ -133,100 +121,59 @@ class ControlAffineSystem:
     def set_representation(self, theta):
         """Install representation parameters used by the controller.
 
-        If a CLF, CBF, or CCM also depends on ``theta``, a general numerical
-        or neural subclass must refresh or override its corresponding
-        derivatives here. StrictFeedbackSystem demonstrates the symbolic
-        rebuild used for its feature representation.
+        Certificate functions should accept the installed parameters at
+        runtime. Neural subclasses can instead update their model state here.
         """
         raise NotImplementedError("Representation updates are not implemented")
+
+    def clf(self, x, a):
+        raise NotImplementedError("CLF is not implemented for this system")
+
+    def dclfdx(self, x, a):
+        raise NotImplementedError("CLF state gradient is not implemented")
+
+    def dclfda(self, x, a):
+        raise NotImplementedError("CLF parameter gradient is not implemented")
+
+    def cbf(self, x, a):
+        raise NotImplementedError("CBF is not implemented for this system")
+
+    def dcbfdx(self, x, a):
+        raise NotImplementedError("CBF state gradient is not implemented")
+
+    def dcbfda(self, x, a):
+        raise NotImplementedError("CBF parameter gradient is not implemented")
+
+    def lf_clf(self, x, a):
+        gradient = np.asarray(self.dclfdx(x, a), dtype=float).reshape(1, self.xdim)
+        return gradient @ self.f(x)
+
+    def lg_clf(self, x, a):
+        gradient = np.asarray(self.dclfdx(x, a), dtype=float).reshape(1, self.xdim)
+        return gradient @ self.g(x)
+
+    def lY_clf(self, x, a):
+        gradient = np.asarray(self.dclfdx(x, a), dtype=float).reshape(1, self.xdim)
+        return gradient @ self._validate_Y_shape(self.Y(x))
+
+    def lf_cbf(self, x, a):
+        gradient = np.asarray(self.dcbfdx(x, a), dtype=float).reshape(1, self.xdim)
+        return gradient @ self.f(x)
+
+    def lg_cbf(self, x, a):
+        gradient = np.asarray(self.dcbfdx(x, a), dtype=float).reshape(1, self.xdim)
+        return gradient @ self.g(x)
+
+    def lY_cbf(self, x, a):
+        gradient = np.asarray(self.dcbfdx(x, a), dtype=float).reshape(1, self.xdim)
+        return gradient @ self._validate_Y_shape(self.Y(x))
     
     def dynamics_nominal(self, x, u):
-        return (self.f(x) + self.g(x) @ u).ravel()
+        u = np.asarray(u, dtype=float).reshape(self.udim)
+        return self.f(x) + self.g(x) @ u
 
     def ctrl_nominal(self, x):
         raise NotImplementedError("Nominal control not implemented.")
-
-    def define_system_symbolic(self):
-        raise NotImplementedError("System definition not implemented.")
-
-    def define_clf_symbolic(self, x_sym, a_hat_clf=None):
-        pass
-
-    def define_cbf_symbolic(self, x_sym, a_hat_cbf=None):
-        pass
-
-    def define_ccm_symbolic(self, x_sym, a_sym=None):
-        pass
-
-    def lambdify_symbolic_funcs(self, x_sym, f_sym, g_sym, a_sym, clf_sym=None, cbf_sym=None, ccm_sym=None):
-        if x_sym is None or f_sym is None or g_sym is None or a_sym is None:
-            raise ValueError("Symbolic x, f, g, and a must be defined")
-
-        self.f = sp.lambdify([x_sym], f_sym, modules='numpy')
-        self.g = sp.lambdify([x_sym], g_sym, modules='numpy')
-        self.lambdify_certificate_funcs(
-            x_sym, f_sym, g_sym, a_sym, clf_sym, cbf_sym, ccm_sym
-        )
-
-    def lambdify_certificate_funcs(self, x_sym, f_sym, g_sym, a_sym, clf_sym=None, cbf_sym=None, ccm_sym=None):
-        """Lambdify CLF/CBF/CCM expressions without rebuilding f and g."""
-
-        # CBF
-        if cbf_sym is not None:
-            self.cbf = sp.lambdify([x_sym, a_sym], cbf_sym, modules='numpy')
-
-            dcbfdx = sp.simplify(sp.derive_by_array(cbf_sym, x_sym))
-            dcbfdx = sp.Matrix(dcbfdx)  # Convert to Matrix for compatibility
-            self.dcbfdx = sp.lambdify([x_sym, a_sym], dcbfdx, modules='numpy')
-            self.lf_cbf = sp.lambdify([x_sym, a_sym], dcbfdx.T @ f_sym, modules='numpy')
-            self.lg_cbf = sp.lambdify([x_sym, a_sym], dcbfdx.T @ g_sym, modules='numpy')
-            self.lY_cbf = lambda x, a: (
-                np.asarray(self.dcbfdx(x, a), dtype=float).reshape(self.xdim, 1).T
-                @ np.asarray(self.Y(x), dtype=float).reshape(self.xdim, self.adim)
-            )
-
-            dcbfda = sp.simplify(sp.derive_by_array(cbf_sym, a_sym))
-            dcbfda = sp.Matrix(dcbfda)  # Convert to Matrix for compatibility
-            self.dcbfda = sp.lambdify([x_sym, a_sym], dcbfda, modules='numpy')
-
-        # CLF
-        if clf_sym is not None:
-            self.clf = sp.lambdify([x_sym, a_sym], clf_sym, modules='numpy')
-            
-            dclfdx = sp.simplify(sp.derive_by_array(clf_sym, x_sym))
-            dclfdx = sp.Matrix(dclfdx)  # Convert to Matrix for compatibility
-            self.dclfdx = sp.lambdify([x_sym, a_sym], dclfdx, modules='numpy')
-            self.lf_clf = sp.lambdify([x_sym, a_sym], dclfdx.T @ f_sym, modules='numpy')
-            self.lg_clf = sp.lambdify([x_sym, a_sym], dclfdx.T @ g_sym, modules='numpy')
-            self.lY_clf = lambda x, a: (
-                np.asarray(self.dclfdx(x, a), dtype=float).reshape(self.xdim, 1).T
-                @ np.asarray(self.Y(x), dtype=float).reshape(self.xdim, self.adim)
-            )
-    
-            dclfda = sp.simplify(sp.derive_by_array(clf_sym, a_sym))
-            dclfda = sp.Matrix(dclfda)
-            self.dclfda = sp.lambdify([x_sym, a_sym], dclfda, modules='numpy')
-
-        # CCM
-        if ccm_sym is not None:
-            ccm_sym = sp.simplify(ccm_sym)
-            self.W_fcn = sp.lambdify([x_sym, a_sym], ccm_sym, modules='numpy')
-            
-            # Partial derivative of W with respect to x
-            dWdx = []
-            for i in range(self.xdim):
-                dWdxi = sp.simplify(sp.derive_by_array(ccm_sym, x_sym[i]))
-                dWdxi = sp.Matrix(dWdxi)  # Convert to Matrix for compatibility
-                dWdx.append(sp.lambdify([x_sym, a_sym], dWdxi, modules='numpy'))
-            self.dW_dxi_fcn = lambda i, x, a: dWdx[i](x, a)
-
-            # Partial derivative of W with respect to a
-            dWda = []
-            for i in range(self.adim):
-                dWdai = sp.simplify(sp.derive_by_array(ccm_sym, a_sym[i]))
-                dWdai = sp.Matrix(dWdai)  # Convert to Matrix for compatibility
-                dWda.append(sp.lambdify([x_sym, a_sym], dWdai, modules='numpy'))
-            self.dW_dai_fcn = lambda i, x, a: dWda[i](x, a)
 
     # Control laws
     def ctrl_craclf(self, x, a_hat_clf, u_ref, use_slack=True):

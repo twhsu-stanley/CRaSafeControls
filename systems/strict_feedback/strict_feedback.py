@@ -17,6 +17,9 @@ class StrictFeedbackSystem(ControlAffineSystem):
     """
 
     theta_shape = (3, 2)
+    xdim = 3
+    udim = 1
+    adim = 2
 
     def __init__(self, params=None):
         if params is None:
@@ -37,7 +40,16 @@ class StrictFeedbackSystem(ControlAffineSystem):
             raise TypeError("true_uncertainty must be callable as w(x, t)")
 
         super().__init__(params)
-        self._lambdify_backstepping_coordinates()
+        self._lambdify_symbolic_clf()
+
+    def f(self, x):
+        """Return the numerical nominal drift."""
+        x = np.asarray(x, dtype=float).reshape(self.xdim)
+        return np.array([x[1], x[2], 0.0])
+
+    def g(self, x):
+        """Return the numerical control matrix."""
+        return np.array([[0.0], [0.0], [1.0]])
 
     @staticmethod
     def psi(x):
@@ -77,45 +89,26 @@ class StrictFeedbackSystem(ControlAffineSystem):
         return 2.0 * np.outer(Psi_x.T @ residual, a)
 
     def set_representation(self, Theta_hat):
-        """Install a new representation and regenerate symbolic derivatives."""
+        """Install a new representation without recompiling certificates."""
         Theta_hat = np.asarray(Theta_hat, dtype=float)
         if Theta_hat.shape != self.theta_shape:
             raise ValueError(f"Theta_hat must have shape {self.theta_shape}")
         self.Theta_hat = Theta_hat.copy()
 
-        x_sym, f_sym, g_sym, a_sym = self.define_system_symbolic()
-        clf_sym = self.define_clf_symbolic(x_sym, a_sym)
-        self.lambdify_certificate_funcs(
-            x_sym,
-            f_sym,
-            g_sym,
-            a_sym,
-            clf_sym,
-            None,
-            None,
-        )
-        self._lambdify_backstepping_coordinates(x_sym, a_sym)
-
-    def define_system_symbolic(self):
+    def _lambdify_symbolic_clf(self):
+        """Generate exact CLF/backstepping derivatives once with SymPy."""
         x1, x2, x3 = sp.symbols("x1 x2 x3", real=True)
         x = sp.Matrix([x1, x2, x3])
-
-        f = sp.Matrix([x2, x3, 0])
-        g = sp.Matrix([0, 0, 1])
-
         a1, a2 = sp.symbols("a1 a2", real=True)
         a = sp.Matrix([a1, a2])
+        theta_symbols = sp.symbols(
+            f"theta0:{np.prod(self.theta_shape)}", real=True
+        )
+        Theta = sp.Matrix(*self.theta_shape, theta_symbols)
 
-        return x, f, g, a
-
-    def define_clf_symbolic(self, x, a):
-        x1, x2, x3 = x
         feature = sp.Matrix([[x1, x1**2, x1**3]])
-        feature_prime = sp.Matrix([[1, 2 * x1, 3 * x1**2]])
-        Theta = sp.Matrix(self.Theta_hat.tolist())
-
         d = (feature @ Theta @ a)[0]
-        d_prime = (feature_prime @ Theta @ a)[0]
+        d_prime = sp.diff(d, x1)
 
         z1 = x1
         z2 = x2 + 2 * x1 + d
@@ -131,30 +124,66 @@ class StrictFeedbackSystem(ControlAffineSystem):
             - 2 * z3
         )
 
-        self._z_sym = sp.Matrix([z1, z2, z3])
-        self._u_backstepping_sym = sp.simplify(u_backstepping)
+        dclfdx = sp.Matrix([sp.diff(clf, state) for state in x])
+        dclfda = sp.Matrix([sp.diff(clf, parameter) for parameter in a])
+        z = sp.Matrix([z1, z2, z3])
+
+        arguments = [x, a, theta_symbols]
+        self._clf_function = sp.lambdify(arguments, clf, modules="numpy")
+        self._dclfdx_function = sp.lambdify(
+            arguments, dclfdx, modules="numpy"
+        )
+        self._dclfda_function = sp.lambdify(
+            arguments, dclfda, modules="numpy"
+        )
+        self._z_function = sp.lambdify(arguments, z, modules="numpy")
+        self._u_backstepping_function = sp.lambdify(
+            arguments, u_backstepping, modules="numpy"
+        )
         self._clf_rate_backstepping = 4.0
 
-        return sp.simplify(clf)
+    def _certificate_arguments(self, x, a):
+        return (
+            np.asarray(x, dtype=float).reshape(self.xdim),
+            np.asarray(a, dtype=float).reshape(self.adim),
+            self.Theta_hat.reshape(-1),
+        )
 
-    def _lambdify_backstepping_coordinates(self, x_sym=None, a_sym=None):
-        if x_sym is None or a_sym is None:
-            x_sym, _, _, a_sym = self.define_system_symbolic()
-            # Build expressions using the same symbolic state objects.
-            self.define_clf_symbolic(x_sym, a_sym)
-        self._z_function = sp.lambdify(
-            [x_sym, a_sym], self._z_sym, modules="numpy"
+    def clf(self, x, a):
+        return np.asarray(
+            self._clf_function(*self._certificate_arguments(x, a)),
+            dtype=float,
         )
-        self._u_backstepping_function = sp.lambdify(
-            [x_sym, a_sym], self._u_backstepping_sym, modules="numpy"
-        )
+
+    def dclfdx(self, x, a):
+        return np.asarray(
+            self._dclfdx_function(*self._certificate_arguments(x, a)),
+            dtype=float,
+        ).reshape(self.xdim, 1)
+
+    def dclfda(self, x, a):
+        return np.asarray(
+            self._dclfda_function(*self._certificate_arguments(x, a)),
+            dtype=float,
+        ).reshape(self.adim, 1)
 
     def backstepping_coordinates(self, x, a_hat):
-        return np.asarray(self._z_function(x, a_hat), dtype=float).reshape(3)
+        return np.asarray(
+            self._z_function(*self._certificate_arguments(x, a_hat)),
+            dtype=float,
+        ).reshape(self.xdim)
 
     def backstepping_control(self, x, a_hat):
         return np.array(
-            [float(np.asarray(self._u_backstepping_function(x, a_hat)).item())]
+            [
+                float(
+                    np.asarray(
+                        self._u_backstepping_function(
+                            *self._certificate_arguments(x, a_hat)
+                        )
+                    ).item()
+                )
+            ]
         )
 
     def true_uncertainty(self, x, t):
