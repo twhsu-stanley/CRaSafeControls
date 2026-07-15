@@ -27,14 +27,16 @@ class ControlAffineSystem:
         self.a_true = np.copy(self.params["a_true"]) if "a_true" in self.params else np.zeros((self.adim,1))
 
         # Constant term for the adaptation laws
-        self.eta_clf = self.params.get("eta_clf", 0.1)
-        self.eta_cbf = self.params.get("eta_cbf", 0.1)
-        self.eta_ccm = self.params.get("eta_ccm", 0.1)
+        self.eta_clf = float(self.params.get("eta_clf", 0.1))
+        self.eta_cbf = float(self.params.get("eta_cbf", 0.1))
+        self.eta_ccm = float(self.params.get("eta_ccm", 0.1))
 
         # Adaptation gain matrices
         self.Gamma_cbf = self.params.get("Gamma_cbf", None)
         self.Gamma_clf = self.params.get("Gamma_clf", None)
         self.Gamma_ccm = self.params.get("Gamma_ccm", None)
+        
+        self.safe_set_tightening = 0.0
 
         self.a_ub = np.asarray(self.params["a_ub"], dtype=float).reshape(-1)
         self.a_lb = np.asarray(self.params["a_lb"], dtype=float).reshape(-1)
@@ -50,12 +52,18 @@ class ControlAffineSystem:
             )
         
         self.a_center = 0.5 * (self.a_ub + self.a_lb) # center of the convex set where a_hat belongs to
-        self.a_hat_norm_max = self.params["a_hat_norm_max"] # upper bound of ||a_hat - a_center||
+        self.a_hat_norm_max = float(self.params["a_hat_norm_max"])
+        if not np.isfinite(self.a_hat_norm_max) or self.a_hat_norm_max <= 0.0:
+            raise ValueError("a_hat_norm_max must be finite and positive")
 
         if self.use_adaptive:
             # For projection-based adaptive controls
             a_err_norm_max = self.a_hat_norm_max + 0.5 * np.linalg.norm(self.a_ub - self.a_lb, ord=2)
-            self.epsilon = self.params.get("epsilon", 1e-3) # a small value for numerical stability of projection operator
+            self.epsilon = float(self.params.get("epsilon", 1e-3))
+            if not 0.0 < self.epsilon < self.a_hat_norm_max:
+                raise ValueError(
+                    "epsilon must satisfy 0 < epsilon < a_hat_norm_max"
+                )
 
             if self.Gamma_cbf is not None:
                 # NOTE: self.a_err_max is only used by the CRaCBF
@@ -65,11 +73,6 @@ class ControlAffineSystem:
                 #self.a_err_max = a_err_norm_max * eigvecs[:,np.argmin(eigvals)]
                 #self.a_err_max = a_err_norm_max * (self.a_ub - self.a_lb)/np.linalg.norm(self.a_ub - self.a_lb, ord=2)
                 self.safe_set_tightening = (a_err_norm_max ** 2) * np.max(eigvals)
-
-        else:
-            if self.Gamma_cbf is not None:
-                #self.a_err_max = np.zeros(self.adim)
-                self.safe_set_tightening = 0.0
 
     def dynamics(self, x, u):
         raise NotImplementedError("Dynamics are not implemented for this system")
@@ -254,65 +257,75 @@ class ControlAffineSystem:
     def ctrl_cracbf(self, x, a_hat_cbf, u_ref, rho_cbf):
         """CRaCBF QP Controller"""
 
-        #NOTE: using reshape to enforce correct shape
+        x = np.asarray(x, dtype=float).reshape(self.xdim)
+        a_hat_cbf = np.asarray(a_hat_cbf, dtype=float).reshape(self.adim)
+        u_ref = np.asarray(u_ref, dtype=float).reshape(self.udim)
+        rho_cbf = float(np.asarray(rho_cbf, dtype=float).item())
+
         h = self.cbf(x, a_hat_cbf)
         Lfh = self.lf_cbf(x, a_hat_cbf)
         Lgh = self.lg_cbf(x, a_hat_cbf).reshape(1,self.udim)
         LYh = self.lY_cbf(x, a_hat_cbf).reshape(1,self.adim)
         dcbfdx = self.dcbfdx(x, a_hat_cbf).reshape(self.xdim,1)
         
+        dcbfda = self.dcbfda(x, a_hat_cbf).reshape(self.adim,1)
+
         if self.use_cp:
             tightening =  self.cp_quantile * np.linalg.norm(dcbfdx, 2)
         else:
             tightening = 0.0
 
-        ####################################################################################
-        dcbfda = self.dcbfda(x, a_hat_cbf).reshape(self.adim,1)
-        dcbfdx = self.dcbfdx(x, a_hat_cbf).reshape(self.xdim,1)
-
-        # Projection operator to enforce bounds on a_hat_cbf
-        a_hat_cbf_dot = ControlAffineSystem.projection_operator(a_hat_cbf, 
+        if self.use_adaptive:
+            a_hat_cbf_dot = ControlAffineSystem.projection_operator(a_hat_cbf, 
                                               -self.nu_cbf(rho_cbf) * self.Gamma_cbf @ self.Y(x).T @ dcbfdx,
                                               self.a_center,
                                               self.a_hat_norm_max,
                                               self.epsilon,
                                               self.Gamma_cbf)
         
-        correction_term = -self.eta_cbf/(h + self.eta_cbf).item() * (dcbfda.T @ a_hat_cbf_dot).item()
-        ####################################################################################
-        
+            correction_term = -self.eta_cbf/(h + self.eta_cbf).item() * (dcbfda.T @ a_hat_cbf_dot).item()
+        else:
+            correction_term = 0.0
+
         # A u <= b
         A = -Lgh
         b = (
-            Lfh 
-            + LYh @ a_hat_cbf #TODO: check sign
+            Lfh
+            + LYh @ a_hat_cbf
             - tightening
-            #+ self.params["cbf"]["rate"] * (h - 0.5 * self.a_err_max.T @ np.linalg.inv(self.Gamma_cbf) @ self.a_err_max)
-            + self.params["cbf"]["rate"] * (h - 0.5 / self.nu_cbf(rho_cbf) * self.safe_set_tightening)
+            + float(self.params["cbf"]["rate"]) * (h - 0.5 / self.nu_cbf(rho_cbf) * self.safe_set_tightening)
             - correction_term
         )
         if "u_max" in self.params:
             A = np.vstack([A, np.eye(self.udim)])
             umax = self.params["u_max"]
             if np.isscalar(umax):
-                b = np.vstack([b, umax * np.ones((self.udim, 1))])
-            elif umax.shape == (self.udim, 1) or umax.shape == (self.udim,):
-                b = np.vstack([b, umax.reshape(-1, 1)])
+                b = np.hstack([b, umax * np.ones(self.udim)])
+            elif np.asarray(umax).shape in {
+                (self.udim, 1),
+                (self.udim,),
+            }:
+                b = np.hstack([b, np.asarray(umax).reshape(-1)])
             else:
                 raise ValueError("params['u_max'] should be either a scalar or an (udim, 1) array")
         if "u_min" in self.params:
             A = np.vstack([A, -np.eye(self.udim)])
             umin = self.params["u_min"]
             if np.isscalar(umin):
-                b = np.vstack([b, -umin * np.ones((self.udim, 1))])
-            elif umin.shape == (self.udim, 1) or umin.shape == (self.udim,):
-                b = np.vstack([b, -umin.reshape(-1, 1)])
+                b = np.hstack([b, -umin * np.ones(self.udim)])
+            elif np.asarray(umin).shape in {
+                (self.udim, 1),
+                (self.udim,),
+            }:
+                b = np.hstack([b, -np.asarray(umin).reshape(-1)])
             else:
                 raise ValueError("params['u_min'] should be either a scalar or an (udim, 1) array")
-            
+
         # Solve QP: min_u 0.5 * u^T P u + f^T u  subject to A u <= b
         P = np.eye(self.udim)
         f = -u_ref
+        A = np.asarray(A, dtype=float).reshape(-1, self.udim)
+        b = np.asarray(b, dtype=float).reshape(-1)
         qp_sol = solve_qp(P=P, q=f, G=A, h=b, solver='quadprog')
         if qp_sol is None:
             raise ValueError("solve_qp returns None")
