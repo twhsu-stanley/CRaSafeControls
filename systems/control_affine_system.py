@@ -278,7 +278,7 @@ class ControlAffineSystem:
                                               self.epsilon,
                                               self.Gamma_cbf)
         
-        correction_term = -1/(h + self.eta_cbf).item() * (dcbfda.T @ a_hat_cbf_dot).item()
+        correction_term = -self.eta_cbf/(h + self.eta_cbf).item() * (dcbfda.T @ a_hat_cbf_dot).item()
         ####################################################################################
         
         # A u <= b
