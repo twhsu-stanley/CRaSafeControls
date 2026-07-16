@@ -222,7 +222,7 @@ for i, t in enumerate(tt):
 
         print(
             f"interval={interval_index + 1:02d}, "
-            f"score={s_k:.4f}, Q={Q_k_hist[i]:.4f}, "
+            f"score={s_k:.3e}, Q={Q_k_hist[i]:.3e}, "
             f"delta_next={olacp.delta:.3f}, miscoverage={e_k}"
         )
 

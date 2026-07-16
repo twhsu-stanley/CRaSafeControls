@@ -122,7 +122,7 @@ def true_uncertainty(x, t):
 projection_epsilon = 0.01
 a_hat_norm_max = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + projection_epsilon
 # Reduce the seventh-coordinate gain to offset its larger fixed regressor.
-Gamma_cbf = np.diag([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.1])
+Gamma_cbf = np.diag([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.25])
 Gamma_cbf_inv = np.linalg.inv(Gamma_cbf)
 
 params = {
@@ -135,9 +135,9 @@ params = {
     "grav": gravity,
     "vd": 30.0,
     "Kp": 800.0,
-    "z_min": 5.0,
-    "T_h": 1.5,
-    "cbf_smoothing_epsilon": 0.1,
+    "z_min": 1.0,
+    "T_h": 1.0,
+    "cbf_smoothing_epsilon": 0.01,
     "lead_velocity_regressor": LEAD_VELOCITY_REGRESSOR,
     "use_adaptive": USE_ADAPTIVE,
     "use_cp": USE_CP,
@@ -148,8 +148,8 @@ params = {
     "a_hat_norm_max": a_hat_norm_max,
     "epsilon": projection_epsilon,
     "projection_geometry": "box",
-    "eta_cbf": 3.0,
-    "cbf_rate": 0.5,
+    "eta_cbf": 50.0,
+    "cbf_rate": 1.5,
     "u_max": 0.3 * mass * gravity,
     "u_min": -0.3 * mass * gravity,
     "dt": dt,
@@ -194,8 +194,8 @@ olacp = OLACP(
     S_cal_init,
     N_cal=N_cal,
     acp_lr=0.02,
-    delta_target=0.1,
-    delta_init=0.1,
+    delta_target=0.05,
+    delta_init=0.05,
     buffer_maxlen=I_length,
     theta_init=THETA_INIT,
     representation_period=B,
@@ -355,7 +355,7 @@ for i, t in enumerate(tt):
 
         print(
             f"interval={interval_index + 1:02d}, "
-            f"score={s_k:.5f}, Q={Q_k_hist[i]:.5f}, "
+            f"score={s_k:.3e}, Q={Q_k_hist[i]:.3e}, "
             f"delta_next={olacp.delta:.3f}, miscoverage={e_k}, "
             "Theta="
             + np.array2string(
