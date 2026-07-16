@@ -1,6 +1,5 @@
 """Algorithm 1 and CRaCBF simulation for adaptive cruise control."""
 
-from itertools import product
 import os
 import sys
 
@@ -40,118 +39,80 @@ N_cal = 200
 if N_cal < 100:
     raise ValueError("N_cal must be at least 100")
 
+# The true wake-decay rate is unknown to the controller. The initial value and
+# its admissible range are engineering guesses.
 THETA_TRUE = 0.045
 THETA_INIT = np.array([0.08])
 THETA_LB = np.array([0.005])
 THETA_UB = np.array([0.12])
 
-# Prior physical ranges used to derive the seven-dimensional box A. These
-# ranges are broader than the deterministic environment schedule below.
-PHYSICAL_PARAMETER_BOUNDS = {
-    "b0": (160.0, 280.0),
-    "b1": (3.5, 8.5),
-    "b2": (0.25, 0.50),
-    "b3": (0.15, 0.55),
-    "lead_velocity": (21.5, 24.5),
-}
-
-
-def environment_coefficients(interval_index):
-    """Return the piecewise-constant environment on interval I_k."""
-    phase = 2.0 * np.pi * int(interval_index) / 13.0
-    return {
-        "b0": 220.0 + 35.0 * np.sin(phase + 0.15),
-        "b1": 6.0 + 1.1 * np.cos(0.8 * phase + 0.35),
-        "b2": 0.375 + 0.065 * np.sin(1.3 * phase + 0.7),
-        "b3": 0.35 + 0.09 * np.cos(1.1 * phase - 0.25),
-        # b4 is the shared representation parameter learned by Algorithm 1.
-        "b4": THETA_TRUE,
-        "lead_velocity": 23.0 + 1.15 * np.sin(0.9 * phase + 0.55),
-    }
-
-
-def latent_parameter(environment, mass, wind_speed):
-    """Map the physical environment into the paper's latent vector a."""
-    b0 = float(environment["b0"])
-    b1 = float(environment["b1"])
-    b2 = float(environment["b2"])
-    b3 = float(environment["b3"])
-    lead_velocity = float(environment["lead_velocity"])
-    mass = float(mass)
-    wind_speed = float(wind_speed)
-
-    return np.array(
-        [
-            -(b0 + b2 * wind_speed**2) / mass,
-            (-b1 + 2.0 * b2 * wind_speed) / mass,
-            -b2 / mass,
-            b2 * b3 * wind_speed**2 / mass,
-            -2.0 * b2 * b3 * wind_speed / mass,
-            b2 * b3 / mass,
-            lead_velocity,
-        ]
-    )
-
-
-def latent_parameter_bounds(mass, wind_speed):
-    """Derive coordinate-wise bounds on a from the physical prior."""
-    keys = ("b0", "b1", "b2", "b3", "lead_velocity")
-    corner_values = []
-    for values in product(*(PHYSICAL_PARAMETER_BOUNDS[key] for key in keys)):
-        environment = dict(zip(keys, values))
-        corner_values.append(latent_parameter(environment, mass, wind_speed))
-    corners = np.asarray(corner_values)
-    return np.min(corners, axis=0), np.max(corners, axis=0)
-
-
-def drag_force(x, environment, wind_speed):
-    """Evaluate the true resistance force d_v(t, x) from Section V-B."""
-    v = float(np.asarray(x, dtype=float).reshape(3)[1])
-    z = float(np.asarray(x, dtype=float).reshape(3)[2])
-    relative_air_speed = v - float(wind_speed)
-    return (
-        environment["b0"]
-        + environment["b1"] * v
-        + environment["b2"]
-        * relative_air_speed**2
-        * (1.0 - environment["b3"] * np.exp(-environment["b4"] * z))
-    )
-
-
-def make_true_uncertainty(interval_duration, mass, wind_speed):
-    """Create the physical w(x, t) independently of learned theta."""
-
-    def true_uncertainty(x, t):
-        interval_index = int(np.floor(max(float(t), 0.0) / interval_duration))
-        environment = environment_coefficients(interval_index)
-        return np.array(
-            [
-                0.0,
-                -drag_force(x, environment, wind_speed) / mass,
-                environment["lead_velocity"],
-            ]
-        )
-
-    return true_uncertainty
-
-
 # Physical and controller parameters.
 mass = 1650.0
 wind_speed = 5.0
 gravity = 9.81
-acceleration_fraction = 0.3
-deceleration_fraction = 0.3
-a_lb, a_ub = latent_parameter_bounds(mass, wind_speed)
+
+# In practice, the latent-parameter box is only approximately known. These
+# rounded values are engineering guesses for the intended ACC regime.
+a_lb = np.array([-0.20, -0.004, -4e-4, 0.0, -0.002, 0.0, 21.5])
+a_ub = np.array([-0.09, 0.001, 0.0, 0.005, 0.0, 2e-4, 24.5])
 a_center = 0.5 * (a_lb + a_ub)
+
+# Generate the piecewise-constant physical environment directly. The first K
+# intervals are simulated, while all N_cal intervals are used for calibration.
+environment_interval_count = max(K, N_cal)
+environment_phase = (
+    2.0 * np.pi * np.arange(environment_interval_count) / 13.0
+)
+b0_schedule = 220.0 + 35.0 * np.sin(environment_phase + 0.15)
+b1_schedule = 6.0 + 1.1 * np.cos(0.8 * environment_phase + 0.35)
+b2_schedule = 0.375 + 0.065 * np.sin(1.3 * environment_phase + 0.7)
+b3_schedule = 0.35 + 0.09 * np.cos(1.1 * environment_phase - 0.25)
+lead_velocity_schedule = 23.0 + 1.15 * np.sin(
+    0.9 * environment_phase + 0.55
+)
+
+# True interval parameters are retained only for simulation diagnostics. They
+# are not available to the controller or used to choose the guessed bounds.
+a_true_schedule = np.column_stack(
+    (
+        -(b0_schedule + b2_schedule * wind_speed**2) / mass,
+        (-b1_schedule + 2.0 * b2_schedule * wind_speed) / mass,
+        -b2_schedule / mass,
+        b2_schedule * b3_schedule * wind_speed**2 / mass,
+        -2.0 * b2_schedule * b3_schedule * wind_speed / mass,
+        b2_schedule * b3_schedule / mass,
+        lead_velocity_schedule,
+    )
+)
+
+
+def true_uncertainty(x, t):
+    """Evaluate the unknown physical uncertainty w(x, t)."""
+    interval_index = int(np.floor(max(float(t), 0.0) / interval_duration))
+    v = float(np.asarray(x, dtype=float).reshape(3)[1])
+    z = float(np.asarray(x, dtype=float).reshape(3)[2])
+    relative_air_speed = v - wind_speed
+    drag = (
+        b0_schedule[interval_index]
+        + b1_schedule[interval_index] * v
+        + b2_schedule[interval_index]
+        * relative_air_speed**2
+        * (
+            1.0
+            - b3_schedule[interval_index]
+            * np.exp(-THETA_TRUE * z)
+        )
+    )
+    return np.array(
+        [0.0, -drag / mass, lead_velocity_schedule[interval_index]]
+    )
+
 
 # The estimator set A_hat need not equal the broader environmental set A. A
 # small projection ball accounts for the different scales of the raw features.
-a_hat_norm_max = 5e-3
-Gamma_cbf = 0.1 * np.eye(7)
+a_hat_norm_max = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2)
+Gamma_cbf = 1.0 * np.eye(7)
 Gamma_cbf_inv = np.linalg.inv(Gamma_cbf)
-true_uncertainty = make_true_uncertainty(
-    interval_duration, mass, wind_speed
-)
 
 params = {
     "xdim": 3,
@@ -163,21 +124,21 @@ params = {
     "grav": gravity,
     "vd": 30.0,
     "Kp": 800.0,
-    "z_min": 10.0,
-    "T_h": 1.8,
+    "z_min": 5.0,
+    "T_h": 1.5,
     "cbf_smoothing_epsilon": 0.1,
     "use_adaptive": USE_ADAPTIVE,
     "use_cp": USE_CP,
     "Gamma_cbf": Gamma_cbf,
-    "a_true": latent_parameter(environment_coefficients(0), mass, wind_speed),
+    "a_true": a_true_schedule[0].copy(),
     "a_ub": a_ub,
     "a_lb": a_lb,
     "a_hat_norm_max": a_hat_norm_max,
     "epsilon": 0.1 * a_hat_norm_max,
     "eta_cbf": 5.0,
     "cbf_rate": 0.5,
-    "u_max": acceleration_fraction * mass * gravity,
-    "u_min": -deceleration_fraction * mass * gravity,
+    "u_max": 0.3 * mass * gravity,
+    "u_min": -0.3 * mass * gravity,
     "dt": dt,
 }
 
@@ -264,13 +225,12 @@ e_k_hist = []
 # Main simulation loop.
 for i, t in enumerate(tt):
     interval_index = i // I_length
-    environment = environment_coefficients(interval_index)
-    a_true = latent_parameter(environment, mass, wind_speed)
+    a_true = a_true_schedule[interval_index]
 
     x_hist[i] = x
     a_hat_cbf_hist[i] = a_hat_cbf
     a_true_hist[i] = a_true
-    lead_velocity_hist[i] = environment["lead_velocity"]
+    lead_velocity_hist[i] = lead_velocity_schedule[interval_index]
     rho_cbf_hist[i] = rho_cbf
     nu_cbf_hist[i] = system.nu_cbf(rho_cbf)
     Q_k_hist[i] = system.cp_quantile
@@ -303,14 +263,7 @@ for i, t in enumerate(tt):
         )
 
     u_ref = system.ctrl_nominal(x)
-    try:
-        u = system.ctrl_cracbf(x, a_hat_cbf, u_ref, rho_cbf)
-    except ValueError as error:
-        raise RuntimeError(
-            "CRaCBF-QP failed at "
-            f"t={t:.3f}, h={h_hist[i]:.6g}, rho={rho_cbf:.6g}, "
-            f"x={x.tolist()}, a_hat={a_hat_cbf.tolist()}"
-        ) from error
+    u = system.ctrl_cracbf(x, a_hat_cbf, u_ref, rho_cbf)
     u_hist[i] = u.item()
 
     # Store the data required by line 6 of Algorithm 1.
