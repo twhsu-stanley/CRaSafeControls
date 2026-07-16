@@ -65,15 +65,13 @@ a_center = 0.5 * (a_lb + a_ub)
 # intervals are simulated, while all N_cal intervals are used for calibration.
 environment_interval_count = max(K, N_cal)
 environment_phase = (
-    2.0 * np.pi * np.arange(environment_interval_count) / 13.0
+    2.0 * np.pi * np.arange(environment_interval_count) / 20.0
 )
 b0_schedule = 220.0 + 35.0 * np.sin(environment_phase + 0.15)
 b1_schedule = 6.0 + 1.1 * np.cos(0.8 * environment_phase + 0.35)
 b2_schedule = 0.375 + 0.065 * np.sin(1.3 * environment_phase + 0.7)
 b3_schedule = 0.35 + 0.09 * np.cos(1.1 * environment_phase - 0.25)
-lead_velocity_schedule = 23.0 + 1.15 * np.sin(
-    0.9 * environment_phase + 0.55
-)
+lead_velocity_schedule = 23.0 + 1.15 * np.sin(0.9 * environment_phase + 0.55)
 
 # Coefficients of the physical drag expansion. The corresponding abstract
 # parameters a_2, a_3, a_5, and a_6 also depend on the installed Theta.
@@ -231,6 +229,7 @@ rho_cbf_hist = np.zeros(len(tt))
 nu_cbf_hist = np.zeros(len(tt))
 Q_k_hist = np.zeros(len(tt))
 Theta_hist = np.zeros((len(tt), THETA_INIT.size))
+prediction_error_hist = np.full(len(tt), np.nan)
 
 interval_times = []
 s_k_hist = []
@@ -325,12 +324,21 @@ for i, t in enumerate(tt):
     if (i + 1) % I_length == 0:
         olacp.estimate_uncertainty(dt)
         s_k = float(olacp.compute_score(system.a_ub, system.a_lb))
+        interval_prediction_error = np.array(
+            [
+                np.linalg.norm(Y_t @ olacp.a_k - w_t, ord=2) ** 2
+                for Y_t, w_t in zip(olacp._Y_buffer, olacp._w_buffer)
+            ]
+        )
         e_k = int(olacp.update_delta(s_k))
         olacp.append_score(s_k)
         representation_update = olacp.update_representation()
 
         interval_start = i - I_length + 1
         a_k_hist[interval_start : i + 1] = olacp.a_k
+        prediction_error_hist[interval_start : i + 1] = (
+            interval_prediction_error
+        )
         interval_parameter_error = (
             a_hat_cbf_hist[interval_start : i + 1] - olacp.a_k
         )
@@ -410,6 +418,28 @@ axs[2].set_xlabel("Time (s)")
 for ax in axs:
     ax.grid(True)
 fig.suptitle("Adaptive conformal prediction")
+
+# Plot the pointwise loss minimized by Algorithm 1. Each interval uses the
+# representation that was installed while that interval's data were sampled.
+fig, ax = plt.subplots(figsize=(8, 4))
+ax.semilogy(
+    tt,
+    np.maximum(prediction_error_hist, 1e-16),
+    label=r"$\|Y_{\Theta_j}(x_t)a_k-w_t\|_2^2$",
+)
+for update_index in range(B, K, B):
+    ax.axvline(
+        update_index * interval_duration,
+        color="k",
+        linestyle=":",
+        alpha=0.6,
+        label="new representation active" if update_index == B else None,
+    )
+ax.set_ylabel("squared prediction error")
+ax.set_xlabel("Time (s)")
+ax.grid(True)
+ax.legend()
+fig.suptitle("Uncertainty-prediction error")
 
 # Plot the learned representation.
 fig, axs = plt.subplots(THETA_INIT.size, 1, sharex=True, figsize=(8, 11))

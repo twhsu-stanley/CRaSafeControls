@@ -16,8 +16,8 @@ USE_CP = True
 USE_ADAPTIVE = True
 
 # Algorithm 1 setup
-K = 10  # total number of time intervals I_k
-B = 4   # update the representation every B intervals
+K = 20  # total number of time intervals I_k
+B = 2   # update the representation every B intervals
 
 # Time setup for each interval I_k
 dt = 0.01
@@ -36,7 +36,7 @@ true_uncertainty = lambda x, t: np.array(
     [
         #-(0.01 - 0.1 * np.floor(t / interval_duration)) * np.sin(x[0])
         #-(0.06 - 0.05 * np.floor(t / interval_duration)) * x[0] ** 2,
-        -0.01 * np.sin(2*np.pi*1*x[0]) - 0.05 * x[0] ** 2,
+        -0.1 * np.sin(2*np.pi*1*x[0]) - 0.1 * x[0] ** 2,
         0.0,
         0.0,
     ]
@@ -142,6 +142,7 @@ rho_clf_hist = np.zeros(len(tt))
 nu_clf_hist = np.zeros(len(tt))
 Q_k_hist = np.zeros(len(tt))
 Theta_hist = np.zeros((len(tt), Theta_init.size))
+prediction_error_hist = np.full(len(tt), np.nan)
 
 interval_times = []
 s_k_hist = []
@@ -193,12 +194,21 @@ for i, t in enumerate(tt):
         interval_index = (i + 1) // I_length - 1
         olacp.estimate_uncertainty(dt)
         s_k = olacp.compute_score(system.a_ub, system.a_lb)
+        interval_prediction_error = np.array(
+            [
+                np.linalg.norm(Y_t @ olacp.a_k - w_t, ord=2) ** 2
+                for Y_t, w_t in zip(olacp._Y_buffer, olacp._w_buffer)
+            ]
+        )
         e_k = olacp.update_delta(s_k)
         olacp.append_score(s_k)
         representation_update = olacp.update_representation()
 
         interval_start = i - I_length + 1
         a_k_hist[interval_start : i + 1] = olacp.a_k
+        prediction_error_hist[interval_start : i + 1] = (
+            interval_prediction_error
+        )
         interval_times.append(t)
         s_k_hist.append(s_k)
         delta_k_hist.append(olacp.delta)
@@ -255,6 +265,28 @@ axs[2].set_xlabel("Time (s)")
 for ax in axs:
     ax.grid(True)
 fig.suptitle("Adaptive conformal prediction")
+
+# Plot the pointwise loss minimized by Algorithm 1. Each interval uses the
+# representation that was installed while that interval's data were sampled.
+fig, ax = plt.subplots(figsize=(7, 4))
+ax.semilogy(
+    tt,
+    np.maximum(prediction_error_hist, 1e-16),
+    label=r"$\|Y_{\Theta_j}(x_t)a_k-w_t\|_2^2$",
+)
+for update_index in range(B, K, B):
+    ax.axvline(
+        update_index * interval_duration,
+        color="k",
+        linestyle=":",
+        alpha=0.6,
+        label="new representation active" if update_index == B else None,
+    )
+ax.set_ylabel("squared prediction error")
+ax.set_xlabel("Time (s)")
+ax.grid(True)
+ax.legend()
+fig.suptitle("Uncertainty-prediction error")
 
 # Plot adaptive and interval-fitted parameters.
 fig, axs = plt.subplots(system.adim, 1, sharex=True)
