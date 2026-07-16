@@ -264,6 +264,13 @@ axs[2].set_ylabel("e_k")
 axs[2].set_xlabel("Time (s)")
 for ax in axs:
     ax.grid(True)
+    for interval_index in range(1, K):
+        ax.axvline(
+            interval_index * interval_duration,
+            color="0.7",
+            linestyle=":",
+            linewidth=0.8,
+        )
 fig.suptitle("Adaptive conformal prediction")
 
 # Plot the pointwise loss minimized by Algorithm 1. Each interval uses the
@@ -297,6 +304,15 @@ for i in range(system.adim):
     axs[i].grid(True)
     axs[i].legend()
 axs[-1].set_xlabel("Time (s)")
+for ax in axs:
+    ax.grid(True)
+    for interval_index in range(1, K):
+        ax.axvline(
+            interval_index * interval_duration,
+            color="0.7",
+            linestyle=":",
+            linewidth=0.8,
+        )
 fig.suptitle("Adaptive and interval-fitted parameters")
 
 # Plot the learned representation.
@@ -306,6 +322,15 @@ for i in range(Theta_init.size):
     axs[i].set_ylabel(f"theta{i + 1}")
     axs[i].grid(True)
 axs[-1].set_xlabel("Time (s)")
+for ax in axs:
+    ax.grid(True)
+    for interval_index in range(1, K):
+        ax.axvline(
+            interval_index * interval_duration,
+            color="0.7",
+            linestyle=":",
+            linewidth=0.8,
+        )
 fig.suptitle("Learned representation")
 
 # Plot scaling state and scaling function.

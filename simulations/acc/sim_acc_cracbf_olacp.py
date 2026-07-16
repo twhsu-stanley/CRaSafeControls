@@ -54,6 +54,7 @@ LEAD_VELOCITY_REGRESSOR = 10.0
 mass = 1650.0
 wind_speed = 5.0
 gravity = 9.81
+alpha_b = 1.5
 
 # In practice, the latent-parameter box is only approximately known. These
 # rounded values are engineering guesses for the intended ACC regime.
@@ -149,7 +150,7 @@ params = {
     "epsilon": projection_epsilon,
     "projection_geometry": "box",
     "eta_cbf": 50.0,
-    "cbf_rate": 1.5,
+    "cbf_rate": alpha_b,
     "u_max": 0.3 * mass * gravity,
     "u_min": -0.3 * mass * gravity,
     "dt": dt,
@@ -220,7 +221,8 @@ u_hist = np.zeros(len(tt))
 h_hist = np.zeros(len(tt))
 physical_safety_hist = np.zeros(len(tt))
 tightened_cbf_margin_hist = np.zeros(len(tt))
-true_parameter_barrier_hist = np.zeros(len(tt))
+z_b_hist = np.zeros(len(tt))
+z_b_exponential_bound_hist = np.zeros(len(tt))
 a_hat_cbf_hist = np.zeros((len(tt), system.adim))
 a_k_hist = np.full((len(tt), system.adim), np.nan)
 a_true_hist = np.zeros((len(tt), system.adim))
@@ -268,9 +270,15 @@ for i, t in enumerate(tt):
         - 0.5 / nu_cbf_hist[i] * system.safe_set_tightening
     )
     parameter_error = a_hat_cbf - a_true
-    true_parameter_barrier_hist[i] = (
+    z_b_hist[i] = (
         nu_cbf_hist[i] * h_hist[i]
         - 0.5 * parameter_error @ Gamma_cbf_inv @ parameter_error
+    )
+    if i % I_length == 0:
+        tau_k = t
+        z_b_tau_k = z_b_hist[i]
+    z_b_exponential_bound_hist[i] = z_b_tau_k * np.exp(
+        -alpha_b * (t - tau_k)
     )
 
     if i == 0 and h_hist[i] < 0.0:
@@ -368,7 +376,7 @@ s_k_hist = np.asarray(s_k_hist)
 delta_k_hist = np.asarray(delta_k_hist)
 e_k_hist = np.asarray(e_k_hist)
 
-# Plot states, input, and safety margins.
+# Plot states and input.
 fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 11))
 axs[0].plot(tt, x_hist[:, 1], label="ego velocity")
 axs[0].plot(tt, lead_velocity_hist, "--", label="lead velocity")
@@ -389,7 +397,7 @@ for ax in axs:
 fig.suptitle("Adaptive cruise control with a CRaCBF-QP")
 
 # Plot safety margins.
-fig, axs = plt.subplots(2, 1, sharex=True)
+fig, axs = plt.subplots(3, 1, sharex=True)
 axs[0].plot(tt, h_hist, label=r"$h(x,\hat{a})$")
 axs[0].plot(tt, tightened_cbf_margin_hist, ":", label="tightened h margin")
 axs[0].axhline(0.0, color="r", linestyle="--", label=r"$h=0$")
@@ -398,10 +406,29 @@ axs[0].legend()
 axs[1].plot(tt, physical_safety_hist, label=r"$z-z_{\min}$")
 axs[1].axhline(0.0, color="r", linestyle="--", label="safety boundary")
 axs[1].set_ylabel("safety margin")
-axs[1].set_xlabel("Time (s)")
 axs[1].legend()
+# Verify the within-interval comparison result used in Theorem 3:
+# z_b(t) >= z_b(tau_k) exp(-alpha_b (t - tau_k)), t in I_k.
+z_b_bound_gap_hist = z_b_hist - z_b_exponential_bound_hist
+axs[2].plot(tt, z_b_hist, label=r"$z_b(t)$")
+axs[2].plot(
+    tt,
+    z_b_exponential_bound_hist,
+    "--",
+    label=r"$z_b(\tau_k)e^{-\alpha_b(t-\tau_k)}$",
+)
+axs[2].set_ylabel(r"$z_b$")
+axs[2].set_xlabel("Time (s)")
+axs[2].legend()
 for ax in axs:
     ax.grid(True)
+    for interval_index in range(1, K):
+        ax.axvline(
+            interval_index * interval_duration,
+            color="0.7",
+            linestyle=":",
+            linewidth=1.0,
+        )
 fig.suptitle("Safety margins")
 
 # Plot OLACP variables.
@@ -417,6 +444,13 @@ axs[2].set_ylabel("e_k")
 axs[2].set_xlabel("Time (s)")
 for ax in axs:
     ax.grid(True)
+    for interval_index in range(1, K):
+        ax.axvline(
+            interval_index * interval_duration,
+            color="0.7",
+            linestyle=":",
+            linewidth=1.0,
+        )
 fig.suptitle("Adaptive conformal prediction")
 
 # Plot the pointwise loss minimized by Algorithm 1. Each interval uses the
@@ -457,6 +491,15 @@ axs[3].axhline(
 )
 axs[3].legend()
 axs[-1].set_xlabel("Time (s)")
+for ax in axs:
+    ax.grid(True)
+    for interval_index in range(1, K):
+        ax.axvline(
+            interval_index * interval_duration,
+            color="0.7",
+            linestyle=":",
+            linewidth=1.0,
+        )
 fig.suptitle("Learned Representation (θ)")
 
 # Plot adaptive, interval-fitted, and physical latent parameters.
@@ -469,6 +512,15 @@ for i in range(system.adim):
     axs[i].grid(True)
 axs[0].legend(ncol=3)
 axs[-1].set_xlabel("Time (s)")
+for ax in axs:
+    ax.grid(True)
+    for interval_index in range(1, K):
+        ax.axvline(
+            interval_index * interval_duration,
+            color="0.7",
+            linestyle=":",
+            linewidth=1.0,
+        )
 fig.suptitle("Adaptive, fitted, and physical latent parameters")
 
 # Plot the CRaCBF scaling variables.
