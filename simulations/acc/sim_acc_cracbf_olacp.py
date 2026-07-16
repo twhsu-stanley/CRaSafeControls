@@ -19,7 +19,7 @@ USE_ADAPTIVE = True
 
 # Algorithm 1 setup.
 K = 12  # total number of time intervals I_k
-B = 4   # update the representation every B intervals
+B = 2   # update the representation every B intervals
 
 # Time setup for each interval I_k.
 dt = 0.02
@@ -39,12 +39,16 @@ N_cal = 200
 if N_cal < 100:
     raise ValueError("N_cal must be at least 100")
 
-# Only theta_3 has a physical true value in this parameterization. Theta_1 and
-# theta_2 regulate the ranges of the abstract interval parameters.
+# Only theta_4 has a physical true value in this parameterization. Theta_1,
+# theta_2, and theta_3 regulate the ranges of the abstract interval parameters.
 WAKE_DECAY_TRUE = 0.045
-THETA_INIT = np.array([0.0025, 0.0002, 0.08])
-THETA_LB = np.array([0.002, 0.00015, 0.005])
-THETA_UB = np.array([0.004, 0.00030, 0.12])
+THETA_INIT = np.array([0.1, 0.0025, 0.0002, 0.08])
+THETA_LB = np.array([0.08, 0.002, 0.00015, 0.005])
+THETA_UB = np.array([0.15, 0.004, 0.00030, 0.12])
+
+# The seventh column of Y is fixed at 10. This represents a physical lead
+# velocity near 23 m/s by an abstract a_7 near 2.3 without changing the plant.
+LEAD_VELOCITY_REGRESSOR = 10.0
 
 # Physical and controller parameters.
 mass = 1650.0
@@ -53,8 +57,8 @@ gravity = 9.81
 
 # In practice, the latent-parameter box is only approximately known. These
 # rounded values are engineering guesses for the intended ACC regime.
-a_lb = np.array([-0.20, -2.0, -2.666667, 0.0, -1.0, 0.0, 21.5])
-a_ub = np.array([-0.09, 0.5, 0.0, 0.005, 0.0, 1.333333, 24.5])
+a_lb = np.array([-1.8, -1.1, -1.5, 0.005, -0.55, 0.15, 2.15])
+a_ub = np.array([-1.0, 0.0, -0.8, 0.04, -0.1, 0.7, 2.45])
 a_center = 0.5 * (a_lb + a_ub)
 
 # Generate the piecewise-constant physical environment directly. The first K
@@ -82,13 +86,13 @@ c6_schedule = b2_schedule * b3_schedule / mass
 
 a_true_initial = np.array(
     [
-        c1_schedule[0],
-        c2_schedule[0] / THETA_INIT[0],
-        c3_schedule[0] / THETA_INIT[1],
-        c4_schedule[0],
-        c5_schedule[0] / THETA_INIT[0],
-        c6_schedule[0] / THETA_INIT[1],
-        lead_velocity_schedule[0],
+        c1_schedule[0] / THETA_INIT[0],
+        c2_schedule[0] / THETA_INIT[1],
+        c3_schedule[0] / THETA_INIT[2],
+        c4_schedule[0] / THETA_INIT[0],
+        c5_schedule[0] / THETA_INIT[1],
+        c6_schedule[0] / THETA_INIT[2],
+        lead_velocity_schedule[0] / LEAD_VELOCITY_REGRESSOR,
     ]
 )
 
@@ -115,10 +119,12 @@ def true_uncertainty(x, t):
     )
 
 
-# The projection ball contains the guessed box A inside its epsilon-interior.
+# Use the circumscribed-ball radius for the conservative error bound, while
+# projecting the estimate coordinate-wise onto the guessed parameter box.
 projection_epsilon = 0.01
 a_hat_norm_max = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + projection_epsilon
-Gamma_cbf = 1.0 * np.eye(7)
+# Reduce the seventh-coordinate gain to offset its larger fixed regressor.
+Gamma_cbf = np.diag([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.1])
 Gamma_cbf_inv = np.linalg.inv(Gamma_cbf)
 
 params = {
@@ -134,6 +140,7 @@ params = {
     "z_min": 5.0,
     "T_h": 1.5,
     "cbf_smoothing_epsilon": 0.1,
+    "lead_velocity_regressor": LEAD_VELOCITY_REGRESSOR,
     "use_adaptive": USE_ADAPTIVE,
     "use_cp": USE_CP,
     "Gamma_cbf": Gamma_cbf,
@@ -142,7 +149,8 @@ params = {
     "a_lb": a_lb,
     "a_hat_norm_max": a_hat_norm_max,
     "epsilon": projection_epsilon,
-    "eta_cbf": 5.0,
+    "projection_geometry": "box",
+    "eta_cbf": 3.0,
     "cbf_rate": 0.5,
     "u_max": 0.3 * mass * gravity,
     "u_min": -0.3 * mass * gravity,
@@ -193,7 +201,8 @@ olacp = OLACP(
     buffer_maxlen=I_length,
     theta_init=THETA_INIT,
     representation_period=B,
-    representation_lr=lambda j: np.array([100.0, 0.1, 1e5]) / j,# Coordinate-wise rates account for the different Theta scales
+    # Coordinate-wise rates account for the different Theta scales.
+    representation_lr=lambda j: np.array([1e3, 1e4, 1e1, 1e6]) / j,
     theta_lb=THETA_LB,
     theta_ub=THETA_UB,
     Y_theta=system.Y_theta,
@@ -231,16 +240,17 @@ e_k_hist = []
 # Main simulation loop.
 for i, t in enumerate(tt):
     interval_index = i // I_length
-    theta_1, theta_2, _ = system.Theta_hat
+    theta_1, theta_2, theta_3, _ = system.Theta_hat
     a_true = np.array(
         [
-            c1_schedule[interval_index],
-            c2_schedule[interval_index] / theta_1,
-            c3_schedule[interval_index] / theta_2,
-            c4_schedule[interval_index],
-            c5_schedule[interval_index] / theta_1,
-            c6_schedule[interval_index] / theta_2,
-            lead_velocity_schedule[interval_index],
+            c1_schedule[interval_index] / theta_1,
+            c2_schedule[interval_index] / theta_2,
+            c3_schedule[interval_index] / theta_3,
+            c4_schedule[interval_index] / theta_1,
+            c5_schedule[interval_index] / theta_2,
+            c6_schedule[interval_index] / theta_3,
+            lead_velocity_schedule[interval_index]
+            / system.lead_velocity_regressor,
         ]
     )
 
@@ -402,20 +412,20 @@ for ax in axs:
 fig.suptitle("Adaptive conformal prediction")
 
 # Plot the learned representation.
-fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 10))
+fig, axs = plt.subplots(THETA_INIT.size, 1, sharex=True, figsize=(8, 11))
 for j in range(THETA_INIT.size):
     axs[j].plot(tt, Theta_hist[:, j], label=rf"$\hat{{\theta}}_{j + 1}$")
     axs[j].axhline(THETA_LB[j], color="0.5", linestyle=":")
     axs[j].axhline(THETA_UB[j], color="0.5", linestyle=":")
     axs[j].set_ylabel(rf"$\theta_{j + 1}$")
     axs[j].legend()
-axs[2].axhline(
+axs[3].axhline(
     WAKE_DECAY_TRUE,
     color="k",
     linestyle="--",
-    label=r"true $\theta_3$",
+    label=r"true $\theta_4$",
 )
-axs[2].legend()
+axs[3].legend()
 axs[-1].set_xlabel("Time (s)")
 fig.suptitle("Learned Representation (θ)")
 

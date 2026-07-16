@@ -60,6 +60,13 @@ class ControlAffineSystem:
         self.a_hat_norm_max = float(self.params["a_hat_norm_max"])
         if not np.isfinite(self.a_hat_norm_max) or self.a_hat_norm_max <= 0.0:
             raise ValueError("a_hat_norm_max must be finite and positive")
+        self.projection_geometry = self.params.get(
+            "projection_geometry", "ball"
+        )
+        if self.projection_geometry not in {"ball", "box"}:
+            raise ValueError(
+                "projection_geometry must be either 'ball' or 'box'"
+            )
 
         if self.use_adaptive:
             # For projection-based adaptive controls
@@ -78,6 +85,36 @@ class ControlAffineSystem:
                 #self.a_err_max = a_err_norm_max * eigvecs[:,np.argmin(eigvals)]
                 #self.a_err_max = a_err_norm_max * (self.a_ub - self.a_lb)/np.linalg.norm(self.a_ub - self.a_lb, ord=2)
                 self.safe_set_tightening = (a_err_norm_max ** 2) * np.max(eigvals)
+
+    def projected_cracbf_update(self, x, a_hat_cbf, rho_cbf, dcbfdx=None):
+        """Return the parameter update used by both CRaCBF equations."""
+        x = np.asarray(x, dtype=float).reshape(self.xdim)
+        a_hat_cbf = np.asarray(a_hat_cbf, dtype=float).reshape(self.adim)
+        if dcbfdx is None:
+            dcbfdx = self.dcbfdx(x, a_hat_cbf)
+        dcbfdx = np.asarray(dcbfdx, dtype=float).reshape(self.xdim, 1)
+        raw_update = (
+            -self.nu_cbf(rho_cbf)
+            * self.Gamma_cbf
+            @ self.Y(x).T
+            @ dcbfdx
+        )
+        if self.projection_geometry == "box":
+            return ControlAffineSystem.box_projection_operator(
+                a_hat_cbf,
+                raw_update,
+                self.a_lb,
+                self.a_ub,
+                self.epsilon,
+            )
+        return ControlAffineSystem.projection_operator(
+            a_hat_cbf,
+            raw_update,
+            self.a_center,
+            self.a_hat_norm_max,
+            self.epsilon,
+            self.Gamma_cbf,
+        )
 
     def dynamics(self, x, u):
         raise NotImplementedError("Dynamics are not implemented for this system")
@@ -281,12 +318,9 @@ class ControlAffineSystem:
             tightening = 0.0
 
         if self.use_adaptive:
-            a_hat_cbf_dot = ControlAffineSystem.projection_operator(a_hat_cbf, 
-                                              -self.nu_cbf(rho_cbf) * self.Gamma_cbf @ self.Y(x).T @ dcbfdx,
-                                              self.a_center,
-                                              self.a_hat_norm_max,
-                                              self.epsilon,
-                                              self.Gamma_cbf)
+            a_hat_cbf_dot = self.projected_cracbf_update(
+                x, a_hat_cbf, rho_cbf, dcbfdx
+            )
         
             correction_term = -self.eta_cbf/(h + self.eta_cbf).item() * (dcbfda.T @ a_hat_cbf_dot).item()
         else:
@@ -481,13 +515,10 @@ class ControlAffineSystem:
         dcbfda = self.dcbfda(x, a_hat_cbf).reshape(self.adim,1)
         dcbfdx = self.dcbfdx(x, a_hat_cbf).reshape(self.xdim,1)
 
-        # Projection operator to enforce bounds on a_hat_cbf
-        a_hat_cbf_dot = ControlAffineSystem.projection_operator(a_hat_cbf, 
-                                              -self.nu_cbf(rho_cbf) * self.Gamma_cbf @ self.Y(x).T @ dcbfdx,
-                                              self.a_center,
-                                              self.a_hat_norm_max,
-                                              self.epsilon,
-                                              self.Gamma_cbf)
+        # Use the same projected update as the controller correction term.
+        a_hat_cbf_dot = self.projected_cracbf_update(
+            x, a_hat_cbf, rho_cbf, dcbfdx
+        )
         
         rho_cbf_dot = -self.nu_cbf(rho_cbf)/(self.dnu_drho_cbf(rho_cbf) * (h + self.eta_cbf)).item() * (dcbfda.T @ a_hat_cbf_dot).item()
 
@@ -575,6 +606,27 @@ class ControlAffineSystem:
         """Compute the gradient ∇φ(â)"""
         denominator = 2 * epsilon * a_hat_norm_max - epsilon**2
         return (2 * (a_hat - a_center)).reshape(-1,1) / denominator
+
+    @staticmethod
+    def box_projection_operator(a_hat, y, a_lb, a_ub, epsilon):
+        """Smoothly suppress components of ``y`` directed out of a box."""
+        a_hat = np.asarray(a_hat, dtype=float).reshape(-1)
+        update = np.asarray(y, dtype=float).reshape(-1).copy()
+        a_lb = np.asarray(a_lb, dtype=float).reshape(-1)
+        a_ub = np.asarray(a_ub, dtype=float).reshape(-1)
+        if not (a_hat.shape == update.shape == a_lb.shape == a_ub.shape):
+            raise ValueError(
+                "a_hat, y, a_lb, and a_ub must have matching shapes"
+            )
+        epsilon = float(epsilon)
+        if not np.isfinite(epsilon) or epsilon <= 0.0:
+            raise ValueError("epsilon must be finite and strictly positive")
+
+        lower_scale = np.clip((a_hat - a_lb) / epsilon, 0.0, 1.0)
+        upper_scale = np.clip((a_ub - a_hat) / epsilon, 0.0, 1.0)
+        update = np.where(update < 0.0, update * lower_scale, update)
+        update = np.where(update > 0.0, update * upper_scale, update)
+        return update.reshape(-1, 1)
 
     @staticmethod
     def projection_operator(a_hat, y, a_center, a_hat_norm_max, epsilon, Gamma=None):
