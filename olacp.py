@@ -307,6 +307,24 @@ class OLACP:
         schedule = self.representation_lr
         if callable(schedule):
             value = schedule(update_index)
+            value_array = np.asarray(value, dtype=float)
+            if value_array.size == 1:
+                value = float(value_array.item())
+            else:
+                try:
+                    value = np.broadcast_to(
+                        value_array, self.Theta.shape
+                    ).copy()
+                except ValueError as error:
+                    raise ValueError(
+                        "representation learning-rate vectors must broadcast "
+                        "to Theta"
+                    ) from error
+                if np.any(~np.isfinite(value)) or np.any(value <= 0.0):
+                    raise ValueError(
+                        "representation learning rates must be finite and positive"
+                    )
+                return value
         elif np.isscalar(schedule):
             value = schedule
         else:
@@ -315,8 +333,10 @@ class OLACP:
                 raise ValueError("representation learning-rate schedule is exhausted")
             value = values[update_index - 1]
         value = float(value)
-        if value <= 0.0:
-            raise ValueError("representation learning rates must be positive")
+        if not np.isfinite(value) or value <= 0.0:
+            raise ValueError(
+                "representation learning rates must be finite and positive"
+            )
         return value
 
     def compute_quantile(self):

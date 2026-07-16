@@ -39,12 +39,12 @@ N_cal = 200
 if N_cal < 100:
     raise ValueError("N_cal must be at least 100")
 
-# The true wake-decay rate is unknown to the controller. The initial value and
-# its admissible range are engineering guesses.
-THETA_TRUE = 0.045
-THETA_INIT = np.array([0.08])
-THETA_LB = np.array([0.005])
-THETA_UB = np.array([0.12])
+# Only theta_3 has a physical true value in this parameterization. Theta_1 and
+# theta_2 regulate the ranges of the abstract interval parameters.
+WAKE_DECAY_TRUE = 0.045
+THETA_INIT = np.array([0.0025, 0.0002, 0.08])
+THETA_LB = np.array([0.002, 0.00015, 0.005])
+THETA_UB = np.array([0.004, 0.00030, 0.12])
 
 # Physical and controller parameters.
 mass = 1650.0
@@ -53,8 +53,8 @@ gravity = 9.81
 
 # In practice, the latent-parameter box is only approximately known. These
 # rounded values are engineering guesses for the intended ACC regime.
-a_lb = np.array([-0.20, -0.004, -4e-4, 0.0, -0.002, 0.0, 21.5])
-a_ub = np.array([-0.09, 0.001, 0.0, 0.005, 0.0, 2e-4, 24.5])
+a_lb = np.array([-0.20, -2.0, -2.666667, 0.0, -1.0, 0.0, 21.5])
+a_ub = np.array([-0.09, 0.5, 0.0, 0.005, 0.0, 1.333333, 24.5])
 a_center = 0.5 * (a_lb + a_ub)
 
 # Generate the piecewise-constant physical environment directly. The first K
@@ -71,18 +71,25 @@ lead_velocity_schedule = 23.0 + 1.15 * np.sin(
     0.9 * environment_phase + 0.55
 )
 
-# True interval parameters are retained only for simulation diagnostics. They
-# are not available to the controller or used to choose the guessed bounds.
-a_true_schedule = np.column_stack(
-    (
-        -(b0_schedule + b2_schedule * wind_speed**2) / mass,
-        (-b1_schedule + 2.0 * b2_schedule * wind_speed) / mass,
-        -b2_schedule / mass,
-        b2_schedule * b3_schedule * wind_speed**2 / mass,
-        -2.0 * b2_schedule * b3_schedule * wind_speed / mass,
-        b2_schedule * b3_schedule / mass,
-        lead_velocity_schedule,
-    )
+# Coefficients of the physical drag expansion. The corresponding abstract
+# parameters a_2, a_3, a_5, and a_6 also depend on the installed Theta.
+c1_schedule = -(b0_schedule + b2_schedule * wind_speed**2) / mass
+c2_schedule = (-b1_schedule + 2.0 * b2_schedule * wind_speed) / mass
+c3_schedule = -b2_schedule / mass
+c4_schedule = b2_schedule * b3_schedule * wind_speed**2 / mass
+c5_schedule = -2.0 * b2_schedule * b3_schedule * wind_speed / mass
+c6_schedule = b2_schedule * b3_schedule / mass
+
+a_true_initial = np.array(
+    [
+        c1_schedule[0],
+        c2_schedule[0] / THETA_INIT[0],
+        c3_schedule[0] / THETA_INIT[1],
+        c4_schedule[0],
+        c5_schedule[0] / THETA_INIT[0],
+        c6_schedule[0] / THETA_INIT[1],
+        lead_velocity_schedule[0],
+    ]
 )
 
 
@@ -100,7 +107,7 @@ def true_uncertainty(x, t):
         * (
             1.0
             - b3_schedule[interval_index]
-            * np.exp(-THETA_TRUE * z)
+            * np.exp(-WAKE_DECAY_TRUE * z)
         )
     )
     return np.array(
@@ -108,9 +115,9 @@ def true_uncertainty(x, t):
     )
 
 
-# The estimator set A_hat need not equal the broader environmental set A. A
-# small projection ball accounts for the different scales of the raw features.
-a_hat_norm_max = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2)
+# The projection ball contains the guessed box A inside its epsilon-interior.
+projection_epsilon = 0.01
+a_hat_norm_max = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + projection_epsilon
 Gamma_cbf = 1.0 * np.eye(7)
 Gamma_cbf_inv = np.linalg.inv(Gamma_cbf)
 
@@ -130,11 +137,11 @@ params = {
     "use_adaptive": USE_ADAPTIVE,
     "use_cp": USE_CP,
     "Gamma_cbf": Gamma_cbf,
-    "a_true": a_true_schedule[0].copy(),
+    "a_true": a_true_initial,
     "a_ub": a_ub,
     "a_lb": a_lb,
     "a_hat_norm_max": a_hat_norm_max,
-    "epsilon": 0.1 * a_hat_norm_max,
+    "epsilon": projection_epsilon,
     "eta_cbf": 5.0,
     "cbf_rate": 0.5,
     "u_max": 0.3 * mass * gravity,
@@ -186,8 +193,7 @@ olacp = OLACP(
     buffer_maxlen=I_length,
     theta_init=THETA_INIT,
     representation_period=B,
-    # The physical 1/m scaling makes the scalar representation gradient small.
-    representation_lr=lambda j: 1e5 / j,
+    representation_lr=lambda j: np.array([100.0, 0.1, 1e5]) / j,# Coordinate-wise rates account for the different Theta scales
     theta_lb=THETA_LB,
     theta_ub=THETA_UB,
     Y_theta=system.Y_theta,
@@ -225,7 +231,18 @@ e_k_hist = []
 # Main simulation loop.
 for i, t in enumerate(tt):
     interval_index = i // I_length
-    a_true = a_true_schedule[interval_index]
+    theta_1, theta_2, _ = system.Theta_hat
+    a_true = np.array(
+        [
+            c1_schedule[interval_index],
+            c2_schedule[interval_index] / theta_1,
+            c3_schedule[interval_index] / theta_2,
+            c4_schedule[interval_index],
+            c5_schedule[interval_index] / theta_1,
+            c6_schedule[interval_index] / theta_2,
+            lead_velocity_schedule[interval_index],
+        ]
+    )
 
     x_hist[i] = x
     a_hat_cbf_hist[i] = a_hat_cbf
@@ -322,7 +339,10 @@ for i, t in enumerate(tt):
             f"interval={interval_index + 1:02d}, "
             f"score={s_k:.5f}, Q={Q_k_hist[i]:.5f}, "
             f"delta_next={olacp.delta:.3f}, miscoverage={e_k}, "
-            f"theta={system.Theta_hat.item():.5f}"
+            "Theta="
+            + np.array2string(
+                system.Theta_hat, precision=6, separator=","
+            )
         )
 
 interval_times = np.asarray(interval_times)
@@ -353,11 +373,11 @@ fig.suptitle("Adaptive cruise control with a CRaCBF-QP")
 # Plot safety margins.
 fig, axs = plt.subplots(2, 1, sharex=True)
 axs[0].plot(tt, h_hist, label=r"$h(x,\hat{a})$")
+axs[0].plot(tt, tightened_cbf_margin_hist, ":", label="tightened h margin")
 axs[0].axhline(0.0, color="r", linestyle="--", label=r"$h=0$")
 axs[0].set_ylabel(r"$h(x,\hat{a})$")
 axs[0].legend()
 axs[1].plot(tt, physical_safety_hist, label=r"$z-z_{\min}$")
-axs[1].plot(tt, tightened_cbf_margin_hist, ":", label="tightened h margin")
 axs[1].axhline(0.0, color="r", linestyle="--", label="safety boundary")
 axs[1].set_ylabel("safety margin")
 axs[1].set_xlabel("Time (s)")
@@ -381,6 +401,24 @@ for ax in axs:
     ax.grid(True)
 fig.suptitle("Adaptive conformal prediction")
 
+# Plot the learned representation.
+fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 10))
+for j in range(THETA_INIT.size):
+    axs[j].plot(tt, Theta_hist[:, j], label=rf"$\hat{{\theta}}_{j + 1}$")
+    axs[j].axhline(THETA_LB[j], color="0.5", linestyle=":")
+    axs[j].axhline(THETA_UB[j], color="0.5", linestyle=":")
+    axs[j].set_ylabel(rf"$\theta_{j + 1}$")
+    axs[j].legend()
+axs[2].axhline(
+    WAKE_DECAY_TRUE,
+    color="k",
+    linestyle="--",
+    label=r"true $\theta_3$",
+)
+axs[2].legend()
+axs[-1].set_xlabel("Time (s)")
+fig.suptitle("Learned Representation (θ)")
+
 # Plot adaptive, interval-fitted, and physical latent parameters.
 fig, axs = plt.subplots(system.adim, 1, sharex=True, figsize=(8, 12))
 for i in range(system.adim):
@@ -393,17 +431,13 @@ axs[0].legend(ncol=3)
 axs[-1].set_xlabel("Time (s)")
 fig.suptitle("Adaptive, fitted, and physical latent parameters")
 
-# Plot the learned representation and CRaCBF scaling variables.
-fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
-axs[0].plot(tt, Theta_hist[:, 0], label="theta_hat")
-axs[0].axhline(THETA_TRUE, color="k", linestyle="--", label="theta true")
-axs[0].set_ylabel("theta")
-axs[0].legend()
-axs[1].plot(tt, nu_cbf_hist)
-axs[1].set_ylabel("nu(rho)")
-axs[2].plot(tt, rho_cbf_hist)
-axs[2].set_ylabel("rho")
-axs[2].set_xlabel("Time (s)")
+# Plot the CRaCBF scaling variables.
+fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 10))
+axs[0].plot(tt, nu_cbf_hist)
+axs[0].set_ylabel("nu(rho)")
+axs[1].plot(tt, rho_cbf_hist)
+axs[1].set_ylabel("rho")
+axs[1].set_xlabel("Time (s)")
 for ax in axs:
     ax.grid(True)
 fig.suptitle("Learned representation and CRaCBF scaling")

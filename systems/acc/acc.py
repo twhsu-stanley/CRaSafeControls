@@ -7,14 +7,14 @@ class ACC(ControlAffineSystem):
     """Adaptive-cruise-control system from the CRaCBF example.
 
     The controller represents the unknown plant term as ``Y_theta(x) @ a``.
-    The scalar representation parameter ``theta`` controls the wake-effect
-    decay, while the seven-dimensional interval parameter ``a`` contains the
-    drag coefficients and lead-vehicle velocity.  The physical uncertainty is
-    supplied independently so online representation updates never alter the
-    simulated plant.
+    The representation parameters scale the linear and quadratic velocity
+    features and control the wake-effect decay. The seven-dimensional interval
+    parameter ``a`` contains the corresponding abstract coefficients and the
+    lead-vehicle velocity. The physical uncertainty is supplied independently
+    so online representation updates never alter the simulated plant.
     """
 
-    theta_shape = (1,)
+    theta_shape = (3,)
     xdim = 3
     udim = 1
     adim = 7
@@ -26,11 +26,12 @@ class ACC(ControlAffineSystem):
             raise TypeError("Parameters must be a dictionary.")
 
         theta_init = np.asarray(
-            params.get("Theta_init", np.array([0.05])), dtype=float
+            params.get("Theta_init", np.array([0.0025, 0.0002, 0.05])),
+            dtype=float,
         ).reshape(-1)
-        if theta_init.size != 1:
-            raise ValueError("Theta_init must contain exactly one value")
-        if not np.isfinite(theta_init[0]) or theta_init[0] <= 0.0:
+        if theta_init.size != np.prod(self.theta_shape):
+            raise ValueError("Theta_init must contain exactly three values")
+        if np.any(~np.isfinite(theta_init)) or np.any(theta_init <= 0.0):
             raise ValueError("Theta_init must be finite and strictly positive")
         self.Theta_hat = theta_init.reshape(self.theta_shape).copy()
 
@@ -73,30 +74,29 @@ class ACC(ControlAffineSystem):
         return np.array([[0.0], [1.0 / self.mass], [0.0]])
 
     @staticmethod
-    def _theta_scalar(theta):
+    def _theta_vector(theta):
         theta_array = np.asarray(theta, dtype=float).reshape(-1)
-        if theta_array.size != 1:
-            raise ValueError("theta must contain exactly one value")
-        theta_value = float(theta_array[0])
-        if not np.isfinite(theta_value) or theta_value <= 0.0:
+        if theta_array.size != 3:
+            raise ValueError("theta must contain exactly three values")
+        if np.any(~np.isfinite(theta_array)) or np.any(theta_array <= 0.0):
             raise ValueError("theta must be finite and strictly positive")
-        return theta_value
+        return theta_array
 
     @classmethod
     def psi_theta(cls, x, theta):
         """Evaluate the six wake-effect features from Section V-B."""
         x = np.asarray(x, dtype=float).reshape(cls.xdim)
         v, z = x[1], x[2]
-        theta_value = cls._theta_scalar(theta)
-        wake_decay = np.exp(-theta_value * z)
+        theta_1, theta_2, theta_3 = cls._theta_vector(theta)
+        wake_decay = np.exp(-theta_3 * z)
         return np.array(
             [
                 1.0,
-                v,
-                v**2,
+                theta_1 * v,
+                theta_2 * v**2,
                 wake_decay,
-                v * wake_decay,
-                v**2 * wake_decay,
+                theta_1 * v * wake_decay,
+                theta_2 * v**2 * wake_decay,
             ]
         )
 
@@ -121,19 +121,29 @@ class ACC(ControlAffineSystem):
         if w.size != self.xdim:
             raise ValueError(f"w must have length {self.xdim}")
 
-        theta_value = self._theta_scalar(theta)
+        theta_1, theta_2, theta_3 = self._theta_vector(theta)
         v, z = x[1], x[2]
-        wake_decay = np.exp(-theta_value * z)
+        wake_decay = np.exp(-theta_3 * z)
         residual = self.Y_theta(x, theta) @ a - w
-        model_derivative = -z * wake_decay * (
-            a[3] + v * a[4] + v**2 * a[5]
+        model_gradient = np.array(
+            [
+                v * (a[1] + wake_decay * a[4]),
+                v**2 * (a[2] + wake_decay * a[5]),
+                -z
+                * wake_decay
+                * (
+                    a[3]
+                    + theta_1 * v * a[4]
+                    + theta_2 * v**2 * a[5]
+                ),
+            ]
         )
-        return np.array([2.0 * residual[1] * model_derivative])
+        return 2.0 * residual[1] * model_gradient
 
     def set_representation(self, theta):
-        """Install a positive scalar representation parameter."""
-        theta_value = self._theta_scalar(theta)
-        self.Theta_hat = np.array([theta_value])
+        """Install a positive three-dimensional representation parameter."""
+        theta_vector = self._theta_vector(theta)
+        self.Theta_hat = theta_vector.reshape(self.theta_shape).copy()
 
     @staticmethod
     def smooth_max(r, epsilon):
