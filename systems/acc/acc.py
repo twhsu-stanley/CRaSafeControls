@@ -136,7 +136,7 @@ class ACC(ControlAffineSystem):
         self.Theta_hat = np.array([theta_value])
 
     @staticmethod
-    def smooth_positive_part(r, epsilon):
+    def smooth_max(r, epsilon):
         """Smooth approximation ``0.5 * (r + sqrt(r**2 + epsilon**2))``."""
         r = np.asarray(r, dtype=float)
         epsilon = float(epsilon)
@@ -145,8 +145,8 @@ class ACC(ControlAffineSystem):
         return 0.5 * (r + np.sqrt(r**2 + epsilon**2))
 
     @staticmethod
-    def smooth_positive_part_derivative(r, epsilon):
-        """Derivative of :meth:`smooth_positive_part` with respect to ``r``."""
+    def smooth_max_derivative(r, epsilon):
+        """Derivative of :meth:`smooth_max` with respect to ``r``."""
         r = np.asarray(r, dtype=float)
         epsilon = float(epsilon)
         if not np.isfinite(epsilon) or epsilon <= 0.0:
@@ -162,7 +162,7 @@ class ACC(ControlAffineSystem):
             x[2]
             - self.z_min
             - self.lookahead_time
-            * self.smooth_positive_part(
+            * self.smooth_max(
                 relative_velocity, self.cbf_smoothing_epsilon
             )
         )
@@ -173,7 +173,7 @@ class ACC(ControlAffineSystem):
         a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
         relative_velocity = x[1] - a_hat[6]
         phi_prime = float(
-            self.smooth_positive_part_derivative(
+            self.smooth_max_derivative(
                 relative_velocity, self.cbf_smoothing_epsilon
             )
         )
@@ -186,7 +186,7 @@ class ACC(ControlAffineSystem):
         a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
         relative_velocity = x[1] - a_hat[6]
         phi_prime = float(
-            self.smooth_positive_part_derivative(
+            self.smooth_max_derivative(
                 relative_velocity, self.cbf_smoothing_epsilon
             )
         )

@@ -175,7 +175,7 @@ params = {
     "a_hat_norm_max": a_hat_norm_max,
     "epsilon": 0.1 * a_hat_norm_max,
     "eta_cbf": 5.0,
-    "cbf": {"rate": 0.5},
+    "cbf_rate": 0.5,
     "u_max": acceleration_fraction * mass * gravity,
     "u_min": -deceleration_fraction * mass * gravity,
     "dt": dt,
