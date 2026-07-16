@@ -26,6 +26,11 @@ class ControlAffineSystem:
         # True uncertainty parameters
         self.a_true = np.copy(self.params["a_true"]) if "a_true" in self.params else np.zeros((self.adim,1))
 
+        # Rates
+        self.clf_rate = self.params.get("clf_rate", None)
+        self.cbf_rate = self.params.get("cbf_rate", None)
+        self.ccm_rate = self.params.get("ccm_rate", None)
+
         # Constant term for the adaptation laws
         self.eta_clf = float(self.params.get("eta_clf", 0.1))
         self.eta_cbf = float(self.params.get("eta_cbf", 0.1))
@@ -203,7 +208,7 @@ class ControlAffineSystem:
         b = (-LfV
             -LYV @ a_hat_clf
             -tightening
-            -self.params["clf"]["rate"] * V
+            -self.clf_rate * V
         )
 
         if "u_max" in self.params:
@@ -293,7 +298,7 @@ class ControlAffineSystem:
             Lfh
             + LYh @ a_hat_cbf
             - tightening
-            + float(self.params["cbf"]["rate"]) * (h - 0.5 / self.nu_cbf(rho_cbf) * self.safe_set_tightening)
+            + float(self.cbf_rate) * (h - 0.5 / self.nu_cbf(rho_cbf) * self.safe_set_tightening)
             - correction_term
         )
         if "u_max" in self.params:
@@ -365,7 +370,7 @@ class ControlAffineSystem:
         A = gamma_s1_M_x @ self.g(x)
         B = (gamma_s1_M_x @ (self.f(x) + self.g(x) @ u_d + Y_x_a)
             - gamma_s0_M_d @ (self.f(x_d) + self.g(x_d) @ u_d + Y_d_a)
-            + self.params["ccm"]["rate"] * self.Erem).item()
+            + self.ccm_rate * self.Erem).item()
 
         if use_qpsolvers is True: 
             if use_slack:

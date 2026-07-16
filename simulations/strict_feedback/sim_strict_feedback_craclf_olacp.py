@@ -70,7 +70,7 @@ params = {
     "eta_clf": 10.0,
     # The backstepping construction establishes rate 4. A smaller QP rate
     # leaves control authority for the conformal tightening.
-    "clf": {"rate": 2.0},
+    "clf_rate": 2.0,
     "weight_slack": 1e4,
 }
 
