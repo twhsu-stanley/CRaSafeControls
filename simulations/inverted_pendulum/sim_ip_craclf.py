@@ -17,11 +17,11 @@ USE_ADAPTIVE = True
 
 # Algorithm 1 setup.
 K = 20  # total number of time intervals I_k
-B = 2   # update the representation every B intervals
+B = 4   # update the representation every B intervals
 
 # Time setup for each interval I_k.
 dt = 0.01
-interval_duration = 2.5
+interval_duration = 3
 I_length = int(round(interval_duration / dt))
 if I_length < 2 or not np.isclose(I_length * dt, interval_duration):
     raise ValueError("interval_duration must be an integer multiple of dt")
@@ -36,7 +36,7 @@ def wind_velocity(t):
     interval_index = int(np.floor(max(float(t), 0.0) / interval_duration))
     phase = 2.0 * np.pi * (interval_index % K) / K
     return np.array(
-        [0.05 * np.cos(phase), 0.1 * np.sin(phase + 0.4)]
+        [0.05 * np.cos(phase), 0.08 * np.sin(phase + 0.4)]
     ) * 0.0
 
 
@@ -54,7 +54,8 @@ Theta_init = np.array(
 a_lb = -np.ones(4)
 a_ub = np.ones(4)
 a_center = 0.5 * (a_lb + a_ub)
-a_radius = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + 0.2
+projection_epsilon = 0.01
+a_radius = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + projection_epsilon
 
 params = {
     "l": 1.0,       # pendulum length [m]
@@ -62,19 +63,18 @@ params = {
     "grav": 9.81,   # gravitational acceleration [m/s^2]
     "b": 0.05,      # nominal damping [N m s/rad]
     "T_a": 0.12,    # actuator time constant [s]
-    "c_w": 0.08,    # wind drag coefficient
+    "c_w": 0.01,    # wind drag coefficient
     "b_star": 0.08, # true damping, unknown to the controller
     "m_star": 1.03, # true mass, unknown to the controller
     "wind_velocity": wind_velocity,
     "Theta_init": Theta_init,
     "use_adaptive": USE_ADAPTIVE,
     "use_cp": USE_CP,
-    "Gamma_clf": np.diag([0.002, 0.002, 0.002, 0.002]),
-    "a_true": np.zeros(4),
+    "Gamma_clf": np.diag([0.02, 0.02, 0.02, 0.02]),
     "a_ub": a_ub,
     "a_lb": a_lb,
     "a_hat_norm_max": a_radius,
-    "epsilon": 0.05,
+    "epsilon": projection_epsilon,
     "eta_clf": 10.0,
     # The backstepping construction establishes rate 4. A smaller QP rate
     # leaves control authority for the conformal tightening.
