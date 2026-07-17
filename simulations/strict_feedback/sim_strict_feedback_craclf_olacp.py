@@ -80,7 +80,7 @@ system = StrictFeedbackSystem(params)
 # Initial calibration set. Each historical interval follows lines 8 and 11 of
 # Algorithm 1: fit a bounded a_k and retain the largest residual norm.
 rng = np.random.default_rng(7)
-N_cal = 200
+N_cal = 100
 S_cal_init = []
 for k in range(N_cal):
     x1_cal = rng.uniform(-1.25, 1.25, I_length)
@@ -113,8 +113,8 @@ olacp = OLACP(
     S_cal_init,
     N_cal=N_cal,
     acp_lr=0.02,
-    delta_target=0.1,
-    delta_init=0.1,
+    delta_target=0.05,
+    delta_init=0.05,
     buffer_maxlen=I_length,
     theta_init=Theta_init,
     representation_period=B,
