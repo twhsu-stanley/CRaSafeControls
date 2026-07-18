@@ -16,12 +16,12 @@ USE_CP = True
 USE_ADAPTIVE = True
 
 # Algorithm 1 setup.
-K = 20  # total number of time intervals I_k
-B = 4   # update the representation every B intervals
+K = 16  # total number of time intervals I_k
+B = 2   # update the representation every B intervals
 
 # Time setup for each interval I_k.
 dt = 0.01
-interval_duration = 3
+interval_duration = 2.5
 I_length = int(round(interval_duration / dt))
 if I_length < 2 or not np.isclose(I_length * dt, interval_duration):
     raise ValueError("interval_duration must be an integer multiple of dt")
@@ -36,41 +36,57 @@ def wind_velocity(t):
     interval_index = int(np.floor(max(float(t), 0.0) / interval_duration))
     phase = 2.0 * np.pi * (interval_index % K) / K
     return np.array(
-        [0.05 * np.cos(phase), 0.08 * np.sin(phase + 0.4)]
-    ) * 0.0
+        [0.02 * np.cos(phase), 0.02 * np.sin(phase + 0.2)]
+    )
 
-
-# The first four columns initially emphasize four of the five known basis
-# functions. The weak cross-couplings and fifth row are learned by OLACP.
-Theta_init = np.array(
+# Bounds surround a rank-two factorization of the total physical uncertainty.
+# The first latent direction captures the fixed plant mismatch and the second
+# captures the wind-dependent variation, with margin for representation error.
+theta_lb = 10 * np.array(
     [
-        [1.0, 0.001, 0.001, 0.001],
-        [0.001, 1.0, 0.001, 0.001],
-        [0.001, 0.001, 1.0, 0.001],
-        [0.001, 0.001, 0.001, 1.0],
-        [0.001, 0.001, 0.001, 0.001],
+        [-5.0, -5.0, -5.0, -5.0, -5.0],
+        [-5.0, -5.0, -5.0, -5.0, -5.0],
+        [-0.0, -0.0, -5.0, -0.0, -0.0],
+        [-1.0, -1.0, -1.0, -1.0, -1.0],
+        [-5.0, -5.0, -5.0, -5.0, -5.0],
+        [-5.0, -5.0, -5.0, -5.0, -5.0],
     ]
 )
-a_lb = -np.ones(4)
-a_ub = np.ones(4)
+theta_ub = 10 * np.array(
+    [
+        [5.0, 5.0, 5.0, 5.0, 5.0],
+        [5.0, 5.0, 5.0, 5.0, 5.0],
+        [0.0, 0.0, 5.0, 0.0, 0.0],
+        [1.0, 1.0, 1.0, 1.0, 1.0],
+        [5.0, 5.0, 5.0, 5.0, 5.0],
+        [5.0, 5.0, 5.0, 5.0, 5.0],
+    ]
+)
+theta_rng = np.random.default_rng(11)
+Theta_init = theta_rng.uniform(theta_lb, theta_ub)
+# These latent coordinates are related to, but are not equal to, [w_x, w_z].
+a_lb = np.array([-6.0, -5.0, -5.0, -5.0, -5.0])/10.0
+a_ub = np.array([6.0, 5.0, 5.0, 5.0, 5.0])/10.0
 a_center = 0.5 * (a_lb + a_ub)
 projection_epsilon = 0.01
 a_radius = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + projection_epsilon
 
 params = {
-    "l": 1.0,       # pendulum length [m]
-    "m": 1.0,       # nominal mass [kg]
+    "length": 1.0,       # pendulum length [m]
+    "mass": 1.0,       # nominal mass [kg]
+    #"inertia": 0.5,    # nominal inertia [kg m^2]
     "grav": 9.81,   # gravitational acceleration [m/s^2]
-    "b": 0.05,      # nominal damping [N m s/rad]
-    "T_a": 0.12,    # actuator time constant [s]
+    "damping": 0.04,      # nominal damping [N m s/rad]
+    "T_a": 0.01,    # actuator time constant [s]
     "c_w": 0.01,    # wind drag coefficient
-    "b_star": 0.08, # true damping, unknown to the controller
-    "m_star": 1.03, # true mass, unknown to the controller
+    "true_damping": 0.2, # true damping, unknown to the controller
+    "true_mass": 3.0, # true mass, unknown to the controller
+    #"true_inertia": 0.50, # true inertia, unknown to the controller
     "wind_velocity": wind_velocity,
     "Theta_init": Theta_init,
     "use_adaptive": USE_ADAPTIVE,
     "use_cp": USE_CP,
-    "Gamma_clf": np.diag([0.02, 0.02, 0.02, 0.02]),
+    "Gamma_clf": np.diag([0.01, 0.01, 0.01, 0.01, 0.01]) * 1e-6,
     "a_ub": a_ub,
     "a_lb": a_lb,
     "a_hat_norm_max": a_radius,
@@ -78,7 +94,7 @@ params = {
     "eta_clf": 10.0,
     # The backstepping construction establishes rate 4. A smaller QP rate
     # leaves control authority for the conformal tightening.
-    "clf_rate": 2.0,
+    "clf_rate": 1.0,
     "weight_slack": 1e4,
 }
 
@@ -127,9 +143,9 @@ olacp = OLACP(
     buffer_maxlen=I_length,
     theta_init=Theta_init,
     representation_period=B,
-    representation_lr=lambda j: 2e-4 / j,
-    theta_lb=-3.0,
-    theta_ub=3.0,
+    representation_lr=lambda j: 2e-3 / j,
+    theta_lb=theta_lb,
+    theta_ub=theta_ub,
     Y_theta=system.Y_theta,
     representation_loss_gradient=system.representation_loss_gradient,
 )
@@ -137,7 +153,7 @@ system.set_representation(olacp.Theta)
 system.cp_quantile = olacp.Q_k
 
 # Simulation initialization.
-x = np.array([0.8, 0.4, 0.0])
+x = np.array([1.2, 0.6, 0.0])
 a_hat_clf = a_center.copy()
 rho_clf = 0.0
 x_ext = np.hstack((x, a_hat_clf, rho_clf))
@@ -253,11 +269,23 @@ for ax in axs:
     ax.grid(True)
 fig.suptitle("Actuator-augmented inverted-pendulum states")
 
+# Plot the two-dimensional wind disturbance.
+wind_hist = np.asarray([wind_velocity(t) for t in tt])
+fig, axs = plt.subplots(2, 1, sharex=True)
+axs[0].plot(tt, wind_hist[:, 0], linewidth=1.4)
+axs[0].set_ylabel(r"$w_x$ (m/s)")
+axs[1].plot(tt, wind_hist[:, 1], linewidth=1.4)
+axs[1].set_ylabel(r"$w_z$ (m/s)")
+axs[1].set_xlabel("Time (s)")
+for ax in axs:
+    ax.grid(True)
+fig.suptitle("Wind disturbance")
+
 # Plot the commanded torque and CRaCLF.
 fig, axs = plt.subplots(2, 1, sharex=True)
 axs[0].plot(tt, u_hist, linewidth=1.2)
 axs[0].set_ylabel("u (N m)")
-axs[1].semilogy(tt, np.maximum(V_hist, 1e-12), linewidth=1.2)
+axs[1].plot(tt, np.maximum(V_hist, 1e-12), linewidth=1.2)
 axs[1].set_ylabel(r"$V_r$")
 axs[1].set_xlabel("Time (s)")
 for ax in axs:
@@ -289,7 +317,8 @@ fig.suptitle("Adaptive conformal prediction")
 # Plot the pointwise loss minimized by Algorithm 1. Each interval uses the
 # representation that was installed while that interval's data were sampled.
 fig, ax = plt.subplots(figsize=(7, 4))
-ax.semilogy(
+#ax.semilogy(
+ax.plot(
     tt,
     np.maximum(prediction_error_hist, 1e-16),
     label=r"$\|Y_{\Theta_j}(x_t)a_k-w_t\|_2^2$",
@@ -327,7 +356,7 @@ for ax in axs:
         )
 fig.suptitle("Adaptive and interval-fitted parameters")
 
-# Plot the learned 5-by-4 representation matrix.
+# Plot the learned 6-by-2 representation matrix.
 fig, axs = plt.subplots(
     *Theta_init.shape, sharex=True, figsize=(11, 11), squeeze=False
 )

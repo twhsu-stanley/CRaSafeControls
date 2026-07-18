@@ -16,10 +16,10 @@ class IP(ControlAffineSystem):
     parameter-dependent backstepping construction from the example.
     """
 
-    theta_shape = (5, 4)
+    theta_shape = (6, 5)
     xdim = 3
     udim = 1
-    adim = 4
+    adim = 5
 
     def __init__(self, params=None):
         if params is None:
@@ -28,22 +28,28 @@ class IP(ControlAffineSystem):
         self.Theta_hat = np.asarray(
             params.get(
                 "Theta_init",
-                np.vstack((np.eye(self.adim), np.zeros((1, self.adim)))),
+                np.vstack(
+                    (
+                        np.eye(self.adim),
+                        np.zeros(
+                            (self.theta_shape[0] - self.adim, self.adim)
+                        ),
+                    )
+                ),
             ),
             dtype=float,
         ).reshape(self.theta_shape)
 
-        self.length = float(params.get("l", params.get("L", 1.0)))
-        self.mass = float(params.get("m", 1.0))
+        self.length = float(params.get("length", 1.0))
+        self.mass = float(params.get("mass", 1.0))
         self.grav = float(params.get("grav", params.get("g", 9.81)))
-        self.damping = float(params.get("b", 0.01))
-        self.inertia = float(
-            params.get("I", self.mass * self.length**2 / 3.0)
-        )
+        self.damping = float(params.get("damping", 0.01))
+        self.inertia = float(params.get("inertia", self.mass * self.length**2 / 3.0))
         self.actuator_time_constant = float(params.get("T_a", 0.1))
         self.drag_coefficient = float(params.get("c_w", 0.0))
-        self.true_damping = float(params.get("b_star", self.damping))
-        self.true_mass = float(params.get("m_star", self.mass))
+        self.true_damping = float(params.get("true_damping", self.damping))
+        self.true_mass = float(params.get("true_mass", self.mass))
+        self.true_inertia = float(params.get("true_inertia", self.true_mass * self.length**2 / 3.0))
 
         if self.length <= 0.0:
             raise ValueError("pendulum length must be positive")
@@ -51,6 +57,8 @@ class IP(ControlAffineSystem):
             raise ValueError("pendulum mass must be positive")
         if self.inertia <= 0.0:
             raise ValueError("pendulum inertia must be positive")
+        if self.true_inertia <= 0.0:
+            raise ValueError("true pendulum inertia must be positive")
         if self.actuator_time_constant <= 0.0:
             raise ValueError("T_a must be positive")
         if self.drag_coefficient < 0.0:
@@ -100,18 +108,19 @@ class IP(ControlAffineSystem):
     @staticmethod
     def psi(x):
         """Return the centered feature matrix Psi(x)."""
-        phi, phi_dot, _ = np.asarray(x, dtype=float).reshape(3)
+        phi, phi_dot, tau_a = np.asarray(x, dtype=float).reshape(3)
         return np.array(
             [
-                [0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                 [
-                    phi_dot,
                     np.sin(phi),
                     np.cos(phi) - 1.0,
-                    phi_dot * np.sin(phi),
-                    phi_dot * np.cos(phi),
+                    phi_dot,
+                    tau_a,
+                    phi_dot * np.cos(2 * phi),
+                    phi_dot * np.sin(2 * phi),
                 ],
-                [0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             ],
             dtype=float,
         )
@@ -170,22 +179,21 @@ class IP(ControlAffineSystem):
         )
 
     def true_uncertainty(self, x, t=0.0):
-        """Return the unknown damping, mass, and wind mismatch."""
+        """Return the unknown damping, mass, inertia, and wind mismatch."""
         if self.true_uncertainty_fcn is not None:
             uncertainty = np.asarray(
                 self.true_uncertainty_fcn(x, t), dtype=float
             )
         else:
-            phi, phi_dot, _ = np.asarray(x, dtype=float).reshape(self.xdim)
+            phi, phi_dot, tau_a = np.asarray(x, dtype=float).reshape(
+                self.xdim
+            )
             angular_uncertainty = (
-                (self.damping - self.true_damping) * phi_dot
-                + 0.5
-                * (self.mass - self.true_mass)
-                * self.grav
-                * self.length
-                * np.sin(phi)
-                + self.wind_torque(x, t)
-            ) / self.inertia
+                (self.damping / self.inertia - self.true_damping / self.true_inertia) * phi_dot
+                + 0.5 * ( self.mass / self.inertia - self.true_mass / self.true_inertia) * self.grav * self.length * np.sin(phi)
+                + (1.0 / self.inertia - 1.0 / self.true_inertia) * tau_a
+                + self.wind_torque(x, t) / self.true_inertia
+            )
             uncertainty = np.array([0.0, angular_uncertainty, 0.0])
 
         if uncertainty.shape != (self.xdim,):
@@ -238,37 +246,48 @@ class IP(ControlAffineSystem):
 
         feature = sp.Matrix(
             [[
-                phi_dot,
                 sp.sin(phi),
                 sp.cos(phi) - 1,
-                phi_dot * sp.sin(phi),
-                phi_dot * sp.cos(phi),
+                phi_dot,
+                tau_a,
+                phi_dot * sp.cos(2 * phi),
+                phi_dot * sp.sin(2 * phi),
             ]]
         )
-        d = (feature @ Theta @ a)[0]
+        beta = Theta @ a
         q = (
-            -self.damping * phi_dot
-            - 0.5 * self.mass * self.grav * self.length * sp.sin(phi)
-        ) / self.inertia + d
+            (
+                -self.damping / self.inertia
+                + beta[2]
+                + beta[4] * sp.cos(2 * phi)
+                + beta[5] * sp.sin(2 * phi)
+            )
+            * phi_dot
+            + (
+                -0.5 * self.mass * self.grav * self.length / self.inertia
+                + beta[0]
+            )
+            * sp.sin(phi)
+            + beta[1] * (sp.cos(phi) - 1)
+        )
+        sigma = beta[3] - 1.0 / self.inertia
 
         z1 = phi
         z2 = phi_dot + 2 * phi
-        tau_desired = self.inertia * (q + 2 * phi_dot + z1 + 2 * z2)
-        z3 = (tau_desired - tau_a) / self.inertia
+        tau_desired = (-q - 2 * phi_dot - z1 - 2 * z2) / sigma
+        z3 = sigma * (tau_a - tau_desired)
         z = sp.Matrix([z1, z2, z3])
         clf = sp.Rational(1, 2) * (z1**2 + z2**2 + z3**2)
 
         tau_desired_dot_ce = (
             sp.diff(tau_desired, phi) * phi_dot
             + sp.diff(tau_desired, phi_dot)
-            * (q - tau_a / self.inertia)
+            * (q + sigma * tau_a)
         )
         u_backstepping = (
             tau_a
             + self.actuator_time_constant * tau_desired_dot_ce
-            + self.inertia
-            * self.actuator_time_constant
-            * (z2 + 2 * z3)
+            - self.actuator_time_constant / sigma * (z2 + 2 * z3)
         )
 
         dclfdx = sp.Matrix([sp.diff(clf, state) for state in x])
