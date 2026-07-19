@@ -15,7 +15,7 @@ USE_CP = True
 USE_ADAPTIVE = True
 
 # Algorithm 1 setup.
-K_pretrain = 100  # sinusoidal-input intervals before CRaCLF control
+K_pretrain = 112  # sinusoidal-input intervals before CRaCLF control
 K = 5  # total number of time intervals I_k
 B = 4   # update the representation every B intervals
 if K_pretrain < 1:
@@ -25,7 +25,7 @@ if K_pretrain % B != 0:
 
 # Time setup for each interval I_k.
 dt = 0.01
-interval_duration = 5.0
+interval_duration = 4.0
 I_length = int(round(interval_duration / dt))
 if I_length < 2 or not np.isclose(I_length * dt, interval_duration):
     raise ValueError("interval_duration must be an integer multiple of dt")
@@ -46,7 +46,7 @@ def wind_velocity(t):
 
 def pretrain_input(t):
     """Persistently exciting commanded torque used before CRaCLF control."""
-    return np.array([1.0 * np.sin(2.0 * np.pi * 0.2 * t)])
+    return np.array([2.0 * np.sin(2.0 * np.pi * 0.2 * t)])
 
 # Bounds surround a rank-two factorization of the total physical uncertainty.
 # The first latent direction captures the fixed plant mismatch and the second
@@ -95,7 +95,7 @@ params = {
     "Theta_init": Theta_init,
     "use_adaptive": USE_ADAPTIVE,
     "use_cp": USE_CP,
-    "Gamma_clf": np.diag([0.01, 0.01, 0.01, 0.01, 0.01]),
+    "Gamma_clf": np.diag([0.005, 0.005, 0.005, 0.005, 0.005]),
     "a_ub": a_ub,
     "a_lb": a_lb,
     "a_hat_norm_max": a_radius,
@@ -112,7 +112,7 @@ system = IP(params)
 
 # Construct OLACP without calibration scores. The same instance first learns
 # the representation and collects S_cal_init, then continues during CRaCLF.
-N_cal = max(100, K_pretrain)
+N_cal = 100
 olacp = OLACP(
     [],
     N_cal=N_cal,
@@ -199,11 +199,11 @@ for pretrain_interval_index in range(K_pretrain):
         f"score={s_pretrain:.3e}, theta_step={theta_step_norm:.3e}"
     )
 
-S_cal_init = np.asarray(olacp.S_cal, dtype=float)
+# S_cal_init = np.asarray(olacp.S_cal, dtype=float)
 system.cp_quantile = olacp.compute_quantile()
 
 # Simulation initialization.
-x = np.array([1.2, 0.6, 0.0])
+x = np.array([0.6, 0.1, 0.0])
 a_hat_clf = a_center.copy()
 rho_clf = 0.0
 x_ext = np.hstack((x, a_hat_clf, rho_clf))

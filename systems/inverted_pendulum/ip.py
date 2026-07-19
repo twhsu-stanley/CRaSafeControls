@@ -161,8 +161,8 @@ class IP(ControlAffineSystem):
             * relative_velocity
         )
         return self.length * (
-            np.sin(phi) * wind_force[1]
-            - np.cos(phi) * wind_force[0]
+            np.cos(phi) * wind_force[0]
+            - np.sin(phi) * wind_force[1]
         )
 
     def true_uncertainty(self, x, t=0.0):

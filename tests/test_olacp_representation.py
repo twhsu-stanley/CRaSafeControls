@@ -11,6 +11,18 @@ class TestOLACPRepresentation(unittest.TestCase):
     def calibration_scores():
         return np.linspace(0.01, 1.0, 100)
 
+    def test_empty_calibration_can_be_populated_during_pretraining(self):
+        olacp = OLACP([], N_cal=100, buffer_maxlen=10)
+
+        self.assertIsNone(olacp.Q_k)
+        with self.assertRaisesRegex(ValueError, "empty calibration set"):
+            olacp.compute_quantile()
+
+        olacp.append_score(0.25)
+
+        self.assertEqual(olacp.compute_quantile(), 0.25)
+        self.assertEqual(list(olacp.S_cal), [0.25])
+
     def test_linear_feature_representation_matches_analytic_update(self):
         theta = np.array([[0.8, -0.2], [0.3, 0.6]])
         a = np.array([0.4, -0.7])
