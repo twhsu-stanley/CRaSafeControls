@@ -46,12 +46,7 @@ def wind_velocity(t):
 
 def pretrain_input(t):
     """Persistently exciting commanded torque used before CRaCLF control."""
-    return np.array(
-        [
-            1.5 * np.sin(2.0 * np.pi * 0.45 * t)
-            + 0.75 * np.sin(2.0 * np.pi * 0.90 * t + np.pi / 4.0)
-        ]
-    )
+    return np.array([1.2 * np.sin(2.0 * np.pi * 0.45 * t)])
 
 # Bounds surround a rank-two factorization of the total physical uncertainty.
 # The first latent direction captures the fixed plant mismatch and the second
@@ -100,7 +95,7 @@ params = {
     "Theta_init": Theta_init,
     "use_adaptive": USE_ADAPTIVE,
     "use_cp": USE_CP,
-    "Gamma_clf": np.diag([0.01, 0.01, 0.01, 0.01, 0.01]) * 1e-2,
+    "Gamma_clf": np.diag([0.01, 0.01, 0.01, 0.01, 0.01]) * 1e-5,
     "a_ub": a_ub,
     "a_lb": a_lb,
     "a_hat_norm_max": a_radius,
@@ -127,7 +122,7 @@ olacp = OLACP(
     buffer_maxlen=I_length,
     theta_init=Theta_init,
     representation_period=B,
-    representation_lr=2e-3,  # lambda j: 2e-3 / j,
+    representation_lr= lambda j: 2e6 / j,
     theta_lb=theta_lb,
     theta_ub=theta_ub,
     Y_theta=system.Y_theta,
@@ -139,10 +134,12 @@ system.set_representation(olacp.Theta)
 # plant state is reset below before CRaCLF control, while this OLACP object and
 # the learned representation are retained.
 pretrain_sample_count = K_pretrain * I_length
+tt_pretrain = np.arange(pretrain_sample_count, dtype=float) * dt
 x_pretrain = np.zeros(system.xdim)
 Theta_pretrain_hist = np.zeros((K_pretrain + 1, Theta_init.size))
 Theta_pretrain_hist[0] = olacp.Theta.reshape(-1)
 s_pretrain_hist = np.zeros(K_pretrain)
+pretrain_prediction_error_hist = np.full(pretrain_sample_count, np.nan)
 
 for pretrain_interval_index in range(K_pretrain):
     for interval_sample_index in range(I_length):
@@ -174,6 +171,12 @@ for pretrain_interval_index in range(K_pretrain):
 
     olacp.estimate_uncertainty(dt)
     s_pretrain = olacp.compute_score(system.a_ub, system.a_lb)
+    interval_pretrain_prediction_error = np.array(
+        [
+            np.linalg.norm(Y_t @ olacp.a_k - w_t, ord=2) ** 2
+            for Y_t, w_t in zip(olacp._Y_buffer, olacp._w_buffer)
+        ]
+    )
     olacp.append_score(s_pretrain)
     representation_update = olacp.update_representation()
 
@@ -184,6 +187,10 @@ for pretrain_interval_index in range(K_pretrain):
         theta_step_norm = np.linalg.norm(system.Theta_hat - theta_before)
 
     s_pretrain_hist[pretrain_interval_index] = s_pretrain
+    interval_start = pretrain_interval_index * I_length
+    pretrain_prediction_error_hist[
+        interval_start : interval_start + I_length
+    ] = interval_pretrain_prediction_error
     Theta_pretrain_hist[pretrain_interval_index + 1] = olacp.Theta.reshape(-1)
     olacp.clear_buffers()
 
@@ -357,27 +364,35 @@ for ax in axs:
         )
 fig.suptitle("Adaptive conformal prediction")
 
-# Plot the pointwise loss minimized by Algorithm 1. Each interval uses the
-# representation that was installed while that interval's data were sampled.
-fig, ax = plt.subplots(figsize=(7, 4))
-#ax.semilogy(
-ax.plot(
+# Plot the pointwise loss minimized by Algorithm 1 during pretraining and
+# CRaCLF operation. Each interval uses the representation that was installed
+# while that interval's data were sampled.
+fig, axs = plt.subplots(2, 1, figsize=(7, 7))
+axs[0].plot(
+    tt_pretrain,
+    np.maximum(pretrain_prediction_error_hist, 1e-16),
+    label=r"$\|Y_{\Theta_j}(x_t)a_k-w_t\|_2^2$",
+)
+axs[1].plot(
     tt,
     np.maximum(prediction_error_hist, 1e-16),
     label=r"$\|Y_{\Theta_j}(x_t)a_k-w_t\|_2^2$",
 )
-for update_index in range(B, K, B):
-    ax.axvline(
-        update_index * interval_duration,
-        color="k",
-        linestyle=":",
-        alpha=0.6,
-        label="new representation active" if update_index == B else None,
-    )
-ax.set_ylabel("squared prediction error")
-ax.set_xlabel("Time (s)")
-ax.grid(True)
-ax.legend()
+for ax, interval_count in zip(axs, (K_pretrain, K)):
+    for update_index in range(B, interval_count, B):
+        ax.axvline(
+            update_index * interval_duration,
+            color="k",
+            linestyle=":",
+            alpha=0.6,
+            label="new representation active" if update_index == B else None,
+        )
+    ax.set_ylabel("squared prediction error")
+    ax.grid(True)
+    ax.legend()
+axs[0].set_title("Sinusoidal-input pretraining")
+axs[1].set_title("CRaCLF control")
+axs[1].set_xlabel("Time (s)")
 fig.suptitle("Uncertainty-prediction error")
 
 # Plot adaptive and interval-fitted environmental parameters.
