@@ -15,9 +15,9 @@ USE_CP = True
 USE_ADAPTIVE = True
 
 # Algorithm 1 setup.
-K = 20  # total number of time intervals I_k
-B = 2   # update the representation every B intervals
 K_pretrain = 100  # sinusoidal-input intervals before CRaCLF control
+K = 5  # total number of time intervals I_k
+B = 4   # update the representation every B intervals
 if K_pretrain < 1:
     raise ValueError("K_pretrain must be at least 1")
 if K_pretrain % B != 0:
@@ -25,7 +25,7 @@ if K_pretrain % B != 0:
 
 # Time setup for each interval I_k.
 dt = 0.01
-interval_duration = 2.5
+interval_duration = 5.0
 I_length = int(round(interval_duration / dt))
 if I_length < 2 or not np.isclose(I_length * dt, interval_duration):
     raise ValueError("interval_duration must be an integer multiple of dt")
@@ -46,29 +46,29 @@ def wind_velocity(t):
 
 def pretrain_input(t):
     """Persistently exciting commanded torque used before CRaCLF control."""
-    return np.array([1.2 * np.sin(2.0 * np.pi * 0.45 * t)])
+    return np.array([1.0 * np.sin(2.0 * np.pi * 0.2 * t)])
 
 # Bounds surround a rank-two factorization of the total physical uncertainty.
 # The first latent direction captures the fixed plant mismatch and the second
 # captures the wind-dependent variation, with margin for representation error.
-theta_lb = 10 * np.array(
+theta_lb = np.array(
     [
-        [-5.0, -5.0, -0.0, -5.0, -5.0],
-        [-5.0, -5.0, -0.0, -5.0, -5.0],
-        [-5.0, -5.0, -0.0, -5.0, -5.0],
-        [-5.0, -5.0, -5.0, -5.0, -5.0],
-        [-5.0, -5.0, -0.0, -5.0, -5.0],
-        [-5.0, -5.0, -0.0, -5.0, -5.0],
+        [-1.0, -1.0, -0.0, -1.0, -1.0],
+        [-1.0, -1.0, -0.0, -1.0, -1.0],
+        [-1.0, -1.0, -0.0, -1.0, -1.0],
+        [-1.0, -1.0, -1.0, -1.0, -1.0],
+        [-1.0, -1.0, -0.0, -1.0, -1.0],
+        [-1.0, -1.0, -0.0, -1.0, -1.0],
     ]
 )
-theta_ub = 10 * np.array(
+theta_ub = np.array(
     [
-        [5.0, 5.0, 0.0, 5.0, 5.0],
-        [5.0, 5.0, 0.0, 5.0, 5.0],
-        [5.0, 5.0, 0.0, 5.0, 5.0],
-        [5.0, 5.0, 0.1, 5.0, 5.0],
-        [5.0, 5.0, 0.0, 5.0, 5.0],
-        [5.0, 5.0, 0.0, 5.0, 5.0],
+        [1.0, 1.0, 0.0, 1.0, 1.0],
+        [1.0, 1.0, 0.0, 1.0, 1.0],
+        [1.0, 1.0, 0.0, 1.0, 1.0],
+        [1.0, 1.0, 0.1, 1.0, 1.0],
+        [1.0, 1.0, 0.0, 1.0, 1.0],
+        [1.0, 1.0, 0.0, 1.0, 1.0],
     ]
 )
 theta_rng = np.random.default_rng(11)
@@ -87,7 +87,7 @@ params = {
     "grav": 9.81,   # gravitational acceleration [m/s^2]
     "damping": 0.04,      # nominal damping [N m s/rad]
     "T_a": 0.01,    # actuator time constant [s]
-    "c_w": 0.01,    # wind drag coefficient
+    "c_w": 0.04,    # wind drag coefficient
     "true_damping": 0.2, # true damping, unknown to the controller
     "true_mass": 3.0, # true mass, unknown to the controller
     #"true_inertia": 0.50, # true inertia, unknown to the controller
@@ -95,7 +95,7 @@ params = {
     "Theta_init": Theta_init,
     "use_adaptive": USE_ADAPTIVE,
     "use_cp": USE_CP,
-    "Gamma_clf": np.diag([0.01, 0.01, 0.01, 0.01, 0.01]) * 1e-5,
+    "Gamma_clf": np.diag([0.01, 0.01, 0.01, 0.01, 0.01]),
     "a_ub": a_ub,
     "a_lb": a_lb,
     "a_hat_norm_max": a_radius,
@@ -122,7 +122,7 @@ olacp = OLACP(
     buffer_maxlen=I_length,
     theta_init=Theta_init,
     representation_period=B,
-    representation_lr= lambda j: 2e6 / j,
+    representation_lr= lambda j: 1e-2 / j,
     theta_lb=theta_lb,
     theta_ub=theta_ub,
     Y_theta=system.Y_theta,
@@ -135,7 +135,7 @@ system.set_representation(olacp.Theta)
 # the learned representation are retained.
 pretrain_sample_count = K_pretrain * I_length
 tt_pretrain = np.arange(pretrain_sample_count, dtype=float) * dt
-x_pretrain = np.zeros(system.xdim)
+x_pretrain = np.array([1.6, 0.4, 0.0])
 Theta_pretrain_hist = np.zeros((K_pretrain + 1, Theta_init.size))
 Theta_pretrain_hist[0] = olacp.Theta.reshape(-1)
 s_pretrain_hist = np.zeros(K_pretrain)
