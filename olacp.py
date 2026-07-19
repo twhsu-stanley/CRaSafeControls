@@ -26,6 +26,9 @@ class OLACP:
        gradient of ``||Y_Theta(x) @ a - w||_2**2`` with respect to theta.
        Call ``update_representation`` once after fitting a_k and before
        clearing the interval buffers.
+    5) ``S_cal_init`` may be empty while pretraining data are collected. In
+       that case ``Q_k`` is ``None`` until at least one score has been appended
+       and ``compute_quantile`` has been called.
     """
 
     def __init__(
@@ -46,8 +49,6 @@ class OLACP:
     ):
         if N_cal < 100:
             raise ValueError("N_cal must be at least 100")
-        if len(S_cal_init) == 0:
-            raise ValueError("S_cal_init must be nonempty")
         if acp_lr <= 0.0:
             raise ValueError("acp_lr must be positive")
         if delta_target >= 1.0 or delta_target <= 0.0:
@@ -65,7 +66,12 @@ class OLACP:
         self.acp_lr = acp_lr
         self.delta_target = float(delta_target)
         self.delta = delta_init
-        self.compute_quantile() # update self.Q_k
+        # An empty calibration set is useful while collecting pretraining
+        # intervals.  The conformal quantile becomes available as soon as the
+        # first score has been appended and compute_quantile() is called.
+        self.Q_k = None
+        if self.S_cal:
+            self.compute_quantile()
         self.buffer_maxlen = buffer_maxlen
 
         # Moving window of data used to solve a_k
@@ -348,6 +354,10 @@ class OLACP:
         
         S_cal_size = len(self.S_cal) 
         assert S_cal_size <= self.N_cal
+        if S_cal_size == 0:
+            raise ValueError(
+                "Cannot compute a conformal quantile from an empty calibration set"
+            )
 
         rank = int(np.ceil((1.0 - self.delta) * (S_cal_size + 1)))
         rank = min(max(rank, 1), S_cal_size + 1)

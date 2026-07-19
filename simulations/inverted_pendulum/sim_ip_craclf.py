@@ -4,7 +4,6 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.integrate import solve_ivp
-from scipy.optimize import lsq_linear
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
@@ -18,6 +17,11 @@ USE_ADAPTIVE = True
 # Algorithm 1 setup.
 K = 20  # total number of time intervals I_k
 B = 2   # update the representation every B intervals
+K_pretrain = 100  # sinusoidal-input intervals before CRaCLF control
+if K_pretrain < 1:
+    raise ValueError("K_pretrain must be at least 1")
+if K_pretrain % B != 0:
+    raise ValueError("K_pretrain must be an integer multiple of B")
 
 # Time setup for each interval I_k.
 dt = 0.01
@@ -37,6 +41,16 @@ def wind_velocity(t):
     phase = 2.0 * np.pi * (interval_index % K) / K
     return np.array(
         [0.05 * np.cos(phase), 0.02 * np.sin(phase + 0.2)]
+    )
+
+
+def pretrain_input(t):
+    """Persistently exciting commanded torque used before CRaCLF control."""
+    return np.array(
+        [
+            1.5 * np.sin(2.0 * np.pi * 0.45 * t)
+            + 0.75 * np.sin(2.0 * np.pi * 0.90 * t + np.pi / 4.0)
+        ]
     )
 
 # Bounds surround a rank-two factorization of the total physical uncertainty.
@@ -86,7 +100,7 @@ params = {
     "Theta_init": Theta_init,
     "use_adaptive": USE_ADAPTIVE,
     "use_cp": USE_CP,
-    "Gamma_clf": np.diag([0.01, 0.01, 0.01, 0.01, 0.01]) * 1e-6,
+    "Gamma_clf": np.diag([0.01, 0.01, 0.01, 0.01, 0.01]) * 1e-2,
     "a_ub": a_ub,
     "a_lb": a_lb,
     "a_hat_norm_max": a_radius,
@@ -101,41 +115,11 @@ params = {
 # Construct the actuator-augmented inverted pendulum.
 system = IP(params)
 
-# Initial calibration set. Each historical interval follows lines 8 and 11 of
-# Algorithm 1: fit a bounded a_k and retain the largest residual norm.
-rng = np.random.default_rng(7)
-N_cal = 100
-S_cal_init = []
-for k in range(N_cal):
-    calibration_states = np.column_stack(
-        (
-            rng.uniform(-1.25, 1.25, I_length),
-            rng.uniform(-1.5, 1.5, I_length),
-            rng.uniform(-1.0, 1.0, I_length),
-        )
-    )
-    Y_cal = []
-    w_cal = []
-    for x_cal in calibration_states:
-        Y_cal.append(system.Y_theta(x_cal, Theta_init))
-        w_cal.append(
-            system.true_uncertainty(x_cal, k * interval_duration)
-        )
-
-    Y_stack = np.vstack(Y_cal)
-    w_stack = np.hstack(w_cal)
-    a_cal = lsq_linear(Y_stack, w_stack, bounds=(a_lb, a_ub)).x
-    S_cal_init.append(
-        max(
-            np.linalg.norm(Y_t @ a_cal - w_t, ord=2)
-            for Y_t, w_t in zip(Y_cal, w_cal)
-        )
-    )
-S_cal_init = np.asarray(S_cal_init)
-
-# Adaptive conformal prediction and Algorithm 1 representation learning.
+# Construct OLACP without calibration scores. The same instance first learns
+# the representation and collects S_cal_init, then continues during CRaCLF.
+N_cal = max(100, K_pretrain)
 olacp = OLACP(
-    S_cal_init,
+    [],
     N_cal=N_cal,
     acp_lr=0.02,
     delta_target=0.05,
@@ -143,14 +127,73 @@ olacp = OLACP(
     buffer_maxlen=I_length,
     theta_init=Theta_init,
     representation_period=B,
-    representation_lr=2e-3, #lambda j: 2e-3 / j,
+    representation_lr=2e-3,  # lambda j: 2e-3 / j,
     theta_lb=theta_lb,
     theta_ub=theta_ub,
     Y_theta=system.Y_theta,
     representation_loss_gradient=system.representation_loss_gradient,
 )
 system.set_representation(olacp.Theta)
-system.cp_quantile = olacp.Q_k
+
+# Pretrain Y_Theta(x) a using a separate persistently exciting rollout. The
+# plant state is reset below before CRaCLF control, while this OLACP object and
+# the learned representation are retained.
+pretrain_sample_count = K_pretrain * I_length
+x_pretrain = np.zeros(system.xdim)
+Theta_pretrain_hist = np.zeros((K_pretrain + 1, Theta_init.size))
+Theta_pretrain_hist[0] = olacp.Theta.reshape(-1)
+s_pretrain_hist = np.zeros(K_pretrain)
+
+for pretrain_interval_index in range(K_pretrain):
+    for interval_sample_index in range(I_length):
+        pretrain_sample_index = (
+            pretrain_interval_index * I_length + interval_sample_index
+        )
+        t_pretrain = pretrain_sample_index * dt
+        u_pretrain = pretrain_input(t_pretrain)
+
+        olacp.add_data_to_buffers(
+            x_pretrain,
+            system.dynamics_nominal(x_pretrain, u_pretrain),
+            xdot=system.dynamics(x_pretrain, u_pretrain, t_pretrain),
+        )
+
+        if pretrain_sample_index < pretrain_sample_count - 1:
+            sol = solve_ivp(
+                lambda tau, y: system.dynamics(y, u_pretrain, tau),
+                (t_pretrain, t_pretrain + dt),
+                x_pretrain,
+                method="RK45",
+                rtol=1e-7,
+                atol=1e-9,
+                t_eval=[t_pretrain + dt],
+            )
+            if not sol.success:
+                raise RuntimeError(sol.message)
+            x_pretrain = sol.y[:, -1]
+
+    olacp.estimate_uncertainty(dt)
+    s_pretrain = olacp.compute_score(system.a_ub, system.a_lb)
+    olacp.append_score(s_pretrain)
+    representation_update = olacp.update_representation()
+
+    theta_step_norm = 0.0
+    if representation_update is not None:
+        theta_before = system.Theta_hat.copy()
+        system.set_representation(representation_update["Theta"])
+        theta_step_norm = np.linalg.norm(system.Theta_hat - theta_before)
+
+    s_pretrain_hist[pretrain_interval_index] = s_pretrain
+    Theta_pretrain_hist[pretrain_interval_index + 1] = olacp.Theta.reshape(-1)
+    olacp.clear_buffers()
+
+    print(
+        f"pretrain_interval={pretrain_interval_index + 1:03d}, "
+        f"score={s_pretrain:.3e}, theta_step={theta_step_norm:.3e}"
+    )
+
+S_cal_init = np.asarray(olacp.S_cal, dtype=float)
+system.cp_quantile = olacp.compute_quantile()
 
 # Simulation initialization.
 x = np.array([1.2, 0.6, 0.0])
