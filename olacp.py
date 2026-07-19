@@ -47,8 +47,8 @@ class OLACP:
         Y_theta=None,
         representation_loss_gradient=None,
     ):
-        if N_cal < 100:
-            raise ValueError("N_cal must be at least 100")
+        if N_cal < 30:
+            raise ValueError("N_cal must be at least 30")
         if acp_lr <= 0.0:
             raise ValueError("acp_lr must be positive")
         if delta_target >= 1.0 or delta_target <= 0.0:
