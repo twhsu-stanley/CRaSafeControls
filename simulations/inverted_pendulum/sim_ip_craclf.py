@@ -16,7 +16,7 @@ USE_CP = True
 USE_ADAPTIVE = True
 
 # Algorithm 1 setup.
-K = 16  # total number of time intervals I_k
+K = 20  # total number of time intervals I_k
 B = 2   # update the representation every B intervals
 
 # Time setup for each interval I_k.
@@ -36,7 +36,7 @@ def wind_velocity(t):
     interval_index = int(np.floor(max(float(t), 0.0) / interval_duration))
     phase = 2.0 * np.pi * (interval_index % K) / K
     return np.array(
-        [0.02 * np.cos(phase), 0.02 * np.sin(phase + 0.2)]
+        [0.05 * np.cos(phase), 0.02 * np.sin(phase + 0.2)]
     )
 
 # Bounds surround a rank-two factorization of the total physical uncertainty.
@@ -44,29 +44,29 @@ def wind_velocity(t):
 # captures the wind-dependent variation, with margin for representation error.
 theta_lb = 10 * np.array(
     [
+        [-5.0, -5.0, -0.0, -5.0, -5.0],
+        [-5.0, -5.0, -0.0, -5.0, -5.0],
+        [-5.0, -5.0, -0.0, -5.0, -5.0],
         [-5.0, -5.0, -5.0, -5.0, -5.0],
-        [-5.0, -5.0, -5.0, -5.0, -5.0],
-        [-0.0, -0.0, -5.0, -0.0, -0.0],
-        [-1.0, -1.0, -1.0, -1.0, -1.0],
-        [-5.0, -5.0, -5.0, -5.0, -5.0],
-        [-5.0, -5.0, -5.0, -5.0, -5.0],
+        [-5.0, -5.0, -0.0, -5.0, -5.0],
+        [-5.0, -5.0, -0.0, -5.0, -5.0],
     ]
 )
 theta_ub = 10 * np.array(
     [
-        [5.0, 5.0, 5.0, 5.0, 5.0],
-        [5.0, 5.0, 5.0, 5.0, 5.0],
-        [0.0, 0.0, 5.0, 0.0, 0.0],
-        [1.0, 1.0, 1.0, 1.0, 1.0],
-        [5.0, 5.0, 5.0, 5.0, 5.0],
-        [5.0, 5.0, 5.0, 5.0, 5.0],
+        [5.0, 5.0, 0.0, 5.0, 5.0],
+        [5.0, 5.0, 0.0, 5.0, 5.0],
+        [5.0, 5.0, 0.0, 5.0, 5.0],
+        [5.0, 5.0, 0.1, 5.0, 5.0],
+        [5.0, 5.0, 0.0, 5.0, 5.0],
+        [5.0, 5.0, 0.0, 5.0, 5.0],
     ]
 )
 theta_rng = np.random.default_rng(11)
 Theta_init = theta_rng.uniform(theta_lb, theta_ub)
 # These latent coordinates are related to, but are not equal to, [w_x, w_z].
-a_lb = np.array([-6.0, -5.0, -5.0, -5.0, -5.0])/10.0
-a_ub = np.array([6.0, 5.0, 5.0, 5.0, 5.0])/10.0
+a_lb = np.array([-0.5, -0.5, -0.5, -0.5, -0.5])
+a_ub = np.array([0.5, 0.5, 0.5, 0.5, 0.5])
 a_center = 0.5 * (a_lb + a_ub)
 projection_epsilon = 0.01
 a_radius = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + projection_epsilon
@@ -143,7 +143,7 @@ olacp = OLACP(
     buffer_maxlen=I_length,
     theta_init=Theta_init,
     representation_period=B,
-    representation_lr=lambda j: 2e-3 / j,
+    representation_lr=2e-3, #lambda j: 2e-3 / j,
     theta_lb=theta_lb,
     theta_ub=theta_ub,
     Y_theta=system.Y_theta,

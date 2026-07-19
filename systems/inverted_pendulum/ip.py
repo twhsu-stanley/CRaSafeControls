@@ -25,20 +25,7 @@ class IP(ControlAffineSystem):
         if params is None:
             params = {}
 
-        self.Theta_hat = np.asarray(
-            params.get(
-                "Theta_init",
-                np.vstack(
-                    (
-                        np.eye(self.adim),
-                        np.zeros(
-                            (self.theta_shape[0] - self.adim, self.adim)
-                        ),
-                    )
-                ),
-            ),
-            dtype=float,
-        ).reshape(self.theta_shape)
+        self.Theta_hat = np.asarray(params.get("Theta_init", np.zeros(self.theta_shape)),dtype=float,).reshape(self.theta_shape)
 
         self.length = float(params.get("length", 1.0))
         self.mass = float(params.get("mass", 1.0))
@@ -185,9 +172,7 @@ class IP(ControlAffineSystem):
                 self.true_uncertainty_fcn(x, t), dtype=float
             )
         else:
-            phi, phi_dot, tau_a = np.asarray(x, dtype=float).reshape(
-                self.xdim
-            )
+            phi, phi_dot, tau_a = np.asarray(x, dtype=float).reshape(self.xdim)
             angular_uncertainty = (
                 (self.damping / self.inertia - self.true_damping / self.true_inertia) * phi_dot
                 + 0.5 * ( self.mass / self.inertia - self.true_mass / self.true_inertia) * self.grav * self.length * np.sin(phi)
@@ -244,16 +229,6 @@ class IP(ControlAffineSystem):
         )
         Theta = sp.Matrix(*self.theta_shape, theta_symbols)
 
-        feature = sp.Matrix(
-            [[
-                sp.sin(phi),
-                sp.cos(phi) - 1,
-                phi_dot,
-                tau_a,
-                phi_dot * sp.cos(2 * phi),
-                phi_dot * sp.sin(2 * phi),
-            ]]
-        )
         beta = Theta @ a
         q = (
             (
