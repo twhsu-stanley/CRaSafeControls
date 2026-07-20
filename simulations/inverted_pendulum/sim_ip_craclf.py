@@ -15,8 +15,8 @@ USE_CP = True
 USE_ADAPTIVE = True
 
 # Algorithm 1 setup.
-K_pretrain = 112  # sinusoidal-input intervals before CRaCLF control
-K = 5  # total number of time intervals I_k
+K_pretrain = 40  # sinusoidal-input intervals before CRaCLF control
+K = 12  # total number of time intervals I_k
 B = 4   # update the representation every B intervals
 if K_pretrain < 1:
     raise ValueError("K_pretrain must be at least 1")
@@ -40,7 +40,7 @@ def wind_velocity(t):
     interval_index = int(np.floor(max(float(t), 0.0) / interval_duration))
     phase = 2.0 * np.pi * (interval_index % K) / K
     return np.array(
-        [0.05 * np.cos(phase), 0.02 * np.sin(phase + 0.2)]
+        [2.5 * np.cos(phase), 2.0 * np.sin(phase + 0.2)]
     )
 
 
@@ -81,21 +81,19 @@ projection_epsilon = 0.01
 a_radius = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + projection_epsilon
 
 params = {
-    "length": 1.0,       # pendulum length [m]
-    "mass": 1.0,       # nominal mass [kg]
-    #"inertia": 0.5,    # nominal inertia [kg m^2]
-    "grav": 9.81,   # gravitational acceleration [m/s^2]
-    "damping": 0.04,      # nominal damping [N m s/rad]
-    "T_a": 0.01,    # actuator time constant [s]
-    "c_w": 0.04,    # wind drag coefficient
-    "true_damping": 0.2, # true damping, unknown to the controller
-    "true_mass": 3.0, # true mass, unknown to the controller
-    #"true_inertia": 0.50, # true inertia, unknown to the controller
+    "length": 2.0,       # pendulum length [m]
+    "mass": 1.0,         # known pendulum mass [kg]
+    # "inertia": 0.5,    # known pendulum inertia [kg m^2]
+    "grav": 9.81,        # nominal gravitational acceleration [m/s^2]
+    "damping": 0.15,      # nominal damping [N m s/rad]
+    "c_w": 0.1,          # wind drag coefficient
+    "true_damping": 0.02, # true damping, unknown to the controller
+    "true_grav": 12.21,  # true gravity, unknown to the controller
     "wind_velocity": wind_velocity,
     "Theta_init": Theta_init,
     "use_adaptive": USE_ADAPTIVE,
     "use_cp": USE_CP,
-    "Gamma_clf": np.diag([0.005, 0.005, 0.005, 0.005, 0.005]),
+    "Gamma_clf": np.diag([0.01, 0.01, 0.01, 0.01, 0.01]),
     "a_ub": a_ub,
     "a_lb": a_lb,
     "a_hat_norm_max": a_radius,
@@ -107,7 +105,7 @@ params = {
     "weight_slack": 1e4,
 }
 
-# Construct the actuator-augmented inverted pendulum.
+# Construct the direct-torque inverted pendulum.
 system = IP(params)
 
 # Construct OLACP without calibration scores. The same instance first learns
@@ -135,7 +133,7 @@ system.set_representation(olacp.Theta)
 # the learned representation are retained.
 pretrain_sample_count = K_pretrain * I_length
 tt_pretrain = np.arange(pretrain_sample_count, dtype=float) * dt
-x_pretrain = np.array([1.6, 0.4, 0.0])
+x_pretrain = np.array([1.6, 0.4])
 Theta_pretrain_hist = np.zeros((K_pretrain + 1, Theta_init.size))
 Theta_pretrain_hist[0] = olacp.Theta.reshape(-1)
 s_pretrain_hist = np.zeros(K_pretrain)
@@ -203,7 +201,7 @@ for pretrain_interval_index in range(K_pretrain):
 system.cp_quantile = olacp.compute_quantile()
 
 # Simulation initialization.
-x = np.array([0.6, 0.1, 0.0])
+x = np.array([0.6, 0.1])
 a_hat_clf = a_center.copy()
 rho_clf = 0.0
 x_ext = np.hstack((x, a_hat_clf, rho_clf))
@@ -306,18 +304,16 @@ s_k_hist = np.asarray(s_k_hist)
 delta_k_hist = np.asarray(delta_k_hist)
 e_k_hist = np.asarray(e_k_hist)
 
-# Plot pendulum and actuator states.
-fig, axs = plt.subplots(3, 1, sharex=True)
+# Plot pendulum states.
+fig, axs = plt.subplots(2, 1, sharex=True)
 axs[0].plot(tt, np.rad2deg(x_hist[:, 0]), linewidth=1.4)
 axs[0].set_ylabel(r"$\phi$ (deg)")
 axs[1].plot(tt, np.rad2deg(x_hist[:, 1]), linewidth=1.4)
 axs[1].set_ylabel(r"$\dot{\phi}$ (deg/s)")
-axs[2].plot(tt, x_hist[:, 2], linewidth=1.4)
-axs[2].set_ylabel(r"$\tau_a$ (N m)")
-axs[2].set_xlabel("Time (s)")
+axs[1].set_xlabel("Time (s)")
 for ax in axs:
     ax.grid(True)
-fig.suptitle("Actuator-augmented inverted-pendulum states")
+fig.suptitle("Inverted-pendulum states")
 
 # Plot the two-dimensional wind disturbance.
 wind_hist = np.asarray([wind_velocity(t) for t in tt])
@@ -414,7 +410,7 @@ for ax in axs:
         )
 fig.suptitle("Adaptive and interval-fitted parameters")
 
-# Plot the learned 6-by-2 representation matrix.
+# Plot the learned 6-by-5 representation matrix.
 fig, axs = plt.subplots(
     *Theta_init.shape, sharex=True, figsize=(11, 11), squeeze=False
 )
