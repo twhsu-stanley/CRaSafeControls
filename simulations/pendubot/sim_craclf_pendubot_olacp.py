@@ -16,13 +16,16 @@ USE_ADAPTIVE = True
 
 # Algorithm 1 setup. The representation is pretrained with stabilizing LQR
 # feedback because the CARE certificate and the learned model are both local.
-K_pretrain = 20
-K = 12
+K_pretrain = 100
+N_cal = 80
+K = 4
 B = 4
 if K_pretrain < 1:
     raise ValueError("K_pretrain must be at least 1")
 if K_pretrain % B != 0:
     raise ValueError("K_pretrain must be an integer multiple of B")
+if K_pretrain < N_cal:
+    raise ValueError("K_pretrain must be at least as large as N_cal")
 
 # Time setup for each piecewise-constant environment interval I_k.
 dt = 0.01
@@ -49,15 +52,14 @@ def excitation_input(t):
     """Persistently exciting torque added to stabilizing pretraining control."""
     return np.array(
         [
-            0.45 * np.sin(2.0 * np.pi * 0.35 * t)
-            + 0.25 * np.sin(2.0 * np.pi * 0.9 * t)
+            1.0 * np.sin(2.0 * np.pi * 0.35 * t)
         ]
     )
 
 
 # Known mechanical parameters.
 m1 = 1.0
-m2 = 2.0
+m2 = 1.5
 L1 = 1.0
 L2 = 1.0
 r1 = 0.5
@@ -65,32 +67,33 @@ r2 = 0.5
 I1 = m1 * L1**2 / 12.0
 I2 = m2 * L2**2 / 12.0
 
-# Seed the learned representation with physically meaningful directions for
-# trim, gravity, and both damping coefficients. Small dense perturbations let
-# Algorithm 1 learn residual wind directions without imposing their meaning on
-# the five abstract interval parameters.
-theta_rng = np.random.default_rng(17)
-Theta_init = theta_rng.normal(scale=0.01, size=(13, 5))
-Theta_init[0, 0] += 1.0
-Theta_init[1, 1] += m1 * r1 + m2 * L1
-Theta_init[2, 1] += m2 * r2
-Theta_init[8, 1] += m2 * r2
-Theta_init[5, 2] += 1.0
-Theta_init[12, 3] += 1.0
-Theta_init[3, 4] += 1.0
 
-# Bounds keep the learned upright linearizations close to a stabilizable
-# neighborhood, as required by the local CARE construction.
-theta_margin = 0.5
-theta_lb = Theta_init - theta_margin
-theta_ub = Theta_init + theta_margin
+theta_ub = np.ones((13, 5)) * 0.01
+theta_ub[0, 0] += 1.0
+theta_ub[1, 1] += m1 * r1 + m2 * L1
+theta_ub[2, 1] += m2 * r2
+theta_ub[8, 1] += m2 * r2
+theta_ub[5, 2] += 1.0
+theta_ub[12, 3] += 1.0
+theta_ub[3, 4] += 1.0
+
+theta_lb = -np.ones((13, 5)) * 0.01
+theta_lb[0, 0] -= 1.0
+theta_lb[1, 1] -= m1 * r1 + m2 * L1
+theta_lb[2, 1] -= m2 * r2
+theta_lb[8, 1] -= m2 * r2
+theta_lb[5, 2] -= 1.0
+theta_lb[12, 3] -= 1.0
+theta_lb[3, 4] -= 1.0
+
+theta_rng = np.random.default_rng(11)
+Theta_init = theta_rng.uniform(theta_lb, theta_ub)
+
 a_lb = -np.ones(5)
 a_ub = np.ones(5)
 a_center = 0.5 * (a_lb + a_ub)
 projection_epsilon = 0.02
-a_radius = (
-    0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + projection_epsilon
-)
+a_radius = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + projection_epsilon
 
 params = {
     "m1": m1,
@@ -101,16 +104,16 @@ params = {
     "r2": r2,
     "I1": I1,
     "I2": I2,
-    "grav": 9.81,
-    "true_grav": 10.4,
-    "damping": np.array([0.08, 0.06]),
-    "true_damping": np.array([0.12, 0.03]),
-    "L_w": 0.5,
-    "c_w": 0.08,
+    "grav": 9.30,
+    "true_grav": 10.12,
+    "damping": np.array([0.1, 0.2]),
+    "true_damping": np.array([0.02, 0.03]),
+    "L_w": 0.7,
+    "c_w": 1.8,
     "wind_velocity": wind_velocity,
     "Theta_init": Theta_init,
-    "lqr_Q": np.diag([40.0, 30.0, 5.0, 4.0]),
-    "lqr_R": 0.5,
+    "lqr_Q": np.diag([50.0, 50.0, 10.0, 10.0]),
+    "lqr_R": 0.1,
     "use_adaptive": USE_ADAPTIVE,
     "use_cp": USE_CP,
     "Gamma_clf": np.diag([0.005, 0.005, 0.005, 0.005, 0.005]),
@@ -164,7 +167,6 @@ print(f"Sampled CARE decay rate = {sampled_decay_rate:.3f}")
 
 # Start OLACP with an empty calibration set. Pretraining fills it while also
 # updating the 13-by-5 representation.
-N_cal = 100
 olacp = OLACP(
     [],
     N_cal=N_cal,
@@ -174,7 +176,7 @@ olacp = OLACP(
     buffer_maxlen=I_length,
     theta_init=Theta_init,
     representation_period=B,
-    representation_lr=lambda j: 1e-5 / j,
+    representation_lr=lambda j: 1e-2,
     theta_lb=theta_lb,
     theta_ub=theta_ub,
     Y_theta=system.Y_theta,
@@ -256,14 +258,14 @@ for pretrain_interval_index in range(K_pretrain):
 system.cp_quantile = olacp.compute_quantile()
 
 # CRaCLF simulation initialization inside the local CARE neighborhood.
-x = np.array([0.18, -0.12, 0.0, 0.0])
-a_hat_clf = a_center.copy()
+x = np.array([0.2, 0.1, 0.0, 0.0])
+a_hat_clf = a_center.copy() if USE_ADAPTIVE else np.zeros(system.adim)
 rho_clf = 0.0
 x_ext = np.hstack((x, a_hat_clf, rho_clf))
 
 x_hist = np.zeros((len(tt), system.xdim))
 u_hist = np.zeros(len(tt))
-u_ref_hist = np.zeros(len(tt))
+#u_ref_hist = np.zeros(len(tt))
 true_trim_hist = np.zeros(len(tt))
 estimated_trim_hist = np.zeros(len(tt))
 slack_hist = np.zeros(len(tt))
@@ -294,11 +296,12 @@ for i, t in enumerate(tt):
 
     # The parameter-aware LQR feedback supplies the local reference and the
     # estimated wind-trim feedforward; the CRaCLF-QP robustifies it.
-    u_ref = system.ctrl_nominal(x)
+    #u_ref = system.ctrl_nominal(x)
+    u_ref = system.local_lqr_control(x, a_hat_clf)
     u, slack = system.ctrl_craclf(
         x, a_hat_clf, u_ref, use_slack=True
     )
-    u_ref_hist[i] = u_ref.item()
+    #u_ref_hist[i] = u_ref.item()
     u_hist[i] = u.item()
     slack_hist[i] = slack
 
@@ -398,14 +401,14 @@ fig.suptitle("Wind disturbance")
 # Control, trim estimates, local CRaCLF, and QP relaxation.
 fig, axs = plt.subplots(3, 1, sharex=True, figsize=(7, 7))
 axs[0].plot(tt, u_hist, label=r"$u$")
-axs[0].plot(tt, u_ref_hist, "--", label=r"$u_{\mathrm{LQR}}$")
+#axs[0].plot(tt, u_ref_hist, "--", label=r"$u_{\mathrm{LQR}}$")
 axs[0].plot(tt, true_trim_hist, ":", label=r"$u^\star$")
 axs[0].plot(tt, estimated_trim_hist, "-.", label=r"$\hat u^\star$")
 axs[0].set_ylabel("torque (N m)")
 axs[0].legend(ncol=2)
-axs[1].semilogy(tt, np.maximum(V_hist, 1e-14))
+axs[1].plot(tt, V_hist)
 axs[1].set_ylabel(r"$V_r$")
-axs[2].semilogy(tt, np.maximum(slack_hist, 1e-14))
+axs[2].plot(tt, slack_hist)
 axs[2].set_ylabel("QP slack")
 axs[2].set_xlabel("Time (s)")
 for ax in axs:
@@ -439,12 +442,12 @@ fig.suptitle("Adaptive conformal prediction")
 fig, axs = plt.subplots(2, 1, figsize=(7, 7))
 axs[0].semilogy(
     tt_pretrain,
-    np.maximum(pretrain_prediction_error_hist, 1e-16),
+    pretrain_prediction_error_hist,
     label=r"$\|Y_{\Theta_j}(x_t)a_k-w_t\|_2^2$",
 )
 axs[1].semilogy(
     tt,
-    np.maximum(prediction_error_hist, 1e-16),
+    prediction_error_hist,
     label=r"$\|Y_{\Theta_j}(x_t)a_k-w_t\|_2^2$",
 )
 for ax, interval_count in zip(axs, (K_pretrain, K)):
@@ -459,8 +462,8 @@ for ax, interval_count in zip(axs, (K_pretrain, K)):
     ax.set_ylabel("squared prediction error")
     ax.grid(True)
     ax.legend()
-axs[0].set_title("Stabilized pretraining")
-axs[1].set_title("CRaCLF control")
+axs[0].set_title("Pretraining")
+axs[1].set_title("Online implementation")
 axs[1].set_xlabel("Time (s)")
 fig.suptitle("Uncertainty-prediction error")
 
@@ -476,6 +479,7 @@ axs[-1].set_xlabel("Time (s)")
 fig.suptitle("Adaptive and interval-fitted parameters")
 
 # Learned 13-by-5 representation.
+"""
 fig, axs = plt.subplots(
     *Theta_init.shape, sharex=True, figsize=(13, 18), squeeze=False
 )
@@ -490,6 +494,7 @@ for row in range(Theta_init.shape[0]):
 for ax in axs[-1, :]:
     ax.set_xlabel("Time (s)")
 fig.suptitle("Learned representation")
+"""
 
 # CRaCLF scaling state and scaling function.
 fig, axs = plt.subplots(2, 1, sharex=True)
