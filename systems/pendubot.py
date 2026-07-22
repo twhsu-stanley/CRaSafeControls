@@ -514,16 +514,6 @@ class Pendubot(ControlAffineSystem):
         B_0 = self.g(np.zeros(self.xdim))
         return B_0.T @ P / self.lqr_R
 
-    def local_lqr_control(self, x, a_hat):
-        """Return the estimated trim input plus local LQR feedback."""
-        x = np.asarray(x, dtype=float).reshape(self.xdim)
-        return np.array(
-            [
-                self.estimated_trim_input(a_hat)
-                - float((self.lqr_gain(a_hat) @ x).item())
-            ]
-        )
-
     def local_decay_rate(self, a_hat):
         """Return the linear LQR decay rate certified by ``P(a_hat)``."""
         P = self._riccati_solution(a_hat)
@@ -532,7 +522,7 @@ class Pendubot(ControlAffineSystem):
         return float(np.min(eigvalsh(dissipation, P)))
 
     def ctrl_nominal(self, x):
-        return self.local_lqr_control(x, self.a_center)
+        return np.zeros(self.udim)
 
 
 PENDUBOT = Pendubot

@@ -16,7 +16,7 @@ USE_ADAPTIVE = True
 
 # Algorithm 1 setup. The representation is pretrained with stabilizing LQR
 # feedback because the CARE certificate and the learned model are both local.
-K_pretrain = 40
+K_pretrain = 20
 K = 12
 B = 4
 if K_pretrain < 1:
@@ -41,7 +41,7 @@ def wind_velocity(t):
     interval_index = int(np.floor(max(float(t), 0.0) / interval_duration))
     phase = 2.0 * np.pi * (interval_index % K) / K
     return np.array(
-        [1.2 * np.cos(phase), 0.8 * np.sin(phase + 0.25)]
+        [1.2 * np.cos(phase), -0.8 * np.sin(phase + 0.25)]
     )
 
 
@@ -57,7 +57,7 @@ def excitation_input(t):
 
 # Known mechanical parameters.
 m1 = 1.0
-m2 = 1.0
+m2 = 2.0
 L1 = 1.0
 L2 = 1.0
 r1 = 0.5
@@ -155,12 +155,12 @@ def verify_sampled_care_region():
     sampled_decay_rate = min(decay_rates)
     if params["clf_rate"] >= sampled_decay_rate:
         raise ValueError(
-            "clf_rate must be below every sampled CARE decay rate"
+            f"clf_rate must be below every sampled CARE decay rate = {sampled_decay_rate:.3f}"
         )
     return sampled_decay_rate
 
-
 sampled_decay_rate = verify_sampled_care_region()
+print(f"Sampled CARE decay rate = {sampled_decay_rate:.3f}")
 
 # Start OLACP with an empty calibration set. Pretraining fills it while also
 # updating the 13-by-5 representation.
@@ -200,10 +200,7 @@ for pretrain_interval_index in range(K_pretrain):
             pretrain_interval_index * I_length + interval_sample_index
         )
         t_pretrain = pretrain_sample_index * dt
-        u_pretrain = (
-            system.local_lqr_control(x_pretrain, a_center)
-            + excitation_input(t_pretrain)
-        )
+        u_pretrain = excitation_input(t_pretrain)
 
         olacp.add_data_to_buffers(
             x_pretrain,
@@ -297,7 +294,7 @@ for i, t in enumerate(tt):
 
     # The parameter-aware LQR feedback supplies the local reference and the
     # estimated wind-trim feedforward; the CRaCLF-QP robustifies it.
-    u_ref = system.local_lqr_control(x, a_hat_clf)
+    u_ref = system.ctrl_nominal(x)
     u, slack = system.ctrl_craclf(
         x, a_hat_clf, u_ref, use_slack=True
     )
