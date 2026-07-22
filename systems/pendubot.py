@@ -442,7 +442,7 @@ class Pendubot(ControlAffineSystem):
         a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
         if (
             self._riccati_cache_a is not None
-            and np.linalg.norm(a_hat - self._riccati_cache_a, ord=2) < 1e-5
+            and np.array_equal(a_hat, self._riccati_cache_a)
         ):
             return self._riccati_cache_P
 
@@ -532,8 +532,8 @@ class Pendubot(ControlAffineSystem):
         return float(np.min(eigvalsh(dissipation, P)))
 
     def ctrl_nominal(self, x):
-        #return np.zeros(self.udim)
-        return self.local_lqr_control(x, self.a_center)
+        return np.zeros(self.udim)
+        #return self.local_lqr_control(x, self.a_center)
 
 
 PENDUBOT = Pendubot

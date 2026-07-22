@@ -11,14 +11,14 @@ from olacp import OLACP
 from systems.pendubot import Pendubot
 
 
-USE_CP = True
-USE_ADAPTIVE = True
+USE_CP = True#False
+USE_ADAPTIVE = True#False
 
 # Algorithm 1 setup. The representation is pretrained with stabilizing LQR
 # feedback because the CARE certificate and the learned model are both local.
 K_pretrain = 100
 N_cal = 80
-K = 4
+K = 16
 B = 4
 if K_pretrain < 1:
     raise ValueError("K_pretrain must be at least 1")
@@ -44,16 +44,7 @@ def wind_velocity(t):
     interval_index = int(np.floor(max(float(t), 0.0) / interval_duration))
     phase = 2.0 * np.pi * (interval_index % K) / K
     return np.array(
-        [1.2 * np.cos(phase), -0.8 * np.sin(phase + 0.25)]
-    )
-
-
-def excitation_input(t):
-    """Persistently exciting torque added to stabilizing pretraining control."""
-    return np.array(
-        [
-            1.0 * np.sin(2.0 * np.pi * 0.35 * t)
-        ]
+        [0.5 * np.cos(phase), -1.8 * np.sin(phase + 0.25)]
     )
 
 
@@ -68,23 +59,23 @@ I1 = m1 * L1**2 / 12.0
 I2 = m2 * L2**2 / 12.0
 
 
-theta_ub = np.ones((13, 5)) * 0.01
-theta_ub[0, 0] += 1.0
-theta_ub[1, 1] += m1 * r1 + m2 * L1
-theta_ub[2, 1] += m2 * r2
-theta_ub[8, 1] += m2 * r2
-theta_ub[5, 2] += 1.0
-theta_ub[12, 3] += 1.0
-theta_ub[3, 4] += 1.0
+theta_ub = np.ones((13, 5)) * 0.2
+#theta_ub[0, 0] += 1.0
+#theta_ub[1, 1] += m1 * r1 + m2 * L1
+#theta_ub[2, 1] += m2 * r2
+#theta_ub[8, 1] += m2 * r2
+#theta_ub[5, 2] += 1.0
+#theta_ub[12, 3] += 1.0
+#theta_ub[3, 4] += 1.0
 
-theta_lb = -np.ones((13, 5)) * 0.01
-theta_lb[0, 0] -= 1.0
-theta_lb[1, 1] -= m1 * r1 + m2 * L1
-theta_lb[2, 1] -= m2 * r2
-theta_lb[8, 1] -= m2 * r2
-theta_lb[5, 2] -= 1.0
-theta_lb[12, 3] -= 1.0
-theta_lb[3, 4] -= 1.0
+theta_lb = -np.ones((13, 5)) * 0.2
+#theta_lb[0, 0] -= 1.0
+#theta_lb[1, 1] -= m1 * r1 + m2 * L1
+#theta_lb[2, 1] -= m2 * r2
+#theta_lb[8, 1] -= m2 * r2
+#theta_lb[5, 2] -= 1.0
+#theta_lb[12, 3] -= 1.0
+#theta_lb[3, 4] -= 1.0
 
 theta_rng = np.random.default_rng(11)
 Theta_init = theta_rng.uniform(theta_lb, theta_ub)
@@ -92,7 +83,7 @@ Theta_init = theta_rng.uniform(theta_lb, theta_ub)
 a_lb = -np.ones(5)
 a_ub = np.ones(5)
 a_center = 0.5 * (a_lb + a_ub)
-projection_epsilon = 0.02
+projection_epsilon = 0.01
 a_radius = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + projection_epsilon
 
 params = {
@@ -105,53 +96,51 @@ params = {
     "I1": I1,
     "I2": I2,
     "grav": 9.30,
-    "true_grav": 10.12,
-    "damping": np.array([0.1, 0.2]),
-    "true_damping": np.array([0.02, 0.03]),
-    "L_w": 0.7,
-    "c_w": 1.8,
+    "true_grav": 9.98,
+    "damping": np.array([0.15, 0.18]),
+    "true_damping": np.array([0.03, 0.03]),
+    "L_w": 0.5,
+    "c_w": 1.4,
     "wind_velocity": wind_velocity,
     "Theta_init": Theta_init,
-    "lqr_Q": np.diag([50.0, 50.0, 10.0, 10.0]),
-    "lqr_R": 0.1,
+    "lqr_Q": np.diag([40.0, 30.0, 5.0, 4.0]),
+    "lqr_R": 1.0,
     "use_adaptive": USE_ADAPTIVE,
     "use_cp": USE_CP,
-    "Gamma_clf": np.diag([0.005, 0.005, 0.005, 0.005, 0.005]),
+    # The latent coordinates have no assigned physical meaning, so use an
+    # isotropic adaptation gain rather than coordinate-specific tuning.
+    "Gamma_clf": 0.02 * np.eye(5),
     "a_ub": a_ub,
     "a_lb": a_lb,
     "a_hat_norm_max": a_radius,
+    #"projection_geometry": "box",
     "epsilon": projection_epsilon,
     "eta_clf": 10.0,
     # This is deliberately below the nominal linear CARE decay rate. The
     # QP uses the exact nonlinear Lie derivatives of the local certificate.
     "clf_rate": 0.1,
-    "weight_slack": 1e5,
+    "weight_slack": 1e4,
+    "u_min": -25.0,
+    "u_max": 25.0,
 }
 
 system = Pendubot(params)
 
-# The inherited CRaCLF adaptation law projects estimates onto this ball. Check
-# the CARE assumption at its center, at half-radius, and on its boundary along
-# coordinate axes and deterministic dense directions. Runtime CARE evaluation
-# still rejects any unsampled interior estimate that is not stabilizable.
+# Check the CARE assumption over the same latent box used by both constrained
+# fitting and adaptive projection.  The coordinates remain abstract; these are
+# certificate-feasibility checks, not physical initialization.
 care_rng = np.random.default_rng(29)
-care_directions = np.vstack(
-    (
-        np.eye(system.adim),
-        -np.eye(system.adim),
-        care_rng.normal(size=(64, system.adim)),
-    )
+care_vertices = np.array(
+    np.meshgrid(*zip(a_lb, a_ub), indexing="ij")
+).reshape(system.adim, -1).T
+care_interior = care_rng.uniform(
+    a_lb, a_ub, size=(32, system.adim)
 )
-care_directions /= np.linalg.norm(care_directions, axis=1, keepdims=True)
-care_test_points = [a_center]
-for radius_scale in (0.5, 1.0):
-    care_test_points.extend(
-        a_center + radius_scale * a_radius * care_directions
-    )
+care_test_points = np.vstack((a_center, care_vertices, care_interior))
 
 
 def verify_sampled_care_region():
-    """Check sampled points throughout the inherited projection ball."""
+    """Check vertices and deterministic interior samples of the latent box."""
     decay_rates = [
         system.local_decay_rate(a_test) for a_test in care_test_points
     ]
@@ -165,6 +154,26 @@ def verify_sampled_care_region():
 sampled_decay_rate = verify_sampled_care_region()
 print(f"Sampled CARE decay rate = {sampled_decay_rate:.3f}")
 
+
+def install_feasible_representation(theta_candidate, theta_previous):
+    """Backtrack a learned random-feature update until sampled CAREs remain valid."""
+    theta_candidate = np.asarray(theta_candidate, dtype=float)
+    theta_previous = np.asarray(theta_previous, dtype=float)
+    for step_scale in (1.0, 0.5, 0.25, 0.125, 0.0625):
+        theta_trial = theta_previous + step_scale * (
+            theta_candidate - theta_previous
+        )
+        system.set_representation(theta_trial)
+        try:
+            verify_sampled_care_region()
+        except ValueError:
+            continue
+        return theta_trial, step_scale
+
+    system.set_representation(theta_previous)
+    verify_sampled_care_region()
+    return theta_previous.copy(), 0.0
+
 # Start OLACP with an empty calibration set. Pretraining fills it while also
 # updating the 13-by-5 representation.
 olacp = OLACP(
@@ -176,7 +185,9 @@ olacp = OLACP(
     buffer_maxlen=I_length,
     theta_init=Theta_init,
     representation_period=B,
-    representation_lr=lambda j: 1e-2,
+    # OLACP sums B * I_length sample gradients.  Scale the update accordingly
+    # and decay it so a block cannot immediately clip all 65 coefficients.
+    representation_lr=lambda j: 5e-3 / j,
     theta_lb=theta_lb,
     theta_ub=theta_ub,
     Y_theta=system.Y_theta,
@@ -202,7 +213,7 @@ for pretrain_interval_index in range(K_pretrain):
             pretrain_interval_index * I_length + interval_sample_index
         )
         t_pretrain = pretrain_sample_index * dt
-        u_pretrain = excitation_input(t_pretrain)
+        u_pretrain = system.local_lqr_control(x_pretrain, system.a_center) + 0.1 * np.sin(2.0 * np.pi * 1 * t_pretrain)
 
         olacp.add_data_to_buffers(
             x_pretrain,
@@ -238,9 +249,11 @@ for pretrain_interval_index in range(K_pretrain):
     theta_step_norm = 0.0
     if representation_update is not None:
         theta_before = system.Theta_hat.copy()
-        system.set_representation(representation_update["Theta"])
-        verify_sampled_care_region()
-        theta_step_norm = np.linalg.norm(system.Theta_hat - theta_before)
+        theta_accepted, _ = install_feasible_representation(
+            representation_update["Theta"], theta_before
+        )
+        olacp.Theta = theta_accepted.copy()
+        theta_step_norm = np.linalg.norm(theta_accepted - theta_before)
 
     s_pretrain_hist[pretrain_interval_index] = s_pretrain
     interval_start = pretrain_interval_index * I_length
@@ -258,8 +271,8 @@ for pretrain_interval_index in range(K_pretrain):
 system.cp_quantile = olacp.compute_quantile()
 
 # CRaCLF simulation initialization inside the local CARE neighborhood.
-x = np.array([0.2, 0.1, 0.0, 0.0])
-a_hat_clf = a_center.copy() if USE_ADAPTIVE else np.zeros(system.adim)
+x = np.array([0.18, -0.12, 0.0, 0.0])
+a_hat_clf = olacp.a_k.copy() if USE_ADAPTIVE else np.zeros(system.adim)
 rho_clf = 0.0
 x_ext = np.hstack((x, a_hat_clf, rho_clf))
 
@@ -294,17 +307,11 @@ for i, t in enumerate(tt):
     true_trim_hist[i] = system.true_trim_input(t)
     estimated_trim_hist[i] = system.estimated_trim_input(a_hat_clf)
 
-    # The parameter-aware LQR feedback supplies the local reference and the
-    # estimated wind-trim feedforward; the CRaCLF-QP robustifies it.
-    #u_ref = system.ctrl_nominal(x)
-    u_ref = system.local_lqr_control(x, a_hat_clf)
-    u, slack = system.ctrl_craclf(
-        x, a_hat_clf, u_ref, use_slack=True
-    )
-    #u_ref_hist[i] = u_ref.item()
+    #u_ref = system.local_lqr_control(x, a_hat_clf)
+    u_ref = system.ctrl_nominal(x)
+    u, slack = system.ctrl_craclf(x, a_hat_clf, u_ref, use_slack=True)
     u_hist[i] = u.item()
     slack_hist[i] = slack
-
     olacp.add_data_to_buffers(
         x,
         system.dynamics_nominal(x, u),
@@ -354,15 +361,19 @@ for i, t in enumerate(tt):
         e_k_hist.append(e_k)
 
         if representation_update is not None:
-            system.set_representation(representation_update["Theta"])
-            verify_sampled_care_region()
+            theta_before = system.Theta_hat.copy()
+            theta_accepted, _ = install_feasible_representation(
+                representation_update["Theta"], theta_before
+            )
+            olacp.Theta = theta_accepted.copy()
 
+        Q_used = Q_k_hist[i]
         system.cp_quantile = olacp.compute_quantile()
         olacp.clear_buffers()
 
         print(
             f"interval={interval_index + 1:02d}, "
-            f"score={s_k:.3e}, Q={Q_k_hist[i]:.3e}, "
+            f"score={s_k:.3e}, Q={Q_used:.3e}, "
             f"delta_next={olacp.delta:.3f}, miscoverage={e_k}"
         )
 
