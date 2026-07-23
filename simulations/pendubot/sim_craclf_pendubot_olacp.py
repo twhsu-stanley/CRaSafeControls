@@ -8,7 +8,7 @@ from scipy.integrate import solve_ivp
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from olacp import OLACP
-from systems.pendubot import Pendubot
+from systems.pendubot.pendubot import Pendubot
 
 
 USE_CP = True#False #

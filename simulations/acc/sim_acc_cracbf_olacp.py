@@ -14,11 +14,11 @@ from olacp import OLACP
 from systems.acc.acc import ACC
 
 
-USE_CP = True
-USE_ADAPTIVE = True
+USE_CP = False#True
+USE_ADAPTIVE = False#True
 
 # Algorithm 1 setup.
-K = 12  # total number of time intervals I_k
+K = 10 # total number of time intervals I_k
 B = 2   # update the representation every B intervals
 
 # Time setup for each interval I_k.
@@ -211,7 +211,7 @@ system.set_representation(olacp.Theta)
 system.cp_quantile = olacp.Q_k
 
 # Simulation initialization.
-x = np.array([0.0, 24.0, 24.0])
+x = np.array([0.0, 26.0, 24.0])
 a_hat_cbf = a_center.copy()
 rho_cbf = 0.0
 x_ext = np.hstack((x, a_hat_cbf, rho_cbf))
@@ -238,22 +238,26 @@ s_k_hist = []
 delta_k_hist = []
 e_k_hist = []
 
+#TODO
+a_true = a_true_initial.copy()
+
 # Main simulation loop.
 for i, t in enumerate(tt):
     interval_index = i // I_length
     theta_1, theta_2, theta_3, _ = system.Theta_hat
-    a_true = np.array(
-        [
-            c1_schedule[interval_index] / theta_1,
-            c2_schedule[interval_index] / theta_2,
-            c3_schedule[interval_index] / theta_3,
-            c4_schedule[interval_index] / theta_1,
-            c5_schedule[interval_index] / theta_2,
-            c6_schedule[interval_index] / theta_3,
-            lead_velocity_schedule[interval_index]
-            / system.lead_velocity_regressor,
-        ]
-    )
+    #TODO
+    #a_true = np.array(
+    #    [
+    #        c1_schedule[interval_index] / theta_1,
+    #        c2_schedule[interval_index] / theta_2,
+    #        c3_schedule[interval_index] / theta_3,
+    #        c4_schedule[interval_index] / theta_1,
+    #        c5_schedule[interval_index] / theta_2,
+    #        c6_schedule[interval_index] / theta_3,
+    #        lead_velocity_schedule[interval_index]
+    #        / system.lead_velocity_regressor,
+    #    ]
+    #)
 
     x_hist[i] = x
     a_hat_cbf_hist[i] = a_hat_cbf
@@ -343,6 +347,7 @@ for i, t in enumerate(tt):
         representation_update = olacp.update_representation()
 
         interval_start = i - I_length + 1
+        a_true = olacp.a_k #TODO
         a_k_hist[interval_start : i + 1] = olacp.a_k
         prediction_error_hist[interval_start : i + 1] = (
             interval_prediction_error
