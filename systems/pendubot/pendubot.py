@@ -9,13 +9,12 @@ from systems.control_affine_system import ControlAffineSystem
 
 
 class Pendubot(ControlAffineSystem):
-    """Pendubot with learned damping, gravity, and wind uncertainty.
-
-    The learned model is ``Y_Theta(x) @ a = Psi(x) @ Theta @ a``.
-    Its only constant generalized-torque feature acts at the actuated joint,
-    so every certainty-equivalent model retains the upright equilibrium after
-    applying its estimated trim input. A parameter-dependent CARE supplies the
-    local CRaCLF and its exact parameter sensitivities.
+    """Pendubot is a two-link underactuated robot with a single torque input at the first joint. 
+    1. The system is subject to unknown true uncertainty 'w' consisting of damping and gravity mismatch
+      and 2-D wind disturbances.
+    2. The unknown true uncertainty 'w' is approximated by Y_Theta(x)a, where Y_Theta(x) = Psi(x) @ Theta
+    3. The CLF candidate is obtained by solving the algebraic Riccati equation for the linearized 
+      certainty-equivalent dynamics at the controlled equilibrium (upright position).
     """
 
     theta_shape = (13, 5)
@@ -111,9 +110,7 @@ class Pendubot(ControlAffineSystem):
             raise ValueError("L_w must not exceed the first-link length")
         if np.any(~np.isfinite(self.damping)) or np.any(self.damping < 0.0):
             raise ValueError("damping must be finite and nonnegative")
-        if np.any(~np.isfinite(self.true_damping)) or np.any(
-            self.true_damping < 0.0
-        ):
+        if np.any(~np.isfinite(self.true_damping)) or np.any(self.true_damping < 0.0):
             raise ValueError("true_damping must be finite and nonnegative")
         if not np.isfinite(self.drag_coefficient) or self.drag_coefficient < 0.0:
             raise ValueError("c_w must be finite and nonnegative")
@@ -148,7 +145,7 @@ class Pendubot(ControlAffineSystem):
         self._invalidate_riccati_cache()
 
     def mass_matrix(self, q):
-        """Return the two-link inertia matrix ``M(q)``."""
+        """Return the two-link inertia matrix M(q)"""
         q = np.asarray(q, dtype=float).reshape(2)
         cosine = np.cos(q[1])
         return np.array(
@@ -162,7 +159,7 @@ class Pendubot(ControlAffineSystem):
         )
 
     def coriolis_vector(self, q, q_dot):
-        """Return the Coriolis/centrifugal vector ``h(q, q_dot)``."""
+        """Return the Coriolis/centrifugal vector h(q, q_dot)"""
         q = np.asarray(q, dtype=float).reshape(2)
         q_dot = np.asarray(q_dot, dtype=float).reshape(2)
         sine = np.sin(q[1])
@@ -176,7 +173,7 @@ class Pendubot(ControlAffineSystem):
         )
 
     def gravity_shape(self, q):
-        """Return the vector ``s(q)`` multiplying gravitational acceleration."""
+        """Return the vector s(q) multiplying gravitational acceleration"""
         q = np.asarray(q, dtype=float).reshape(2)
         total_angle = q[0] + q[1]
         distal_term = self.mass_2 * self.com_2 * np.sin(total_angle)
@@ -190,7 +187,7 @@ class Pendubot(ControlAffineSystem):
         )
 
     def f(self, x):
-        """Return the nominal Pendubot drift."""
+        """Return the nominal Pendubot drift"""
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         q, q_dot = x[:2], x[2:]
         generalized_force = (
@@ -202,7 +199,7 @@ class Pendubot(ControlAffineSystem):
         return np.hstack((q_dot, q_ddot))
 
     def g(self, x):
-        """Return the first-joint torque input matrix."""
+        """Return the first-joint torque input matrix"""
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         acceleration_direction = np.linalg.solve(
             self.mass_matrix(x[:2]), self.input_direction
@@ -211,7 +208,7 @@ class Pendubot(ControlAffineSystem):
 
     @staticmethod
     def feature_vector(x):
-        """Return the six nonconstant generalized-torque features."""
+        """Return the six nonconstant generalized-torque features"""
         q1, q2, q1_dot, q2_dot = np.asarray(x, dtype=float).reshape(4)
         return np.array(
             [
@@ -226,7 +223,7 @@ class Pendubot(ControlAffineSystem):
 
     @classmethod
     def generalized_torque_features(cls, x):
-        """Return the draft's ``2 x 13`` matrix ``Psi_tau(x)``."""
+        """Return the draft's 2 x 13 matrix Psi_tau(x)"""
         features = cls.feature_vector(x)
         Psi_tau = np.zeros((2, 13))
         Psi_tau[0, 0] = 1.0
@@ -235,7 +232,7 @@ class Pendubot(ControlAffineSystem):
         return Psi_tau
 
     def psi(self, x):
-        """Return the full state-space feature matrix ``Psi(x)``."""
+        """Return the full state-space feature matrix Psi(x)"""
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         acceleration_features = np.linalg.solve(
             self.mass_matrix(x[:2]), self.generalized_torque_features(x)
@@ -243,18 +240,18 @@ class Pendubot(ControlAffineSystem):
         return np.vstack((np.zeros((2, 13)), acceleration_features))
 
     def Y(self, x):
-        """Evaluate the currently installed Pendubot representation."""
+        """Evaluate the currently installed Pendubot representation"""
         return self.Y_theta(x, self.Theta_hat)
 
     def Y_theta(self, x, theta):
-        """Evaluate ``Y_Theta(x) = Psi(x) @ Theta``."""
+        """Evaluate Y_Theta(x) = Psi(x) @ Theta"""
         theta = np.asarray(theta, dtype=float)
         if theta.shape != self.theta_shape:
             raise ValueError(f"theta must have shape {self.theta_shape}")
         return self._validate_Y_shape(self.psi(x) @ theta)
 
     def representation_loss_gradient(self, x, theta, a, w):
-        """Return ``grad_Theta ||Y_Theta(x) @ a - w||_2**2``."""
+        """Return grad_Theta ||Y_Theta(x) @ a - w||_2**2"""
         a = np.asarray(a, dtype=float).reshape(-1)
         w = np.asarray(w, dtype=float).reshape(-1)
         if a.size != self.adim:
@@ -267,7 +264,7 @@ class Pendubot(ControlAffineSystem):
         return 2.0 * np.outer(Psi_x.T @ residual, a)
 
     def set_representation(self, Theta_hat):
-        """Install a representation and invalidate its Riccati certificate."""
+        """Install a representation and invalidate its Riccati certificate"""
         Theta_hat = np.asarray(Theta_hat, dtype=float)
         if Theta_hat.shape != self.theta_shape:
             raise ValueError(f"Theta_hat must have shape {self.theta_shape}")
@@ -277,7 +274,7 @@ class Pendubot(ControlAffineSystem):
         self._invalidate_riccati_cache()
 
     def wind_torque(self, x, t=0.0):
-        """Return the generalized torque from wind acting on link one."""
+        """Return the generalized torque from wind acting on link one"""
         q1, _, q1_dot, _ = np.asarray(x, dtype=float).reshape(self.xdim)
         wind_velocity = np.asarray(
             self.wind_velocity_fcn(t), dtype=float
@@ -301,11 +298,11 @@ class Pendubot(ControlAffineSystem):
         return np.array([actuated_torque, 0.0])
 
     def true_trim_input(self, t=0.0):
-        """Return the unknown physical input that trims the upright state."""
+        """Return the unknown physical input that trims the upright state"""
         return -float(self.wind_torque(np.zeros(self.xdim), t)[0])
 
     def true_uncertainty(self, x, t=0.0):
-        """Return the damping, gravity, and wind acceleration mismatch."""
+        """Return the damping, gravity, and wind acceleration mismatch"""
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         if self.true_uncertainty_fcn is not None:
             uncertainty = np.asarray(
@@ -357,7 +354,7 @@ class Pendubot(ControlAffineSystem):
 
     @staticmethod
     def _representation_linear_terms(beta):
-        """Return the position/velocity linearization of ``Psi_tau beta``."""
+        """Return the position/velocity linearization of Psi_tau beta"""
         beta = np.asarray(beta, dtype=float).reshape(13)
         torque_position = np.array(
             [
@@ -371,12 +368,12 @@ class Pendubot(ControlAffineSystem):
         return torque_position, torque_velocity
 
     def estimated_trim_input(self, a_hat):
-        """Return ``-e1.T @ Psi_tau(0) @ Theta @ a_hat``."""
+        """Return -e1.T @ Psi_tau(0) @ Theta @ a_hat"""
         a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
         return -float((self.Theta_hat @ a_hat)[0])
 
-    def certainty_equivalent_drift(self, x, a_hat):
-        """Return the equilibrium-centered estimated drift ``F_a(x)``."""
+    def certainty_equivalent_F(self, x, a_hat):
+        """Return the equilibrium-centered estimated drift F_a(x)"""
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
         return (
@@ -399,8 +396,8 @@ class Pendubot(ControlAffineSystem):
             ]
         )
 
-    def linearized_certainty_equivalent_drift(self, a_hat):
-        """Return ``A(a_hat) = dF_a/dx`` at the upright state."""
+    def linearized_certainty_equivalent_F(self, a_hat):
+        """Return A(a_hat) = dF_a/dx at the upright state"""
         a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
         beta = self.Theta_hat @ a_hat
         representation_q, representation_v = self._representation_linear_terms(
@@ -417,7 +414,7 @@ class Pendubot(ControlAffineSystem):
         return A
 
     def _linearization_parameter_derivatives(self):
-        """Return the exact derivatives ``dA/da_i`` for fixed ``Theta``."""
+        """Return the exact derivatives dA/da_i for fixed Theta"""
         mass_upright = self.mass_matrix(np.zeros(2))
         derivatives = np.zeros((self.adim, self.xdim, self.xdim))
         for index in range(self.adim):
@@ -446,7 +443,7 @@ class Pendubot(ControlAffineSystem):
         ):
             return self._riccati_cache_P
 
-        A = self.linearized_certainty_equivalent_drift(a_hat)
+        A = self.linearized_certainty_equivalent_F(a_hat)
         B = self.g(np.zeros(self.xdim))
         try:
             P = solve_continuous_are(
@@ -487,7 +484,7 @@ class Pendubot(ControlAffineSystem):
         return sensitivities
 
     def clf_matrix(self, a_hat):
-        """Return the stabilizing CARE matrix ``P(a_hat)``."""
+        """Return the stabilizing CARE matrix P(a_hat)"""
         return self._riccati_solution(a_hat).copy()
 
     def clf(self, x, a_hat):
@@ -509,13 +506,13 @@ class Pendubot(ControlAffineSystem):
         return gradient.reshape(self.adim, 1)
 
     def lqr_gain(self, a_hat):
-        """Return the local certainty-equivalent LQR gain."""
+        """Return the local certainty-equivalent LQR gain"""
         P = self._riccati_solution(a_hat)
         B = self.g(np.zeros(self.xdim))
         return B.T @ P / self.lqr_R
 
     def local_lqr_control(self, x, a_hat):
-        """Return the estimated trim input plus local LQR feedback."""
+        """Return the estimated trim input plus local LQR feedback"""
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         return np.array(
             [
@@ -525,7 +522,7 @@ class Pendubot(ControlAffineSystem):
         )
 
     def local_decay_rate(self, a_hat):
-        """Return the linear LQR decay rate certified by ``P(a_hat)``."""
+        """Return the linear LQR decay rate certified by P(a_hat)"""
         P = self._riccati_solution(a_hat)
         gain = self.lqr_gain(a_hat)
         dissipation = self.lqr_Q + self.lqr_R * gain.T @ gain

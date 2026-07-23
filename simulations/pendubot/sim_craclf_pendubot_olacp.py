@@ -14,8 +14,7 @@ from systems.pendubot.pendubot import Pendubot
 USE_CP = True#False #
 USE_ADAPTIVE = True#False #
 
-# Algorithm 1 setup. The representation is pretrained with stabilizing LQR
-# feedback because the CARE certificate and the learned model are both local.
+# Algorithm 1 setup
 K_pretrain = 100
 N_cal = 90
 K = 16
@@ -27,7 +26,7 @@ if K_pretrain % B != 0:
 if K_pretrain < N_cal:
     raise ValueError("K_pretrain must be at least as large as N_cal")
 
-# Time setup for each piecewise-constant environment interval I_k.
+# Time setup for each piecewise-constant environment interval I_k
 dt = 0.01
 interval_duration = 2.0
 I_length = int(round(interval_duration / dt))
@@ -46,16 +45,15 @@ def wind_velocity(t):
         [0.5 * np.cos(phase), -1.8 * np.sin(phase + 0.25)]
     )
 
-# Known mechanical parameters.
+# Known parameters
 m1 = 1.0
-m2 = 1.0
+m2 = 2.0
 L1 = 1.0
-L2 = 1.0
+L2 = 1.5
 r1 = 0.5
 r2 = 0.5
 I1 = m1 * L1**2 / 12.0
 I2 = m2 * L2**2 / 12.0
-
 
 theta_ub = np.ones((13, 5)) * 0.2
 theta_lb = -np.ones((13, 5)) * 0.2
@@ -89,8 +87,6 @@ params = {
     "lqr_R": 0.5,
     "use_adaptive": USE_ADAPTIVE,
     "use_cp": USE_CP,
-    # The latent coordinates have no assigned physical meaning, so use an
-    # isotropic adaptation gain rather than coordinate-specific tuning.
     "Gamma_clf": 0.02 * np.eye(5),
     "a_ub": a_ub,
     "a_lb": a_lb,
@@ -105,22 +101,9 @@ params = {
     "u_min": -25.0,
     "u_max": 25.0,
 }
-
 system = Pendubot(params)
 
-# Check the CARE assumption for 
-care_rng = np.random.default_rng(29)
-care_vertices = np.array(
-    np.meshgrid(*zip(a_lb, a_ub), indexing="ij")
-).reshape(system.adim, -1).T
-care_interior = care_rng.uniform(
-    a_lb, a_ub, size=(32, system.adim)
-)
-care_test_points = np.vstack((a_center, care_vertices, care_interior))
-
-
-# Start OLACP with an empty calibration set. Pretraining fills it while also
-# updating the 13-by-5 representation.
+# Initialize OLACP with an empty calibration set
 olacp = OLACP(
     [],
     N_cal=N_cal,
@@ -130,8 +113,7 @@ olacp = OLACP(
     buffer_maxlen=I_length,
     theta_init=Theta_init,
     representation_period=B,
-    # OLACP sums B * I_length sample gradients.  Scale the update accordingly
-    # and decay it so a block cannot immediately clip all 65 coefficients.
+    # OLACP sums B * I_length sample gradients. Scale the update accordingly.
     representation_lr=lambda j: 5e-2,
     theta_lb=theta_lb,
     theta_ub=theta_ub,
@@ -140,9 +122,9 @@ olacp = OLACP(
 )
 system.set_representation(olacp.Theta)
 
-# Stabilized, persistently exciting representation-learning rollout. The
-# physical state is reset before the CRaCLF simulation, while OLACP retains the
-# learned representation and calibration scores.
+# Pre-training
+# The state is reset before the CRaCLF simulation, while OLACP retains the
+# learned representation and calibration scores
 pretrain_sample_count = K_pretrain * I_length
 tt_pretrain = np.arange(pretrain_sample_count, dtype=float) * dt
 x_pretrain = np.array([0.22, -0.16, 0.0, 0.0])
@@ -212,7 +194,7 @@ for pretrain_interval_index in range(K_pretrain):
 
 system.cp_quantile = olacp.compute_quantile()
 
-# CRaCLF simulation initialization inside the local CARE neighborhood.
+# CRaCLF simulation initialization
 x = np.array([0.18, -0.12, 0.0, 0.0])
 a_hat_clf = olacp.a_k.copy() if USE_ADAPTIVE else np.zeros(system.adim)
 rho_clf = 0.0
@@ -321,8 +303,8 @@ s_k_hist = np.asarray(s_k_hist)
 delta_k_hist = np.asarray(delta_k_hist)
 e_k_hist = np.asarray(e_k_hist)
 
-# Pendubot angles and angular velocities.
-fig, axs = plt.subplots(4, 1, sharex=True, figsize=(7, 8))
+# Pendubot angles and angular velocities
+fig, axs = plt.subplots(4, 1, sharex=True)
 state_labels = (
     r"$q_1$ (deg)",
     r"$q_2$ (deg)",
@@ -336,7 +318,7 @@ for index, ax in enumerate(axs):
 axs[-1].set_xlabel("Time (s)")
 fig.suptitle("Pendubot states")
 
-# Piecewise-constant wind disturbance.
+# Piecewise-constant wind disturbance
 wind_hist = np.asarray([wind_velocity(t) for t in tt])
 fig, axs = plt.subplots(2, 1, sharex=True)
 axs[0].step(tt, wind_hist[:, 0], where="post")
@@ -348,7 +330,7 @@ for ax in axs:
     ax.grid(True)
 fig.suptitle("Wind disturbance")
 
-# Control, trim estimates, local CRaCLF, and QP relaxation.
+# Control, trim estimates, local CRaCLF, and QP relaxation
 fig, axs = plt.subplots(3, 1, sharex=True, figsize=(7, 7))
 axs[0].plot(tt, u_hist, label=r"$u$")
 #axs[0].plot(tt, u_ref_hist, "--", label=r"$u_{\mathrm{LQR}}$")
@@ -365,7 +347,7 @@ for ax in axs:
     ax.grid(True)
 fig.suptitle("Local CRaCLF-QP")
 
-# Adaptive conformal prediction variables.
+# Adaptive conformal prediction variables
 fig, axs = plt.subplots(3, 1, sharex=True)
 axs[0].step(interval_times, s_k_hist, where="post", label=r"$s_k$")
 axs[0].step(tt, Q_k_hist, where="post", label=r"$Q_k$")
@@ -387,8 +369,7 @@ for ax in axs:
         )
 fig.suptitle("Adaptive conformal prediction")
 
-# Residual loss captures both representation error and the wind terms that the
-# finite feature basis cannot express exactly.
+# Residual loss
 fig, axs = plt.subplots(2, 1, figsize=(7, 7))
 axs[0].semilogy(
     tt_pretrain,
@@ -417,7 +398,7 @@ axs[1].set_title("Online implementation")
 axs[1].set_xlabel("Time (s)")
 fig.suptitle("Uncertainty-prediction error")
 
-# Adaptive and interval-fitted environmental parameters.
+# Adaptive and interval-fitted environmental parameters
 fig, axs = plt.subplots(system.adim, 1, sharex=True, figsize=(7, 9))
 for index in range(system.adim):
     axs[index].plot(tt, a_hat_clf_hist[:, index], label=r"$\hat a$")
@@ -428,7 +409,7 @@ for index in range(system.adim):
 axs[-1].set_xlabel("Time (s)")
 fig.suptitle("Adaptive and interval-fitted parameters")
 
-# Learned 13-by-5 representation.
+# Learned 13-by-5 representation
 """
 fig, axs = plt.subplots(
     *Theta_init.shape, sharex=True, figsize=(13, 18), squeeze=False
@@ -446,7 +427,7 @@ for ax in axs[-1, :]:
 fig.suptitle("Learned representation")
 """
 
-# CRaCLF scaling state and scaling function.
+# CRaCLF scaling state and scaling function
 fig, axs = plt.subplots(2, 1, sharex=True)
 axs[0].plot(tt, nu_clf_hist)
 axs[0].set_ylabel(r"$\nu_{\mathrm{clf}}$")
