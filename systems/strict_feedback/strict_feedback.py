@@ -66,10 +66,10 @@ class StrictFeedbackSystem(ControlAffineSystem):
 
     def Y(self, x):
         """Evaluate the currently installed strict-feedback representation."""
-        return self.Y_theta(x, self.Theta_hat)
+        return self.Y_Theta(x, self.Theta_hat)
 
-    def Y_theta(self, x, theta):
-        """Evaluate Y_theta(x) = Psi(x) @ theta."""
+    def Y_Theta(self, x, theta):
+        """Evaluate Y_Theta(x) = Psi(x) @ theta."""
         theta = np.asarray(theta, dtype=float)
         if theta.shape != self.theta_shape:
             raise ValueError(f"theta must have shape {self.theta_shape}")
@@ -85,7 +85,7 @@ class StrictFeedbackSystem(ControlAffineSystem):
             raise ValueError(f"w must have length {self.xdim}")
 
         Psi_x = self.psi(x)
-        residual = self.Y_theta(x, theta) @ a - w
+        residual = self.Y_Theta(x, theta) @ a - w
         return 2.0 * np.outer(Psi_x.T @ residual, a)
 
     def set_representation(self, Theta_hat):

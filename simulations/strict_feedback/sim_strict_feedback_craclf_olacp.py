@@ -62,7 +62,6 @@ params = {
     "use_adaptive": USE_ADAPTIVE,
     "use_cp": USE_CP,
     "Gamma_clf": np.diag([0.2, 0.2]),
-    "a_true": np.zeros(2),
     "a_ub": a_ub,
     "a_lb": a_lb,
     "a_hat_norm_max": a_radius,
@@ -89,7 +88,7 @@ for k in range(N_cal):
     for x1 in x1_cal:
         x_cal = np.array([x1, 0.0, 0.0])
         Y_cal.append(
-            system.Y_theta(x_cal, Theta_init)
+            system.Y_Theta(x_cal, Theta_init)
         )
         w_cal.append(
             true_uncertainty(
@@ -121,7 +120,7 @@ olacp = OLACP(
     representation_lr=lambda j: 2e-4 / j,
     theta_lb=-2.0,
     theta_ub=2.0,
-    Y_theta=system.Y_theta,
+    Y_Theta=system.Y_Theta,
     representation_loss_gradient=system.representation_loss_gradient,
 )
 system.set_representation(olacp.Theta)

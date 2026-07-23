@@ -6,7 +6,7 @@ from systems.control_affine_system import ControlAffineSystem
 class ACC(ControlAffineSystem):
     """Adaptive-cruise-control system from the CRaCBF example.
 
-    The controller represents the unknown plant term as ``Y_theta(x) @ a``.
+    The controller represents the unknown plant term as ``Y_Theta(x) @ a``.
     The representation parameters scale the constant, linear, and quadratic
     velocity features and control the wake-effect decay. The seven-dimensional
     interval parameter ``a`` contains the corresponding abstract coefficients.
@@ -27,17 +27,17 @@ class ACC(ControlAffineSystem):
         elif not isinstance(params, dict):
             raise TypeError("Parameters must be a dictionary.")
 
-        theta_init = np.asarray(
+        Theta_init = np.asarray(
             params.get(
                 "Theta_init", np.array([0.1, 0.0025, 0.0002, 0.05])
             ),
             dtype=float,
         ).reshape(-1)
-        if theta_init.size != np.prod(self.theta_shape):
+        if Theta_init.size != np.prod(self.theta_shape):
             raise ValueError("Theta_init must contain exactly four values")
-        if np.any(~np.isfinite(theta_init)) or np.any(theta_init <= 0.0):
+        if np.any(~np.isfinite(Theta_init)) or np.any(Theta_init <= 0.0):
             raise ValueError("Theta_init must be finite and strictly positive")
-        self.Theta_hat = theta_init.reshape(self.theta_shape).copy()
+        self.Theta_hat = Theta_init.reshape(self.theta_shape).copy()
 
         self.mass = float(params.get("m", 2000.0))
         self.desired_velocity = float(params.get("vd", 20.0))
@@ -116,9 +116,9 @@ class ACC(ControlAffineSystem):
 
     def Y(self, x):
         """Evaluate the currently installed uncertainty representation."""
-        return self.Y_theta(x, self.Theta_hat)
+        return self.Y_Theta(x, self.Theta_hat)
 
-    def Y_theta(self, x, theta):
+    def Y_Theta(self, x, theta):
         """Evaluate the scaled ``3 x 7`` representation matrix."""
         Yx = np.zeros((self.xdim, self.adim))
         Yx[1, :6] = self.psi_theta(x, theta)
@@ -126,7 +126,7 @@ class ACC(ControlAffineSystem):
         return self._validate_Y_shape(Yx)
 
     def representation_loss_gradient(self, x, theta, a, w):
-        """Return ``grad_theta ||Y_theta(x) @ a - w||_2**2``."""
+        """Return ``grad_theta ||Y_Theta(x) @ a - w||_2**2``."""
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         a = np.asarray(a, dtype=float).reshape(-1)
         w = np.asarray(w, dtype=float).reshape(-1)
@@ -138,7 +138,7 @@ class ACC(ControlAffineSystem):
         theta_1, theta_2, theta_3, theta_4 = self._theta_vector(theta)
         v, z = x[1], x[2]
         wake_decay = np.exp(-theta_4 * z)
-        residual = self.Y_theta(x, theta) @ a - w
+        residual = self.Y_Theta(x, theta) @ a - w
         model_gradient = np.array(
             [
                 a[0] + wake_decay * a[3],

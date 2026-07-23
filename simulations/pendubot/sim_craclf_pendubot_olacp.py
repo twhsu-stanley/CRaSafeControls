@@ -55,10 +55,10 @@ r2 = 0.5
 I1 = m1 * L1**2 / 12.0
 I2 = m2 * L2**2 / 12.0
 
-theta_ub = np.ones((13, 5)) * 0.2
-theta_lb = -np.ones((13, 5)) * 0.2
+Theta_ub = np.ones((13, 5)) * 0.2
+Theta_lb = -np.ones((13, 5)) * 0.2
 theta_rng = np.random.default_rng(11)
-Theta_init = theta_rng.uniform(theta_lb, theta_ub)
+Theta_init = theta_rng.uniform(Theta_lb, Theta_ub)
 
 a_lb = -np.ones(5) * 1.0
 a_ub = np.ones(5) * 1.0
@@ -111,13 +111,13 @@ olacp = OLACP(
     delta_target=0.1,
     delta_init=0.1,
     buffer_maxlen=I_length,
-    theta_init=Theta_init,
+    Theta_init=Theta_init,
     representation_period=B,
     # OLACP sums B * I_length sample gradients. Scale the update accordingly.
     representation_lr=lambda j: 5e-2,
-    theta_lb=theta_lb,
-    theta_ub=theta_ub,
-    Y_theta=system.Y_theta,
+    Theta_lb=Theta_lb,
+    Theta_ub=Theta_ub,
+    Y_Theta=system.Y_Theta,
     representation_loss_gradient=system.representation_loss_gradient,
 )
 system.set_representation(olacp.Theta)

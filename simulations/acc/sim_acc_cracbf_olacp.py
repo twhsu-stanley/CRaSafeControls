@@ -14,8 +14,8 @@ from olacp import OLACP
 from systems.acc.acc import ACC
 
 
-USE_CP = False#True
-USE_ADAPTIVE = False#True
+USE_CP = True#False#
+USE_ADAPTIVE = True#False#
 
 # Algorithm 1 setup.
 K = 10 # total number of time intervals I_k
@@ -42,13 +42,11 @@ if N_cal < 100:
 # Only theta_4 has a physical true value in this parameterization. Theta_1,
 # theta_2, and theta_3 regulate the ranges of the abstract interval parameters.
 WAKE_DECAY_TRUE = 0.045
-THETA_INIT = np.array([0.1, 0.0025, 0.0002, 0.08])
-THETA_LB = np.array([0.08, 0.002, 0.00015, 0.005])
-THETA_UB = np.array([0.15, 0.004, 0.00030, 0.12])
 
-# The seventh column of Y is fixed at 10. This represents a physical lead
-# velocity near 23 m/s by an abstract a_7 near 2.3 without changing the plant.
-LEAD_VELOCITY_REGRESSOR = 10.0
+Theta_lb = np.array([0.08, 0.002, 0.00015, 0.005])
+Theta_ub = np.array([0.15, 0.004, 0.00030, 0.12])
+theta_rng = np.random.default_rng(11)
+Theta_init = theta_rng.uniform(Theta_lb, Theta_ub)
 
 # Physical and controller parameters.
 mass = 1650.0
@@ -83,19 +81,6 @@ c4_schedule = b2_schedule * b3_schedule * wind_speed**2 / mass
 c5_schedule = -2.0 * b2_schedule * b3_schedule * wind_speed / mass
 c6_schedule = b2_schedule * b3_schedule / mass
 
-a_true_initial = np.array(
-    [
-        c1_schedule[0] / THETA_INIT[0],
-        c2_schedule[0] / THETA_INIT[1],
-        c3_schedule[0] / THETA_INIT[2],
-        c4_schedule[0] / THETA_INIT[0],
-        c5_schedule[0] / THETA_INIT[1],
-        c6_schedule[0] / THETA_INIT[2],
-        lead_velocity_schedule[0] / LEAD_VELOCITY_REGRESSOR,
-    ]
-)
-
-
 def true_uncertainty(x, t):
     """Evaluate the unknown physical uncertainty w(x, t)."""
     interval_index = int(np.floor(max(float(t), 0.0) / interval_duration))
@@ -107,11 +92,7 @@ def true_uncertainty(x, t):
         + b1_schedule[interval_index] * v
         + b2_schedule[interval_index]
         * relative_air_speed**2
-        * (
-            1.0
-            - b3_schedule[interval_index]
-            * np.exp(-WAKE_DECAY_TRUE * z)
-        )
+        * (1.0 - b3_schedule[interval_index] * np.exp(-WAKE_DECAY_TRUE * z))
     )
     return np.array(
         [0.0, -drag / mass, lead_velocity_schedule[interval_index]]
@@ -130,7 +111,7 @@ params = {
     "xdim": 3,
     "udim": 1,
     "adim": 7,
-    "Theta_init": THETA_INIT.copy(),
+    "Theta_init": Theta_init.copy(),
     "true_uncertainty": true_uncertainty,
     "m": mass,
     "grav": gravity,
@@ -139,11 +120,11 @@ params = {
     "z_min": 1.0,
     "T_h": 1.0,
     "cbf_smoothing_epsilon": 0.01,
-    "lead_velocity_regressor": LEAD_VELOCITY_REGRESSOR,
+    # The seventh column of Y is fixed at 10
+    "lead_velocity_regressor": 10.0,
     "use_adaptive": USE_ADAPTIVE,
     "use_cp": USE_CP,
     "Gamma_cbf": Gamma_cbf,
-    "a_true": a_true_initial,
     "a_ub": a_ub,
     "a_lb": a_lb,
     "a_hat_norm_max": a_hat_norm_max,
@@ -176,7 +157,7 @@ for k in range(N_cal):
     Y_cal = []
     w_cal = []
     for x_cal, t_cal in zip(states_cal, times_cal):
-        Y_cal.append(system.Y_theta(x_cal, THETA_INIT))
+        Y_cal.append(system.Y_Theta(x_cal, Theta_init))
         w_cal.append(true_uncertainty(x_cal, t_cal))
 
     Y_stack = np.vstack(Y_cal)
@@ -198,20 +179,20 @@ olacp = OLACP(
     delta_target=0.05,
     delta_init=0.05,
     buffer_maxlen=I_length,
-    theta_init=THETA_INIT,
+    Theta_init=Theta_init,
     representation_period=B,
     # Coordinate-wise rates account for the different Theta scales.
     representation_lr=lambda j: np.array([1e3, 1e4, 1e1, 1e6]) / j,
-    theta_lb=THETA_LB,
-    theta_ub=THETA_UB,
-    Y_theta=system.Y_theta,
+    Theta_lb=Theta_lb,
+    Theta_ub=Theta_ub,
+    Y_Theta=system.Y_Theta,
     representation_loss_gradient=system.representation_loss_gradient,
 )
 system.set_representation(olacp.Theta)
 system.cp_quantile = olacp.Q_k
 
 # Simulation initialization.
-x = np.array([0.0, 26.0, 24.0])
+x = np.array([0.0, 24.0, 24.0])
 a_hat_cbf = a_center.copy()
 rho_cbf = 0.0
 x_ext = np.hstack((x, a_hat_cbf, rho_cbf))
@@ -225,12 +206,11 @@ z_b_hist = np.zeros(len(tt))
 z_b_exponential_bound_hist = np.zeros(len(tt))
 a_hat_cbf_hist = np.zeros((len(tt), system.adim))
 a_k_hist = np.full((len(tt), system.adim), np.nan)
-a_true_hist = np.zeros((len(tt), system.adim))
 lead_velocity_hist = np.zeros(len(tt))
 rho_cbf_hist = np.zeros(len(tt))
 nu_cbf_hist = np.zeros(len(tt))
 Q_k_hist = np.zeros(len(tt))
-Theta_hist = np.zeros((len(tt), THETA_INIT.size))
+Theta_hist = np.zeros((len(tt), Theta_init.size))
 prediction_error_hist = np.full(len(tt), np.nan)
 
 interval_times = []
@@ -238,30 +218,12 @@ s_k_hist = []
 delta_k_hist = []
 e_k_hist = []
 
-#TODO
-a_true = a_true_initial.copy()
-
 # Main simulation loop.
 for i, t in enumerate(tt):
     interval_index = i // I_length
-    theta_1, theta_2, theta_3, _ = system.Theta_hat
-    #TODO
-    #a_true = np.array(
-    #    [
-    #        c1_schedule[interval_index] / theta_1,
-    #        c2_schedule[interval_index] / theta_2,
-    #        c3_schedule[interval_index] / theta_3,
-    #        c4_schedule[interval_index] / theta_1,
-    #        c5_schedule[interval_index] / theta_2,
-    #        c6_schedule[interval_index] / theta_3,
-    #        lead_velocity_schedule[interval_index]
-    #        / system.lead_velocity_regressor,
-    #    ]
-    #)
 
     x_hist[i] = x
     a_hat_cbf_hist[i] = a_hat_cbf
-    a_true_hist[i] = a_true
     lead_velocity_hist[i] = lead_velocity_schedule[interval_index]
     rho_cbf_hist[i] = rho_cbf
     nu_cbf_hist[i] = system.nu_cbf(rho_cbf)
@@ -273,18 +235,6 @@ for i, t in enumerate(tt):
         h_hist[i]
         - 0.5 / nu_cbf_hist[i] * system.safe_set_tightening
     )
-    parameter_error = a_hat_cbf - a_true
-    z_b_hist[i] = (
-        nu_cbf_hist[i] * h_hist[i]
-        - 0.5 * parameter_error @ Gamma_cbf_inv @ parameter_error
-    )
-    if i % I_length == 0:
-        tau_k = t
-        z_b_tau_k = z_b_hist[i]
-    z_b_exponential_bound_hist[i] = z_b_tau_k * np.exp(
-        -alpha_b * (t - tau_k)
-    )
-
     if i == 0 and h_hist[i] < 0.0:
         raise ValueError(
             f"Initial condition is outside the CBF set: h={h_hist[i]:.3f}"
@@ -311,7 +261,7 @@ for i, t in enumerate(tt):
         xdot=system.dynamics(x, u, t),
     )
 
-    # Propagate with zero-order hold on the control input.
+    # Propagate with zero-order hold on the control input
     if i < len(tt) - 1:
         sol = solve_ivp(
             lambda tau, y: system.dynamics_extended(y, u, tau),
@@ -332,7 +282,7 @@ for i, t in enumerate(tt):
         a_hat_cbf = x_ext[system.xdim : system.xdim + system.adim]
         rho_cbf = float(x_ext[system.xdim + system.adim])
 
-    # Complete lines 7--23 of Algorithm 1 at the interval boundary.
+    # Complete lines 7--23 of Algorithm 1 at the interval boundary
     if (i + 1) % I_length == 0:
         olacp.estimate_uncertainty(dt)
         s_k = float(olacp.compute_score(system.a_ub, system.a_lb))
@@ -347,13 +297,25 @@ for i, t in enumerate(tt):
         representation_update = olacp.update_representation()
 
         interval_start = i - I_length + 1
-        a_true = olacp.a_k #TODO
+        # Algorithm 1 obtains a_k only after I_k is complete. Treat it
+        # retrospectively as the fictitious true parameter for that same
+        # interval; never carry it forward as the plant parameter of I_{k+1}.
+        system.a_true = olacp.a_k.copy()
         a_k_hist[interval_start : i + 1] = olacp.a_k
-        prediction_error_hist[interval_start : i + 1] = (
-            interval_prediction_error
-        )
-        interval_parameter_error = (
-            a_hat_cbf_hist[interval_start : i + 1] - olacp.a_k
+        prediction_error_hist[interval_start : i + 1] = interval_prediction_error
+        interval_z_b = np.empty(i - interval_start + 1)
+        for interval_sample_index, history_index in enumerate(
+            range(interval_start, i + 1)
+        ):
+            a_tilde = a_hat_cbf_hist[history_index] - system.a_true
+            interval_z_b[interval_sample_index] = (
+                nu_cbf_hist[history_index] * h_hist[history_index]
+                - 0.5 * a_tilde @ Gamma_cbf_inv @ a_tilde
+            )
+        z_b_hist[interval_start : i + 1] = interval_z_b
+        interval_time = tt[interval_start : i + 1]
+        z_b_exponential_bound_hist[interval_start : i + 1] = (
+            interval_z_b[0] * np.exp(-alpha_b * (interval_time - interval_time[0]))
         )
         interval_times.append(t)
         s_k_hist.append(s_k)
@@ -416,12 +378,7 @@ axs[1].legend()
 # z_b(t) >= z_b(tau_k) exp(-alpha_b (t - tau_k)), t in I_k.
 z_b_bound_gap_hist = z_b_hist - z_b_exponential_bound_hist
 axs[2].plot(tt, z_b_hist, label=r"$z_b(t)$")
-axs[2].plot(
-    tt,
-    z_b_exponential_bound_hist,
-    "--",
-    label=r"$z_b(\tau_k)e^{-\alpha_b(t-\tau_k)}$",
-)
+axs[2].plot(tt, z_b_exponential_bound_hist, "--", label=r"$z_b(\tau_k)e^{-\alpha_b(t-\tau_k)}$")
 axs[2].set_ylabel(r"$z_b$")
 axs[2].set_xlabel("Time (s)")
 axs[2].legend()
@@ -461,11 +418,7 @@ fig.suptitle("Adaptive conformal prediction")
 # Plot the pointwise loss minimized by Algorithm 1. Each interval uses the
 # representation that was installed while that interval's data were sampled.
 fig, ax = plt.subplots(figsize=(8, 4))
-ax.semilogy(
-    tt,
-    np.maximum(prediction_error_hist, 1e-16),
-    label=r"$\|Y_{\Theta_j}(x_t)a_k-w_t\|_2^2$",
-)
+ax.semilogy(tt, np.maximum(prediction_error_hist, 1e-16), label=r"$\|Y_{\Theta_j}(x_t)a_k-w_t\|_2^2$")
 for update_index in range(B, K, B):
     ax.axvline(
         update_index * interval_duration,
@@ -481,11 +434,11 @@ ax.legend()
 fig.suptitle("Uncertainty-prediction error")
 
 # Plot the learned representation.
-fig, axs = plt.subplots(THETA_INIT.size, 1, sharex=True, figsize=(8, 11))
-for j in range(THETA_INIT.size):
+fig, axs = plt.subplots(Theta_init.size, 1, sharex=True, figsize=(8, 11))
+for j in range(Theta_init.size):
     axs[j].plot(tt, Theta_hist[:, j], label=rf"$\hat{{\theta}}_{j + 1}$")
-    axs[j].axhline(THETA_LB[j], color="0.5", linestyle=":")
-    axs[j].axhline(THETA_UB[j], color="0.5", linestyle=":")
+    axs[j].axhline(Theta_lb[j], color="0.5", linestyle=":")
+    axs[j].axhline(Theta_ub[j], color="0.5", linestyle=":")
     axs[j].set_ylabel(rf"$\theta_{j + 1}$")
     axs[j].legend()
 axs[3].axhline(
@@ -512,7 +465,6 @@ fig, axs = plt.subplots(system.adim, 1, sharex=True, figsize=(8, 12))
 for i in range(system.adim):
     axs[i].plot(tt, a_hat_cbf_hist[:, i], label="a_hat")
     axs[i].plot(tt, a_k_hist[:, i], "--", label="a_k")
-    axs[i].plot(tt, a_true_hist[:, i], ":", label="physical a")
     axs[i].set_ylabel(f"a{i + 1}")
     axs[i].grid(True)
 axs[0].legend(ncol=3)
@@ -526,7 +478,7 @@ for ax in axs:
             linestyle=":",
             linewidth=1.0,
         )
-fig.suptitle("Adaptive, fitted, and physical latent parameters")
+fig.suptitle("Adaptive and interval-fitted latent parameters")
 
 # Plot the CRaCBF scaling variables.
 fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 10))

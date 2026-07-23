@@ -23,9 +23,6 @@ class ControlAffineSystem:
                 raise ValueError(f"{name} must be a positive integer")
             setattr(self, name, int(value))
 
-        # True uncertainty parameters
-        self.a_true = np.copy(self.params["a_true"]) if "a_true" in self.params else np.zeros((self.adim,1))
-
         # Rates
         self.clf_rate = self.params.get("clf_rate", None)
         self.cbf_rate = self.params.get("cbf_rate", None)
@@ -60,13 +57,9 @@ class ControlAffineSystem:
         self.a_hat_norm_max = float(self.params["a_hat_norm_max"])
         if not np.isfinite(self.a_hat_norm_max) or self.a_hat_norm_max <= 0.0:
             raise ValueError("a_hat_norm_max must be finite and positive")
-        self.projection_geometry = self.params.get(
-            "projection_geometry", "ball"
-        )
+        self.projection_geometry = self.params.get("projection_geometry", "ball")
         if self.projection_geometry not in {"ball", "box"}:
-            raise ValueError(
-                "projection_geometry must be either 'ball' or 'box'"
-            )
+            raise ValueError("projection_geometry must be either 'ball' or 'box'")
 
         if self.use_adaptive:
             # For projection-based adaptive controls
@@ -141,8 +134,8 @@ class ControlAffineSystem:
             )
         return Yx
 
-    def Y_theta(self, x, theta):
-        """Evaluate a candidate representation Y_theta(x).
+    def Y_Theta(self, x, theta):
+        """Evaluate a candidate representation Y_Theta(x).
 
         Representation-learning subclasses must override this method. The
         dependence on ``theta`` may be arbitrary, including a neural network,
@@ -151,10 +144,10 @@ class ControlAffineSystem:
         subclass must also override ``Y`` and ``set_representation`` so the
         controller uses the installed weights.
         """
-        raise NotImplementedError("Y_theta is not implemented for this system")
+        raise NotImplementedError("Y_Theta is not implemented for this system")
 
     def representation_loss_gradient(self, x, theta, a, w):
-        """Return grad_theta ||Y_theta(x) @ a - w||_2**2.
+        """Return grad_theta ||Y_Theta(x) @ a - w||_2**2.
 
         A neural representation can implement this hook with backpropagation
         and return its weights as one packed NumPy array.

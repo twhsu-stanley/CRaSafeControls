@@ -18,8 +18,8 @@ class OLACP:
     3) If `N_cal` is provided, S_cal is maintained as a
        moving FIFO window. Once the window is full, appending a new score
        automatically drops the oldest score.
-    4) Representation learning is enabled by supplying ``theta_init``, a
-       callable ``Y_theta(x, theta)``, and a callable
+    4) Representation learning is enabled by supplying ``Theta_init``, a
+       callable ``Y_Theta(x, theta)``, and a callable
        ``representation_loss_gradient(x, theta, a, w)``. The first callable
        may have any structure (for example, a feature model or neural network)
        as long as it returns the matrix Y_Theta(x). The second returns the
@@ -39,12 +39,12 @@ class OLACP:
         delta_target: float = 0.05,
         delta_init: float = 0.05,
         buffer_maxlen: int = 1000,
-        theta_init=None,
+        Theta_init=None,
         representation_period: int = 1,
         representation_lr=1e-3,
-        theta_lb=None,
-        theta_ub=None,
-        Y_theta=None,
+        Theta_lb=None,
+        Theta_ub=None,
+        Y_Theta=None,
         representation_loss_gradient=None,
     ):
         if N_cal < 30:
@@ -82,13 +82,13 @@ class OLACP:
         self._w_buffer = deque(maxlen=self.buffer_maxlen) # to store w_t
 
         # Optional block-wise representation learning (lines 19--23).
-        self.Theta = None if theta_init is None else np.asarray(theta_init, dtype=float).copy()
+        self.Theta = None if Theta_init is None else np.asarray(Theta_init, dtype=float).copy()
         self.representation_period = int(representation_period)
         self.representation_lr = representation_lr
-        self.Y_theta = Y_theta
+        self.Y_Theta = Y_Theta
         self.representation_loss_gradient = representation_loss_gradient
-        self.theta_lb = theta_lb
-        self.theta_ub = theta_ub
+        self.Theta_lb = Theta_lb
+        self.Theta_ub = Theta_ub
         self.interval_index = 0
         self.representation_update_index = 0
         self._representation_intervals = []
@@ -96,39 +96,39 @@ class OLACP:
 
         if self.Theta is not None:
             if self.Theta.size == 0:
-                raise ValueError("theta_init must be nonempty")
-            if not callable(self.Y_theta):
-                raise TypeError("Y_theta must be callable when theta_init is provided")
+                raise ValueError("Theta_init must be nonempty")
+            if not callable(self.Y_Theta):
+                raise TypeError("Y_Theta must be callable when Theta_init is provided")
             if not callable(self.representation_loss_gradient):
                 raise TypeError(
                     "representation_loss_gradient must be callable when "
-                    "theta_init is provided"
+                    "Theta_init is provided"
                 )
             if self.representation_period < 1:
                 raise ValueError("representation_period must be at least 1")
-            if (theta_lb is None) != (theta_ub is None):
-                raise ValueError("theta_lb and theta_ub must either both be set or both be None")
-            if theta_lb is not None:
-                self.theta_lb = np.broadcast_to(
-                    np.asarray(theta_lb, dtype=float), self.Theta.shape
+            if (Theta_lb is None) != (Theta_ub is None):
+                raise ValueError("Theta_lb and Theta_ub must either both be set or both be None")
+            if Theta_lb is not None:
+                self.Theta_lb = np.broadcast_to(
+                    np.asarray(Theta_lb, dtype=float), self.Theta.shape
                 ).copy()
-                self.theta_ub = np.broadcast_to(
-                    np.asarray(theta_ub, dtype=float), self.Theta.shape
+                self.Theta_ub = np.broadcast_to(
+                    np.asarray(Theta_ub, dtype=float), self.Theta.shape
                 ).copy()
-                if np.any(self.theta_lb > self.theta_ub):
-                    raise ValueError("theta_lb must be less than or equal to theta_ub")
-                self.Theta = np.clip(self.Theta, self.theta_lb, self.theta_ub)
+                if np.any(self.Theta_lb > self.Theta_ub):
+                    raise ValueError("Theta_lb must be less than or equal to Theta_ub")
+                self.Theta = np.clip(self.Theta, self.Theta_lb, self.Theta_ub)
 
     def add_data_to_buffers(self, x, xdot_nom, Yx=None, xdot=None):
         """Append one sample from the current interval.
 
         ``Yx`` remains optional only when representation learning is enabled;
-        in that case it is evaluated as ``Y_theta(x, self.Theta)``.
+        in that case it is evaluated as ``Y_Theta(x, self.Theta)``.
         """
         if Yx is None:
             if self.Theta is None:
                 raise ValueError("Yx is required when representation learning is disabled")
-            Yx = self.Y_theta(x, self.Theta)
+            Yx = self.Y_Theta(x, self.Theta)
 
         Yx = np.asarray(Yx, dtype=float)
         if Yx.ndim != 2:
@@ -295,8 +295,8 @@ class OLACP:
         self.representation_update_index += 1
         representation_lr = self._representation_learning_rate(self.representation_update_index)
         theta_next = self.Theta - representation_lr * gradient
-        if self.theta_lb is not None:
-            theta_next = np.clip(theta_next, self.theta_lb, self.theta_ub)
+        if self.Theta_lb is not None:
+            theta_next = np.clip(theta_next, self.Theta_lb, self.Theta_ub)
 
         self.Theta = theta_next
         self.last_representation_gradient = gradient

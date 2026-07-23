@@ -123,7 +123,7 @@ olacp = OLACP(
     representation_lr= lambda j: 1e-2 / j,
     theta_lb=theta_lb,
     theta_ub=theta_ub,
-    Y_theta=system.Y_theta,
+    Y_Theta=system.Y_Theta,
     representation_loss_gradient=system.representation_loss_gradient,
 )
 system.set_representation(olacp.Theta)
