@@ -57,9 +57,11 @@ class ControlAffineSystem:
         self.a_hat_norm_max = float(self.params["a_hat_norm_max"])
         if not np.isfinite(self.a_hat_norm_max) or self.a_hat_norm_max <= 0.0:
             raise ValueError("a_hat_norm_max must be finite and positive")
-        self.projection_geometry = self.params.get("projection_geometry", "ball")
-        if self.projection_geometry not in {"ball", "box"}:
-            raise ValueError("projection_geometry must be either 'ball' or 'box'")
+
+        #TODO: include different projection options
+        #self.projection_geometry = self.params.get("projection_geometry", "ball")
+        #if self.projection_geometry not in {"ball", "box"}:
+        #    raise ValueError("projection_geometry must be either 'ball' or 'box'")
 
         if self.use_adaptive:
             # For projection-based adaptive controls
@@ -78,36 +80,6 @@ class ControlAffineSystem:
                 #self.a_err_max = a_err_norm_max * eigvecs[:,np.argmin(eigvals)]
                 #self.a_err_max = a_err_norm_max * (self.a_ub - self.a_lb)/np.linalg.norm(self.a_ub - self.a_lb, ord=2)
                 self.safe_set_tightening = (a_err_norm_max ** 2) * np.max(eigvals)
-
-    def projected_cracbf_update(self, x, a_hat_cbf, rho_cbf, dcbfdx=None):
-        """Return the parameter update used by both CRaCBF equations."""
-        x = np.asarray(x, dtype=float).reshape(self.xdim)
-        a_hat_cbf = np.asarray(a_hat_cbf, dtype=float).reshape(self.adim)
-        if dcbfdx is None:
-            dcbfdx = self.dcbfdx(x, a_hat_cbf)
-        dcbfdx = np.asarray(dcbfdx, dtype=float).reshape(self.xdim, 1)
-        raw_update = (
-            -self.nu_cbf(rho_cbf)
-            * self.Gamma_cbf
-            @ self.Y(x).T
-            @ dcbfdx
-        )
-        if self.projection_geometry == "box":
-            return ControlAffineSystem.box_projection_operator(
-                a_hat_cbf,
-                raw_update,
-                self.a_lb,
-                self.a_ub,
-                self.epsilon,
-            )
-        return ControlAffineSystem.projection_operator(
-            a_hat_cbf,
-            raw_update,
-            self.a_center,
-            self.a_hat_norm_max,
-            self.epsilon,
-            self.Gamma_cbf,
-        )
 
     def dynamics(self, x, u):
         raise NotImplementedError("Dynamics are not implemented for this system")
@@ -311,8 +283,13 @@ class ControlAffineSystem:
             tightening = 0.0
 
         if self.use_adaptive:
-            a_hat_cbf_dot = self.projected_cracbf_update(
-                x, a_hat_cbf, rho_cbf, dcbfdx
+            a_hat_cbf_dot = ControlAffineSystem.projection_operator(
+                a_hat_cbf,
+                -self.nu_cbf(rho_cbf) * self.Gamma_cbf @ self.Y(x).T @ dcbfdx,
+                self.a_center,
+                self.a_hat_norm_max,
+                self.epsilon,
+                self.Gamma_cbf,
             )
         
             correction_term = -self.eta_cbf/(h + self.eta_cbf).item() * (dcbfda.T @ a_hat_cbf_dot).item()
@@ -500,7 +477,7 @@ class ControlAffineSystem:
         rho_clf_dot = -self.nu_clf(rho_clf)/(self.dnu_drho_clf(rho_clf) * (V + self.eta_clf)).item() * (dclfda.T @ a_hat_clf_dot).item()
 
         return a_hat_clf_dot.ravel(), rho_clf_dot
-
+    
     def adaptation_cracbf(self, x, a_hat_cbf, rho_cbf):
         """CRaCBF adaptation law"""
         h = self.cbf(x, a_hat_cbf)
@@ -509,8 +486,13 @@ class ControlAffineSystem:
         dcbfdx = self.dcbfdx(x, a_hat_cbf).reshape(self.xdim,1)
 
         # Use the same projected update as the controller correction term.
-        a_hat_cbf_dot = self.projected_cracbf_update(
-            x, a_hat_cbf, rho_cbf, dcbfdx
+        a_hat_cbf_dot = ControlAffineSystem.projection_operator(
+            a_hat_cbf,
+            -self.nu_cbf(rho_cbf) * self.Gamma_cbf @ self.Y(x).T @ dcbfdx,
+            self.a_center,
+            self.a_hat_norm_max,
+            self.epsilon,
+            self.Gamma_cbf,
         )
         
         rho_cbf_dot = -self.nu_cbf(rho_cbf)/(self.dnu_drho_cbf(rho_cbf) * (h + self.eta_cbf)).item() * (dcbfda.T @ a_hat_cbf_dot).item()
@@ -603,6 +585,7 @@ class ControlAffineSystem:
     @staticmethod
     def box_projection_operator(a_hat, y, a_lb, a_ub, epsilon):
         """Smoothly suppress components of ``y`` directed out of a box."""
+        #TODO: to be verified
         a_hat = np.asarray(a_hat, dtype=float).reshape(-1)
         update = np.asarray(y, dtype=float).reshape(-1).copy()
         a_lb = np.asarray(a_lb, dtype=float).reshape(-1)

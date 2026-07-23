@@ -70,16 +70,7 @@ b0_schedule = 220.0 + 35.0 * np.sin(environment_phase + 0.15)
 b1_schedule = 6.0 + 1.1 * np.cos(0.8 * environment_phase + 0.35)
 b2_schedule = 0.375 + 0.065 * np.sin(1.3 * environment_phase + 0.7)
 b3_schedule = 0.35 + 0.09 * np.cos(1.1 * environment_phase - 0.25)
-lead_velocity_schedule = 23.0 + 1.15 * np.sin(0.9 * environment_phase + 0.55)
-
-# Coefficients of the physical drag expansion. The corresponding abstract
-# parameters a_2, a_3, a_5, and a_6 also depend on the installed Theta.
-c1_schedule = -(b0_schedule + b2_schedule * wind_speed**2) / mass
-c2_schedule = (-b1_schedule + 2.0 * b2_schedule * wind_speed) / mass
-c3_schedule = -b2_schedule / mass
-c4_schedule = b2_schedule * b3_schedule * wind_speed**2 / mass
-c5_schedule = -2.0 * b2_schedule * b3_schedule * wind_speed / mass
-c6_schedule = b2_schedule * b3_schedule / mass
+lead_velocity_schedule = 24.0 - 15.0 * np.sin(0.9 * environment_phase)
 
 def true_uncertainty(x, t):
     """Evaluate the unknown physical uncertainty w(x, t)."""
@@ -116,7 +107,7 @@ params = {
     "m": mass,
     "grav": gravity,
     "vd": 30.0,
-    "Kp": 800.0,
+    "Kp": 500.0,
     "z_min": 1.0,
     "T_h": 1.0,
     "cbf_smoothing_epsilon": 0.01,
@@ -129,11 +120,11 @@ params = {
     "a_lb": a_lb,
     "a_hat_norm_max": a_hat_norm_max,
     "epsilon": projection_epsilon,
-    "projection_geometry": "box",
-    "eta_cbf": 50.0,
+    #"projection_geometry": "box",
+    "eta_cbf": 10.0,
     "cbf_rate": alpha_b,
-    "u_max": 0.3 * mass * gravity,
-    "u_min": -0.3 * mass * gravity,
+    "u_max": 1000 * mass * gravity,
+    "u_min": -1000 * mass * gravity,
     "dt": dt,
 }
 
@@ -192,7 +183,7 @@ system.set_representation(olacp.Theta)
 system.cp_quantile = olacp.Q_k
 
 # Simulation initialization.
-x = np.array([0.0, 24.0, 24.0])
+x = np.array([0.0, 24.0, 30.0])
 a_hat_cbf = a_center.copy()
 rho_cbf = 0.0
 x_ext = np.hstack((x, a_hat_cbf, rho_cbf))
@@ -231,10 +222,7 @@ for i, t in enumerate(tt):
     Theta_hist[i] = system.Theta_hat.reshape(-1)
     h_hist[i] = float(np.asarray(system.cbf(x, a_hat_cbf)).item())
     physical_safety_hist[i] = x[2] - params["z_min"]
-    tightened_cbf_margin_hist[i] = (
-        h_hist[i]
-        - 0.5 / nu_cbf_hist[i] * system.safe_set_tightening
-    )
+    tightened_cbf_margin_hist[i] = h_hist[i] - 0.5 / nu_cbf_hist[i] * system.safe_set_tightening
     if i == 0 and h_hist[i] < 0.0:
         raise ValueError(
             f"Initial condition is outside the CBF set: h={h_hist[i]:.3f}"
