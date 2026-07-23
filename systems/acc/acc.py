@@ -6,10 +6,10 @@ from systems.control_affine_system import ControlAffineSystem
 class ACC(ControlAffineSystem):
     """Adaptive-cruise-control system from the CRaCBF example.
 
-    The controller represents the unknown plant term as ``Y_Theta(x) @ a``.
+    The controller represents the unknown plant term as Y_Theta(x) @ a.
     The representation parameters scale the constant, linear, and quadratic
     velocity features and control the wake-effect decay. The seven-dimensional
-    interval parameter ``a`` contains the corresponding abstract coefficients.
+    interval parameter 'a' contains the corresponding abstract coefficients.
     A fixed lead-velocity regressor keeps its seventh coordinate on the same
     numerical scale as the first six. The physical uncertainty is supplied
     independently so online representation updates never alter the simulated
@@ -78,13 +78,13 @@ class ACC(ControlAffineSystem):
         super().__init__(params)
 
     def f(self, x):
-        """Return the nominal drift ``[v, 0, -v]``."""
+        """Return the nominal drift [v, 0, -v]"""
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         v = x[1]
         return np.array([v, 0.0, -v])
 
     def g(self, x):
-        """Return the wheel-force input matrix."""
+        """Return the wheel-force input matrix"""
         return np.array([[0.0], [1.0 / self.mass], [0.0]])
 
     @staticmethod
@@ -98,7 +98,7 @@ class ACC(ControlAffineSystem):
 
     @classmethod
     def psi_theta(cls, x, theta):
-        """Evaluate the six wake-effect features from Section V-B."""
+        """Evaluate the six wake-effect features from Section V-B"""
         x = np.asarray(x, dtype=float).reshape(cls.xdim)
         v, z = x[1], x[2]
         theta_1, theta_2, theta_3, theta_4 = cls._theta_vector(theta)
@@ -115,18 +115,18 @@ class ACC(ControlAffineSystem):
         )
 
     def Y(self, x):
-        """Evaluate the currently installed uncertainty representation."""
+        """Evaluate the currently installed uncertainty representation"""
         return self.Y_Theta(x, self.Theta_hat)
 
     def Y_Theta(self, x, theta):
-        """Evaluate the scaled ``3 x 7`` representation matrix."""
+        """Evaluate the scaled 3 x 7 representation matrix"""
         Yx = np.zeros((self.xdim, self.adim))
         Yx[1, :6] = self.psi_theta(x, theta)
         Yx[2, 6] = self.lead_velocity_regressor
         return self._validate_Y_shape(Yx)
 
     def representation_loss_gradient(self, x, theta, a, w):
-        """Return ``grad_theta ||Y_Theta(x) @ a - w||_2**2``."""
+        """Return grad_theta ||Y_Theta(x) @ a - w||_2**2"""
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         a = np.asarray(a, dtype=float).reshape(-1)
         w = np.asarray(w, dtype=float).reshape(-1)
@@ -156,13 +156,13 @@ class ACC(ControlAffineSystem):
         return 2.0 * residual[1] * model_gradient
 
     def set_representation(self, theta):
-        """Install a positive four-dimensional representation parameter."""
+        """Install a positive four-dimensional representation parameter"""
         theta_vector = self._theta_vector(theta)
         self.Theta_hat = theta_vector.reshape(self.theta_shape).copy()
 
     @staticmethod
     def smooth_max(r, epsilon):
-        """Smooth approximation ``0.5 * (r + sqrt(r**2 + epsilon**2))``."""
+        """Smooth approximation 0.5 * (r + sqrt(r**2 + epsilon**2))"""
         r = np.asarray(r, dtype=float)
         epsilon = float(epsilon)
         if not np.isfinite(epsilon) or epsilon <= 0.0:
@@ -171,7 +171,7 @@ class ACC(ControlAffineSystem):
 
     @staticmethod
     def smooth_max_derivative(r, epsilon):
-        """Derivative of :meth:`smooth_max` with respect to ``r``."""
+        """Derivative of :meth:`smooth_max` with respect to r"""
         r = np.asarray(r, dtype=float)
         epsilon = float(epsilon)
         if not np.isfinite(epsilon) or epsilon <= 0.0:
@@ -179,7 +179,7 @@ class ACC(ControlAffineSystem):
         return 0.5 * (1.0 + r / np.sqrt(r**2 + epsilon**2))
 
     def cbf(self, x, a_hat):
-        """Return the smoothed, parameter-dependent collision-avoidance CBF."""
+        """Return the smoothed, parameter-dependent collision-avoidance CBF"""
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
         relative_velocity = (

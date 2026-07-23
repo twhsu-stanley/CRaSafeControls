@@ -85,19 +85,19 @@ class ControlAffineSystem:
         raise NotImplementedError("Dynamics are not implemented for this system")
 
     def f(self, x):
-        """Evaluate the nominal drift as an ``xdim``-vector."""
+        """Evaluate the nominal drift as an xdim-vector"""
         raise NotImplementedError("f is not implemented for this system")
 
     def g(self, x):
-        """Evaluate the control matrix with shape ``(xdim, udim)``."""
+        """Evaluate the control matrix with shape (xdim, udim)"""
         raise NotImplementedError("g is not implemented for this system")
 
     def Y(self, x):
-        """Evaluate the currently installed uncertainty regressor."""
+        """Evaluate the currently installed uncertainty regressor"""
         raise NotImplementedError("Y is not implemented for this system")
 
     def _validate_Y_shape(self, Yx):
-        """Validate and return a numerical uncertainty-regressor matrix."""
+        """Validate and return a numerical uncertainty-regressor matrix"""
         Yx = np.asarray(Yx, dtype=float)
         expected_shape = (self.xdim, self.adim)
         if Yx.shape != expected_shape:
@@ -110,10 +110,10 @@ class ControlAffineSystem:
         """Evaluate a candidate representation Y_Theta(x).
 
         Representation-learning subclasses must override this method. The
-        dependence on ``theta`` may be arbitrary, including a neural network,
-        but the result must have shape ``(xdim, adim)`` so the uncertainty
-        remains linear in the interval parameter ``a``. A numerical neural
-        subclass must also override ``Y`` and ``set_representation`` so the
+        dependence on theta may be arbitrary, including a neural network,
+        but the result must have shape (xdim, adim) so the uncertainty
+        remains linear in the interval parameter a. A numerical neural
+        subclass must also override Y and set_representation so the
         controller uses the installed weights.
         """
         raise NotImplementedError("Y_Theta is not implemented for this system")
@@ -584,7 +584,7 @@ class ControlAffineSystem:
 
     @staticmethod
     def box_projection_operator(a_hat, y, a_lb, a_ub, epsilon):
-        """Smoothly suppress components of ``y`` directed out of a box."""
+        """Smoothly suppress components of y directed out of a box"""
         #TODO: to be verified
         a_hat = np.asarray(a_hat, dtype=float).reshape(-1)
         update = np.asarray(y, dtype=float).reshape(-1).copy()

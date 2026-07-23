@@ -1,4 +1,4 @@
-"""Algorithm 1 and CRaCBF simulation for adaptive cruise control."""
+"""Algorithm 1 and CRaCBF simulation for adaptive cruise control"""
 
 import os
 import sys
@@ -39,20 +39,16 @@ N_cal = 200
 if N_cal < 100:
     raise ValueError("N_cal must be at least 100")
 
-# Only theta_4 has a physical true value in this parameterization. Theta_1,
-# theta_2, and theta_3 regulate the ranges of the abstract interval parameters.
-WAKE_DECAY_TRUE = 0.045
-
 Theta_lb = np.array([0.08, 0.002, 0.00015, 0.005])
 Theta_ub = np.array([0.15, 0.004, 0.00030, 0.12])
 theta_rng = np.random.default_rng(11)
 Theta_init = theta_rng.uniform(Theta_lb, Theta_ub)
 
-# Physical and controller parameters.
+# System and environment parameters
 mass = 1650.0
-wind_speed = 5.0
 gravity = 9.81
-alpha_b = 1.5
+wake_decay_rate = 0.045
+wind_speed = -5.0
 
 # In practice, the latent-parameter box is only approximately known. These
 # rounded values are engineering guesses for the intended ACC regime.
@@ -63,9 +59,7 @@ a_center = 0.5 * (a_lb + a_ub)
 # Generate the piecewise-constant physical environment directly. The first K
 # intervals are simulated, while all N_cal intervals are used for calibration.
 environment_interval_count = max(K, N_cal)
-environment_phase = (
-    2.0 * np.pi * np.arange(environment_interval_count) / 20.0
-)
+environment_phase = 2.0 * np.pi * np.arange(environment_interval_count) / 5.0
 b0_schedule = 220.0 + 35.0 * np.sin(environment_phase + 0.15)
 b1_schedule = 6.0 + 1.1 * np.cos(0.8 * environment_phase + 0.35)
 b2_schedule = 0.375 + 0.065 * np.sin(1.3 * environment_phase + 0.7)
@@ -73,17 +67,14 @@ b3_schedule = 0.35 + 0.09 * np.cos(1.1 * environment_phase - 0.25)
 lead_velocity_schedule = 24.0 - 15.0 * np.sin(0.9 * environment_phase)
 
 def true_uncertainty(x, t):
-    """Evaluate the unknown physical uncertainty w(x, t)."""
+    """Evaluate the unknown physical uncertainty w(x, t)"""
     interval_index = int(np.floor(max(float(t), 0.0) / interval_duration))
     v = float(np.asarray(x, dtype=float).reshape(3)[1])
     z = float(np.asarray(x, dtype=float).reshape(3)[2])
-    relative_air_speed = v - wind_speed
     drag = (
-        b0_schedule[interval_index]
-        + b1_schedule[interval_index] * v
-        + b2_schedule[interval_index]
-        * relative_air_speed**2
-        * (1.0 - b3_schedule[interval_index] * np.exp(-WAKE_DECAY_TRUE * z))
+        b0_schedule[interval_index] + b1_schedule[interval_index] * v
+        + b2_schedule[interval_index] * (v - wind_speed)**2 
+        * (1.0 - b3_schedule[interval_index] * np.exp(-wake_decay_rate * z))
     )
     return np.array(
         [0.0, -drag / mass, lead_velocity_schedule[interval_index]]
@@ -122,7 +113,7 @@ params = {
     "epsilon": projection_epsilon,
     #"projection_geometry": "box",
     "eta_cbf": 10.0,
-    "cbf_rate": alpha_b,
+    "cbf_rate": 1.0,
     "u_max": 1000 * mass * gravity,
     "u_min": -1000 * mass * gravity,
     "dt": dt,
@@ -303,7 +294,7 @@ for i, t in enumerate(tt):
         z_b_hist[interval_start : i + 1] = interval_z_b
         interval_time = tt[interval_start : i + 1]
         z_b_exponential_bound_hist[interval_start : i + 1] = (
-            interval_z_b[0] * np.exp(-alpha_b * (interval_time - interval_time[0]))
+            interval_z_b[0] * np.exp(-system.cbf_rate * (interval_time - interval_time[0]))
         )
         interval_times.append(t)
         s_k_hist.append(s_k)
@@ -430,7 +421,7 @@ for j in range(Theta_init.size):
     axs[j].set_ylabel(rf"$\theta_{j + 1}$")
     axs[j].legend()
 axs[3].axhline(
-    WAKE_DECAY_TRUE,
+    wake_decay_rate,
     color="k",
     linestyle="--",
     label=r"true $\theta_4$",
