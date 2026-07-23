@@ -22,7 +22,7 @@ K = 10 # total number of time intervals I_k
 B = 2   # update the representation every B intervals
 
 # Time setup for each interval I_k.
-dt = 0.02
+dt = 0.01
 interval_duration = 2.0
 I_length = int(round(interval_duration / dt))
 if I_length < 10 or not np.isclose(I_length * dt, interval_duration):
@@ -39,71 +39,106 @@ N_cal = 200
 if N_cal < 100:
     raise ValueError("N_cal must be at least 100")
 
-Theta_lb = np.array([0.08, 0.002, 0.00015, 0.005])
-Theta_ub = np.array([0.15, 0.004, 0.00030, 0.12])
-theta_rng = np.random.default_rng(11)
-Theta_init = theta_rng.uniform(Theta_lb, Theta_ub)
-
-# System and environment parameters
+# System and environment parameters.
 mass = 1650.0
 gravity = 9.81
-wake_decay_rate = 0.045
-wind_speed = -5.0
+beta_1 = -6.0
+beta_2 = -0.375
+beta_3 = 0.35
+beta_4 = 0.045
 
-# In practice, the latent-parameter box is only approximately known. These
-# rounded values are engineering guesses for the intended ACC regime.
-a_lb = np.array([-1.8, -1.1, -1.5, 0.005, -0.55, 0.15, 2.15])
-a_ub = np.array([-1.0, 0.0, -0.8, 0.04, -0.1, 0.7, 2.45])
+# Psi contains raw polynomial features with very different magnitudes. Scale
+# the representation bounds row-wise so every basis term has a comparable
+# effect near the reference ACC operating point.
+v_reference = 24.0
+z_reference = 30.0
+psi_reference = np.kron(
+    np.array([1.0, v_reference, v_reference**2]),
+    np.array([1.0, z_reference, z_reference**2]),
+)
+Theta_scale = 0.05 / psi_reference
+Theta_lb = -5.0 * Theta_scale[:, None] * np.ones((1, 3))
+Theta_ub = 5.0 * Theta_scale[:, None] * np.ones((1, 3))
+theta_rng = np.random.default_rng(11)
+Theta_init = theta_rng.uniform(
+    -Theta_scale[:, None],
+    Theta_scale[:, None],
+    size=ACC.theta_shape,
+)
+
+# The first three coordinates are latent drag parameters. The fourth is the
+# lead velocity itself because the last column of Y_Theta is [0, 0, 1]^T.
+a_lb = np.array([-1.0, -1.0, -1.0, 20.0])
+a_ub = np.array([1.0, 1.0, 1.0, 26.0])
 a_center = 0.5 * (a_lb + a_ub)
 
-# Generate the piecewise-constant physical environment directly. The first K
-# intervals are simulated, while all N_cal intervals are used for calibration.
+# Generate a piecewise-constant environment on the Algorithm 1 intervals.
+# beta_1,...,beta_4 are fixed; d_0, wind speed, and lead velocity vary.
 environment_interval_count = max(K, N_cal)
-environment_phase = 2.0 * np.pi * np.arange(environment_interval_count) / 5.0
-b0_schedule = 220.0 + 35.0 * np.sin(environment_phase + 0.15)
-b1_schedule = 6.0 + 1.1 * np.cos(0.8 * environment_phase + 0.35)
-b2_schedule = 0.375 + 0.065 * np.sin(1.3 * environment_phase + 0.7)
-b3_schedule = 0.35 + 0.09 * np.cos(1.1 * environment_phase - 0.25)
-lead_velocity_schedule = 24.0 - 15.0 * np.sin(0.9 * environment_phase)
+environment_phase = (
+    2.0 * np.pi * np.arange(environment_interval_count) / 20.0
+)
+d0_schedule = -220.0 - 35.0 * np.sin(environment_phase + 0.15)
+wind_velocity_schedule = (
+    2.0 + 4.0 * np.sin(0.7 * environment_phase - 0.2)
+)
+lead_velocity_schedule = (
+    23.0 - 5.0 * np.sin(0.9 * environment_phase)
+)
+
+
+def environment_index(t):
+    return min(
+        int(np.floor(max(float(t), 0.0) / interval_duration)),
+        environment_interval_count - 1,
+    )
+
+
+def total_drag_force(x, t):
+    """Evaluate the signed force d(t, x) from the updated draft."""
+    interval_index = environment_index(t)
+    x = np.asarray(x, dtype=float).reshape(3)
+    v, z = x[1], x[2]
+    wind_velocity = wind_velocity_schedule[interval_index]
+    return (
+        d0_schedule[interval_index]
+        + beta_1 * v
+        + beta_2
+        * (v - wind_velocity) ** 2
+        * (1.0 - beta_3 * np.exp(-beta_4 * z))
+    )
 
 def true_uncertainty(x, t):
     """Evaluate the unknown physical uncertainty w(x, t)"""
-    interval_index = int(np.floor(max(float(t), 0.0) / interval_duration))
-    v = float(np.asarray(x, dtype=float).reshape(3)[1])
-    z = float(np.asarray(x, dtype=float).reshape(3)[2])
-    drag = (
-        b0_schedule[interval_index] + b1_schedule[interval_index] * v
-        + b2_schedule[interval_index] * (v - wind_speed)**2 
-        * (1.0 - b3_schedule[interval_index] * np.exp(-wake_decay_rate * z))
-    )
+    interval_index = environment_index(t)
     return np.array(
-        [0.0, -drag / mass, lead_velocity_schedule[interval_index]]
+        [
+            0.0,
+            total_drag_force(x, t) / mass,
+            lead_velocity_schedule[interval_index],
+        ]
     )
 
 
-# Use the circumscribed-ball radius for the conservative error bound, while
-# projecting the estimate coordinate-wise onto the guessed parameter box.
+# Use the circumscribed-ball radius required by the projection operator.
 projection_epsilon = 0.01
 a_hat_norm_max = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + projection_epsilon
-# Reduce the seventh-coordinate gain to offset its larger fixed regressor.
-Gamma_cbf = np.diag([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.25])
+Gamma_cbf = 4.0 * np.eye(ACC.adim)
 Gamma_cbf_inv = np.linalg.inv(Gamma_cbf)
 
 params = {
     "xdim": 3,
     "udim": 1,
-    "adim": 7,
+    "adim": ACC.adim,
     "Theta_init": Theta_init.copy(),
     "true_uncertainty": true_uncertainty,
     "m": mass,
     "grav": gravity,
-    "vd": 30.0,
+    "vd": 28.0,
     "Kp": 500.0,
-    "z_min": 1.0,
-    "T_h": 1.0,
-    "cbf_smoothing_epsilon": 0.01,
-    # The seventh column of Y is fixed at 10
-    "lead_velocity_regressor": 10.0,
+    "z_min": 5.0,
+    "T_h": 1.5,
+    "cbf_smoothing_epsilon": 0.2,
     "use_adaptive": USE_ADAPTIVE,
     "use_cp": USE_CP,
     "Gamma_cbf": Gamma_cbf,
@@ -112,10 +147,10 @@ params = {
     "a_hat_norm_max": a_hat_norm_max,
     "epsilon": projection_epsilon,
     #"projection_geometry": "box",
-    "eta_cbf": 10.0,
+    "eta_cbf": 1.0,
     "cbf_rate": 1.0,
-    "u_max": 1000 * mass * gravity,
-    "u_min": -1000 * mass * gravity,
+    "u_max": 0.3 * mass * gravity,
+    "u_min": -0.3 * mass * gravity,
     "dt": dt,
 }
 
@@ -128,8 +163,8 @@ rng = np.random.default_rng(7)
 S_cal_init = []
 for k in range(N_cal):
     positions = rng.uniform(0.0, 500.0, I_length)
-    velocities = rng.uniform(19.0, 28.0, I_length)
-    distances = rng.uniform(12.0, 65.0, I_length)
+    velocities = rng.uniform(18.0, 30.0, I_length)
+    distances = rng.uniform(8.0, 65.0, I_length)
     states_cal = np.column_stack((positions, velocities, distances))
     times_cal = (
         k * interval_duration
@@ -163,8 +198,13 @@ olacp = OLACP(
     buffer_maxlen=I_length,
     Theta_init=Theta_init,
     representation_period=B,
-    # Coordinate-wise rates account for the different Theta scales.
-    representation_lr=lambda j: np.array([1e3, 1e4, 1e1, 1e6]) / j,
+    # Normalize each row's step by its reference feature magnitude and by the
+    # number of samples accumulated in one representation-learning block.
+    representation_lr=lambda j: (
+        0.1
+        / (B * I_length * psi_reference[:, None] ** 2)
+        / j
+    ),
     Theta_lb=Theta_lb,
     Theta_ub=Theta_ub,
     Y_Theta=system.Y_Theta,
@@ -174,7 +214,7 @@ system.set_representation(olacp.Theta)
 system.cp_quantile = olacp.Q_k
 
 # Simulation initialization.
-x = np.array([0.0, 24.0, 30.0])
+x = np.array([0.0, 24.0, 35.0])
 a_hat_cbf = a_center.copy()
 rho_cbf = 0.0
 x_ext = np.hstack((x, a_hat_cbf, rho_cbf))
@@ -192,7 +232,7 @@ lead_velocity_hist = np.zeros(len(tt))
 rho_cbf_hist = np.zeros(len(tt))
 nu_cbf_hist = np.zeros(len(tt))
 Q_k_hist = np.zeros(len(tt))
-Theta_hist = np.zeros((len(tt), Theta_init.size))
+Theta_hist = np.zeros((len(tt),) + Theta_init.shape)
 prediction_error_hist = np.full(len(tt), np.nan)
 
 interval_times = []
@@ -210,7 +250,7 @@ for i, t in enumerate(tt):
     rho_cbf_hist[i] = rho_cbf
     nu_cbf_hist[i] = system.nu_cbf(rho_cbf)
     Q_k_hist[i] = system.cp_quantile
-    Theta_hist[i] = system.Theta_hat.reshape(-1)
+    Theta_hist[i] = system.Theta_hat
     h_hist[i] = float(np.asarray(system.cbf(x, a_hat_cbf)).item())
     physical_safety_hist[i] = x[2] - params["z_min"]
     tightened_cbf_margin_hist[i] = h_hist[i] - 0.5 / nu_cbf_hist[i] * system.safe_set_tightening
@@ -311,10 +351,7 @@ for i, t in enumerate(tt):
             f"interval={interval_index + 1:02d}, "
             f"score={s_k:.3e}, Q={Q_k_hist[i]:.3e}, "
             f"delta_next={olacp.delta:.3f}, miscoverage={e_k}, "
-            "Theta="
-            + np.array2string(
-                system.Theta_hat, precision=6, separator=","
-            )
+            f"||Theta||_F={np.linalg.norm(system.Theta_hat):.3e}"
         )
 
 interval_times = np.asarray(interval_times)
@@ -412,21 +449,31 @@ ax.grid(True)
 ax.legend()
 fig.suptitle("Uncertainty-prediction error")
 
-# Plot the learned representation.
-fig, axs = plt.subplots(Theta_init.size, 1, sharex=True, figsize=(8, 11))
-for j in range(Theta_init.size):
-    axs[j].plot(tt, Theta_hist[:, j], label=rf"$\hat{{\theta}}_{j + 1}$")
-    axs[j].axhline(Theta_lb[j], color="0.5", linestyle=":")
-    axs[j].axhline(Theta_ub[j], color="0.5", linestyle=":")
-    axs[j].set_ylabel(rf"$\theta_{j + 1}$")
-    axs[j].legend()
-axs[3].axhline(
-    wake_decay_rate,
-    color="k",
-    linestyle="--",
-    label=r"true $\theta_4$",
-)
-axs[3].legend()
+# Plot the learned representation. Multiplication by the reference feature
+# magnitude puts all nine rows on a comparable scale.
+fig, axs = plt.subplots(3, 1, sharex=True, figsize=(9, 9))
+for column_index in range(3):
+    normalized_column = (
+        Theta_hist[:, :, column_index] * psi_reference[None, :]
+    )
+    for basis_index in range(9):
+        axs[column_index].plot(
+            tt,
+            normalized_column[:, basis_index],
+            label=rf"$\psi_{basis_index + 1}\theta_{{{basis_index + 1},{column_index + 1}}}$",
+        )
+    axs[column_index].axhline(
+        Theta_ub[0, column_index] * psi_reference[0],
+        color="0.5",
+        linestyle=":",
+    )
+    axs[column_index].axhline(
+        Theta_lb[0, column_index] * psi_reference[0],
+        color="0.5",
+        linestyle=":",
+    )
+    axs[column_index].set_ylabel(rf"$\Theta a_{{{column_index + 1}}}$ scale")
+    axs[column_index].legend(ncol=3, fontsize=8)
 axs[-1].set_xlabel("Time (s)")
 for ax in axs:
     ax.grid(True)
@@ -437,7 +484,7 @@ for ax in axs:
             linestyle=":",
             linewidth=1.0,
         )
-fig.suptitle("Learned Representation (θ)")
+fig.suptitle(r"Learned Representation $\Theta\in\mathbb{R}^{9\times3}$")
 
 # Plot adaptive, interval-fitted, and physical latent parameters.
 fig, axs = plt.subplots(system.adim, 1, sharex=True, figsize=(8, 12))

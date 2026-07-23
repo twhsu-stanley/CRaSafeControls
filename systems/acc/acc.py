@@ -6,20 +6,21 @@ from systems.control_affine_system import ControlAffineSystem
 class ACC(ControlAffineSystem):
     """Adaptive-cruise-control system from the CRaCBF example.
 
-    The controller represents the unknown plant term as Y_Theta(x) @ a.
-    The representation parameters scale the constant, linear, and quadratic
-    velocity features and control the wake-effect decay. The seven-dimensional
-    interval parameter 'a' contains the corresponding abstract coefficients.
-    A fixed lead-velocity regressor keeps its seventh coordinate on the same
-    numerical scale as the first six. The physical uncertainty is supplied
-    independently so online representation updates never alter the simulated
-    plant.
+    The learned uncertainty model is
+
+        Y_Theta(x) a = [0, Psi(x) Theta a[:3], a[3]]^T,
+
+    where Psi(x) = [1, v, v^2] kron [1, z, z^2] and Theta has
+    shape (9, 3). The fourth interval parameter is the lead-vehicle
+    velocity used by the parameter-dependent CRaCBF. The physical
+    uncertainty is supplied independently so representation updates never
+    alter the simulated plant.
     """
 
-    theta_shape = (4,)
+    theta_shape = (9, 3)
     xdim = 3
     udim = 1
-    adim = 7
+    adim = 4
 
     def __init__(self, params=None):
         if params is None:
@@ -28,16 +29,16 @@ class ACC(ControlAffineSystem):
             raise TypeError("Parameters must be a dictionary.")
 
         Theta_init = np.asarray(
-            params.get(
-                "Theta_init", np.array([0.1, 0.0025, 0.0002, 0.05])
-            ),
+            params.get("Theta_init", np.zeros(self.theta_shape)),
             dtype=float,
-        ).reshape(-1)
-        if Theta_init.size != np.prod(self.theta_shape):
-            raise ValueError("Theta_init must contain exactly four values")
-        if np.any(~np.isfinite(Theta_init)) or np.any(Theta_init <= 0.0):
-            raise ValueError("Theta_init must be finite and strictly positive")
-        self.Theta_hat = Theta_init.reshape(self.theta_shape).copy()
+        )
+        if Theta_init.shape != self.theta_shape:
+            raise ValueError(
+                f"Theta_init must have shape {self.theta_shape}"
+            )
+        if np.any(~np.isfinite(Theta_init)):
+            raise ValueError("Theta_init must be finite")
+        self.Theta_hat = Theta_init.copy()
 
         self.mass = float(params.get("m", 2000.0))
         self.desired_velocity = float(params.get("vd", 20.0))
@@ -46,9 +47,6 @@ class ACC(ControlAffineSystem):
         self.lookahead_time = float(params.get("T_h", params.get("T", 1.0)))
         self.cbf_smoothing_epsilon = float(
             params.get("cbf_smoothing_epsilon", 0.1)
-        )
-        self.lead_velocity_regressor = float(
-            params.get("lead_velocity_regressor", 10.0)
         )
         if not np.isfinite(self.mass) or self.mass <= 0.0:
             raise ValueError("m must be finite and strictly positive")
@@ -61,14 +59,6 @@ class ACC(ControlAffineSystem):
             raise ValueError(
                 "cbf_smoothing_epsilon must be finite and strictly positive"
             )
-        if (
-            not np.isfinite(self.lead_velocity_regressor)
-            or self.lead_velocity_regressor <= 0.0
-        ):
-            raise ValueError(
-                "lead_velocity_regressor must be finite and strictly positive"
-            )
-
         self.true_uncertainty_fcn = params.get("true_uncertainty")
         if self.true_uncertainty_fcn is None:
             self.true_uncertainty_fcn = lambda x, t: np.zeros(self.xdim)
@@ -88,30 +78,22 @@ class ACC(ControlAffineSystem):
         return np.array([[0.0], [1.0 / self.mass], [0.0]])
 
     @staticmethod
-    def _theta_vector(theta):
-        theta_array = np.asarray(theta, dtype=float).reshape(-1)
-        if theta_array.size != 4:
-            raise ValueError("theta must contain exactly four values")
-        if np.any(~np.isfinite(theta_array)) or np.any(theta_array <= 0.0):
-            raise ValueError("theta must be finite and strictly positive")
+    def _theta_matrix(theta):
+        theta_array = np.asarray(theta, dtype=float)
+        if theta_array.shape != ACC.theta_shape:
+            raise ValueError(f"theta must have shape {ACC.theta_shape}")
+        if np.any(~np.isfinite(theta_array)):
+            raise ValueError("theta must be finite")
         return theta_array
 
     @classmethod
-    def psi_theta(cls, x, theta):
-        """Evaluate the six wake-effect features from Section V-B"""
+    def psi(cls, x):
+        """Evaluate [1, v, v^2] kron [1, z, z^2]"""
         x = np.asarray(x, dtype=float).reshape(cls.xdim)
         v, z = x[1], x[2]
-        theta_1, theta_2, theta_3, theta_4 = cls._theta_vector(theta)
-        wake_decay = np.exp(-theta_4 * z)
-        return np.array(
-            [
-                theta_1,
-                theta_2 * v,
-                theta_3 * v**2,
-                theta_1 * wake_decay,
-                theta_2 * v * wake_decay,
-                theta_3 * v**2 * wake_decay,
-            ]
+        return np.kron(
+            np.array([1.0, v, v**2]),
+            np.array([1.0, z, z**2]),
         )
 
     def Y(self, x):
@@ -119,10 +101,11 @@ class ACC(ControlAffineSystem):
         return self.Y_Theta(x, self.Theta_hat)
 
     def Y_Theta(self, x, theta):
-        """Evaluate the scaled 3 x 7 representation matrix"""
+        """Evaluate the 3 x 4 representation matrix from Section V-B"""
+        theta_matrix = self._theta_matrix(theta)
         Yx = np.zeros((self.xdim, self.adim))
-        Yx[1, :6] = self.psi_theta(x, theta)
-        Yx[2, 6] = self.lead_velocity_regressor
+        Yx[1, :3] = self.psi(x) @ theta_matrix
+        Yx[2, 3] = 1.0
         return self._validate_Y_shape(Yx)
 
     def representation_loss_gradient(self, x, theta, a, w):
@@ -135,30 +118,13 @@ class ACC(ControlAffineSystem):
         if w.size != self.xdim:
             raise ValueError(f"w must have length {self.xdim}")
 
-        theta_1, theta_2, theta_3, theta_4 = self._theta_vector(theta)
-        v, z = x[1], x[2]
-        wake_decay = np.exp(-theta_4 * z)
+        self._theta_matrix(theta)
         residual = self.Y_Theta(x, theta) @ a - w
-        model_gradient = np.array(
-            [
-                a[0] + wake_decay * a[3],
-                v * (a[1] + wake_decay * a[4]),
-                v**2 * (a[2] + wake_decay * a[5]),
-                -z
-                * wake_decay
-                * (
-                    theta_1 * a[3]
-                    + theta_2 * v * a[4]
-                    + theta_3 * v**2 * a[5]
-                ),
-            ]
-        )
-        return 2.0 * residual[1] * model_gradient
+        return 2.0 * residual[1] * np.outer(self.psi(x), a[:3])
 
     def set_representation(self, theta):
-        """Install a positive four-dimensional representation parameter"""
-        theta_vector = self._theta_vector(theta)
-        self.Theta_hat = theta_vector.reshape(self.theta_shape).copy()
+        """Install a finite 9 x 3 representation matrix"""
+        self.Theta_hat = self._theta_matrix(theta).copy()
 
     @staticmethod
     def smooth_max(r, epsilon):
@@ -182,9 +148,7 @@ class ACC(ControlAffineSystem):
         """Return the smoothed, parameter-dependent collision-avoidance CBF"""
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
-        relative_velocity = (
-            x[1] - self.lead_velocity_regressor * a_hat[6]
-        )
+        relative_velocity = x[1] - a_hat[3]
         h = (
             x[2]
             - self.z_min
@@ -198,9 +162,7 @@ class ACC(ControlAffineSystem):
     def dcbfdx(self, x, a_hat):
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
-        relative_velocity = (
-            x[1] - self.lead_velocity_regressor * a_hat[6]
-        )
+        relative_velocity = x[1] - a_hat[3]
         phi_prime = float(
             self.smooth_max_derivative(
                 relative_velocity, self.cbf_smoothing_epsilon
@@ -213,20 +175,14 @@ class ACC(ControlAffineSystem):
     def dcbfda(self, x, a_hat):
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
-        relative_velocity = (
-            x[1] - self.lead_velocity_regressor * a_hat[6]
-        )
+        relative_velocity = x[1] - a_hat[3]
         phi_prime = float(
             self.smooth_max_derivative(
                 relative_velocity, self.cbf_smoothing_epsilon
             )
         )
         gradient = np.zeros((self.adim, 1))
-        gradient[6, 0] = (
-            self.lookahead_time
-            * self.lead_velocity_regressor
-            * phi_prime
-        )
+        gradient[3, 0] = self.lookahead_time * phi_prime
         return gradient
 
     def true_uncertainty(self, x, t):
