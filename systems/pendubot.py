@@ -447,21 +447,21 @@ class Pendubot(ControlAffineSystem):
             return self._riccati_cache_P
 
         A = self.linearized_certainty_equivalent_drift(a_hat)
-        B_0 = self.g(np.zeros(self.xdim))
+        B = self.g(np.zeros(self.xdim))
         try:
             P = solve_continuous_are(
-                A, B_0, self.lqr_Q, np.array([[self.lqr_R]])
+                A, B, self.lqr_Q, np.array([[self.lqr_R]])
             )
         except (ValueError, np.linalg.LinAlgError) as error:
             raise ValueError(
-                "the estimated upright linearization is not stabilizable"
+                "failed to solve the CARE"
             ) from error
         P = 0.5 * (P + P.T)
-        A_cl = A - B_0 @ (B_0.T @ P) / self.lqr_R
+        A_cl = A - B @ (B.T @ P) / self.lqr_R
         if np.min(np.linalg.eigvalsh(P)) <= 0.0:
-            raise ValueError("the stabilizing CARE solution is not positive definite")
+            raise ValueError("the CARE solution P is not positive definite")
         if np.max(np.real(np.linalg.eigvals(A_cl))) >= 0.0:
-            raise ValueError("the stabilizing CARE closed loop is not Hurwitz")
+            raise ValueError("the LQR closed loop is unstable (i.e., A-BK is not Hurwitz)")
 
         self._riccati_cache_a = a_hat.copy()
         self._riccati_cache_P = P
@@ -511,8 +511,8 @@ class Pendubot(ControlAffineSystem):
     def lqr_gain(self, a_hat):
         """Return the local certainty-equivalent LQR gain."""
         P = self._riccati_solution(a_hat)
-        B_0 = self.g(np.zeros(self.xdim))
-        return B_0.T @ P / self.lqr_R
+        B = self.g(np.zeros(self.xdim))
+        return B.T @ P / self.lqr_R
 
     def local_lqr_control(self, x, a_hat):
         """Return the estimated trim input plus local LQR feedback."""
