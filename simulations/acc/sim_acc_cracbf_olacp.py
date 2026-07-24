@@ -68,8 +68,8 @@ Theta_init = theta_rng.uniform(
 
 # The first three coordinates are latent drag parameters. The fourth is the
 # lead velocity itself because the last column of Y_Theta is [0, 0, 1]^T.
-a_lb = np.array([-1.0, -1.0, -1.0, 20.0])
-a_ub = np.array([1.0, 1.0, 1.0, 26.0])
+a_lb = np.array([-1.0, -1.0, -1.0, 18.0])
+a_ub = np.array([1.0, 1.0, 1.0, 28.0])
 a_center = 0.5 * (a_lb + a_ub)
 
 # Generate a piecewise-constant environment on the Algorithm 1 intervals.
@@ -127,9 +127,6 @@ Gamma_cbf = 4.0 * np.eye(ACC.adim)
 Gamma_cbf_inv = np.linalg.inv(Gamma_cbf)
 
 params = {
-    "xdim": 3,
-    "udim": 1,
-    "adim": ACC.adim,
     "Theta_init": Theta_init.copy(),
     "true_uncertainty": true_uncertainty,
     "m": mass,
@@ -137,7 +134,7 @@ params = {
     "vd": 28.0,
     "Kp": 500.0,
     "z_min": 5.0,
-    "T_h": 1.5,
+    "T_h": 1.0,
     "cbf_smoothing_epsilon": 0.2,
     "use_adaptive": USE_ADAPTIVE,
     "use_cp": USE_CP,
@@ -149,8 +146,8 @@ params = {
     #"projection_geometry": "box",
     "eta_cbf": 1.0,
     "cbf_rate": 1.0,
-    "u_max": 0.3 * mass * gravity,
-    "u_min": -0.3 * mass * gravity,
+    #"u_max": 0.3 * mass * gravity,
+    #"u_min": -0.3 * mass * gravity,
     "dt": dt,
 }
 
@@ -371,8 +368,8 @@ axs[1].axhline(params["z_min"], color="r", linestyle="--", label=r"$z_{\min}$")
 axs[1].set_ylabel("z (m)")
 axs[1].legend()
 axs[2].plot(tt, u_hist, label="u")
-axs[2].axhline(params["u_max"], color="k", linestyle=":", label="input bounds")
-axs[2].axhline(params["u_min"], color="k", linestyle=":")
+#axs[2].axhline(params["u_max"], color="k", linestyle=":", label="input bounds")
+#axs[2].axhline(params["u_min"], color="k", linestyle=":")
 axs[2].set_ylabel("u (N)")
 axs[2].legend()
 for ax in axs:
