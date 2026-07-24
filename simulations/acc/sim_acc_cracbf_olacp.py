@@ -68,9 +68,14 @@ Theta_init = theta_rng.uniform(
 
 # The first three coordinates are latent drag parameters. The fourth is the
 # lead velocity itself because the last column of Y_Theta is [0, 0, 1]^T.
-a_lb = np.array([-1.0, -1.0, -1.0, 18.0])
-a_ub = np.array([1.0, 1.0, 1.0, 28.0])
+a_lb = np.array([-2.0, -2.0, -2.0, 18.0])
+a_ub = np.array([2.0, 2.0, 2.0, 24.0])
 a_center = 0.5 * (a_lb + a_ub)
+
+projection_epsilon = 0.01
+a_hat_norm_max = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + projection_epsilon
+Gamma_cbf = np.diag([10.0, 10.0, 10.0, 4.0])
+Gamma_cbf_inv = np.linalg.inv(Gamma_cbf)
 
 # Generate a piecewise-constant environment on the Algorithm 1 intervals.
 # beta_1,...,beta_4 are fixed; d_0, wind speed, and lead velocity vary.
@@ -83,9 +88,8 @@ wind_velocity_schedule = (
     2.0 + 4.0 * np.sin(0.7 * environment_phase - 0.2)
 )
 lead_velocity_schedule = (
-    23.0 - 5.0 * np.sin(0.9 * environment_phase)
+    25.0 - 6.0 * np.sin(0.5 * environment_phase)
 )
-
 
 def environment_index(t):
     return min(
@@ -120,22 +124,15 @@ def true_uncertainty(x, t):
     )
 
 
-# Use the circumscribed-ball radius required by the projection operator.
-projection_epsilon = 0.01
-a_hat_norm_max = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + projection_epsilon
-Gamma_cbf = 4.0 * np.eye(ACC.adim)
-Gamma_cbf_inv = np.linalg.inv(Gamma_cbf)
-
 params = {
     "Theta_init": Theta_init.copy(),
     "true_uncertainty": true_uncertainty,
     "m": mass,
     "grav": gravity,
-    "vd": 28.0,
-    "Kp": 500.0,
+    "vd": 30.0,
+    "Kp": 100.0,
     "z_min": 5.0,
-    "T_h": 1.0,
-    "cbf_smoothing_epsilon": 0.2,
+    "T_h": 0.5,
     "use_adaptive": USE_ADAPTIVE,
     "use_cp": USE_CP,
     "Gamma_cbf": Gamma_cbf,
@@ -146,8 +143,8 @@ params = {
     #"projection_geometry": "box",
     "eta_cbf": 1.0,
     "cbf_rate": 1.0,
-    #"u_max": 0.3 * mass * gravity,
-    #"u_min": -0.3 * mass * gravity,
+    "u_max": 0.3 * mass * gravity,
+    "u_min": -0.3 * mass * gravity,
     "dt": dt,
 }
 
@@ -211,8 +208,9 @@ system.set_representation(olacp.Theta)
 system.cp_quantile = olacp.Q_k
 
 # Simulation initialization.
-x = np.array([0.0, 24.0, 35.0])
+x = np.array([0.0, 24.0, 30.0])
 a_hat_cbf = a_center.copy()
+a_hat_cbf[3] = 25.0
 rho_cbf = 0.0
 x_ext = np.hstack((x, a_hat_cbf, rho_cbf))
 

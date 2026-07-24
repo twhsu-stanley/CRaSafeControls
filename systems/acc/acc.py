@@ -8,19 +8,22 @@ class ACC(ControlAffineSystem):
 
     The learned uncertainty model is
 
-        Y_Theta(x) a = [0, Psi(x) Theta a[:3], a[3]]^T,
+        Y_Theta(x) a =
+            [0, Psi(x) Theta a[:3], lead_velocity_scale * a[3]]^T,
 
     where Psi(x) = [1, v, v^2] kron [1, z, z^2] and Theta has
     shape (9, 3). The fourth interval parameter is the lead-vehicle
-    velocity used by the parameter-dependent CRaCBF. The physical
-    uncertainty is supplied independently so representation updates never
-    alter the simulated plant.
+    velocity divided by lead_velocity_scale and is used by the
+    parameter-dependent CRaCBF. The physical uncertainty is supplied
+    independently so representation updates never alter the simulated plant.
     """
 
     theta_shape = (9, 3)
     xdim = 3
     udim = 1
     adim = 4
+    lead_velocity_scale = 1.0
+    cbf_smoothing_epsilon = 0.2
 
     def __init__(self, params=None):
         if params is None:
@@ -45,20 +48,11 @@ class ACC(ControlAffineSystem):
         self.nominal_gain = float(params.get("Kp", 200.0))
         self.z_min = float(params.get("z_min", 5.0))
         self.lookahead_time = float(params.get("T_h", params.get("T", 1.0)))
-        self.cbf_smoothing_epsilon = float(
-            params.get("cbf_smoothing_epsilon", 0.1)
-        )
         if not np.isfinite(self.mass) or self.mass <= 0.0:
             raise ValueError("m must be finite and strictly positive")
         if not np.isfinite(self.lookahead_time) or self.lookahead_time <= 0.0:
             raise ValueError("T_h must be finite and strictly positive")
-        if (
-            not np.isfinite(self.cbf_smoothing_epsilon)
-            or self.cbf_smoothing_epsilon <= 0.0
-        ):
-            raise ValueError(
-                "cbf_smoothing_epsilon must be finite and strictly positive"
-            )
+        
         self.true_uncertainty_fcn = params.get("true_uncertainty")
         if self.true_uncertainty_fcn is None:
             self.true_uncertainty_fcn = lambda x, t: np.zeros(self.xdim)
@@ -105,7 +99,7 @@ class ACC(ControlAffineSystem):
         theta_matrix = self._theta_matrix(theta)
         Yx = np.zeros((self.xdim, self.adim))
         Yx[1, :3] = self.psi(x) @ theta_matrix
-        Yx[2, 3] = 1.0
+        Yx[2, 3] = self.lead_velocity_scale
         return self._validate_Y_shape(Yx)
 
     def representation_loss_gradient(self, x, theta, a, w):
@@ -148,25 +142,25 @@ class ACC(ControlAffineSystem):
         """Return the smoothed, parameter-dependent collision-avoidance CBF"""
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
-        relative_velocity = x[1] - a_hat[3]
+        relative_velocity = (
+            x[1] - self.lead_velocity_scale * a_hat[3]
+        )
         h = (
             x[2]
             - self.z_min
             - self.lookahead_time
-            * self.smooth_max(
-                relative_velocity, self.cbf_smoothing_epsilon
-            )
+            * self.smooth_max(relative_velocity, self.cbf_smoothing_epsilon)
         )
         return np.asarray(h, dtype=float)
 
     def dcbfdx(self, x, a_hat):
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
-        relative_velocity = x[1] - a_hat[3]
+        relative_velocity = (
+            x[1] - self.lead_velocity_scale * a_hat[3]
+        )
         phi_prime = float(
-            self.smooth_max_derivative(
-                relative_velocity, self.cbf_smoothing_epsilon
-            )
+            self.smooth_max_derivative(relative_velocity, self.cbf_smoothing_epsilon)
         )
         return np.array(
             [[0.0], [-self.lookahead_time * phi_prime], [1.0]]
@@ -175,14 +169,16 @@ class ACC(ControlAffineSystem):
     def dcbfda(self, x, a_hat):
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
-        relative_velocity = x[1] - a_hat[3]
+        relative_velocity = (
+            x[1] - self.lead_velocity_scale * a_hat[3]
+        )
         phi_prime = float(
-            self.smooth_max_derivative(
-                relative_velocity, self.cbf_smoothing_epsilon
-            )
+            self.smooth_max_derivative(relative_velocity, self.cbf_smoothing_epsilon)
         )
         gradient = np.zeros((self.adim, 1))
-        gradient[3, 0] = self.lookahead_time * phi_prime
+        gradient[3, 0] = (
+            self.lead_velocity_scale * self.lookahead_time * phi_prime
+        )
         return gradient
 
     def true_uncertainty(self, x, t):
