@@ -18,7 +18,7 @@ USE_CP = True#False#
 USE_ADAPTIVE = True#False#
 
 # Algorithm 1 setup.
-K = 10 # total number of time intervals I_k
+K = 12 # total number of time intervals I_k
 B = 2   # update the representation every B intervals
 
 # Time setup for each interval I_k.
@@ -56,7 +56,7 @@ psi_reference = np.kron(
     np.array([1.0, v_reference, v_reference**2]),
     np.array([1.0, z_reference, z_reference**2]),
 )
-Theta_scale = 0.05 / psi_reference
+Theta_scale = 1 / psi_reference
 Theta_lb = -5.0 * Theta_scale[:, None] * np.ones((1, 3))
 Theta_ub = 5.0 * Theta_scale[:, None] * np.ones((1, 3))
 theta_rng = np.random.default_rng(11)
@@ -68,8 +68,8 @@ Theta_init = theta_rng.uniform(
 
 # The first three coordinates are latent drag parameters. The fourth is the
 # lead velocity itself because the last column of Y_Theta is [0, 0, 1]^T.
-a_lb = np.array([-2.0, -2.0, -2.0, 18.0])
-a_ub = np.array([2.0, 2.0, 2.0, 24.0])
+a_lb = np.array([-1.0, -1.0, -1.0, 18.0])
+a_ub = np.array([1.0, 1.0, 1.0, 24.0])
 a_center = 0.5 * (a_lb + a_ub)
 
 projection_epsilon = 0.01
@@ -83,12 +83,12 @@ environment_interval_count = max(K, N_cal)
 environment_phase = (
     2.0 * np.pi * np.arange(environment_interval_count) / 20.0
 )
-d0_schedule = -220.0 - 35.0 * np.sin(environment_phase + 0.15)
+d0_schedule = 220.0 - 440.0 * np.sin(environment_phase + 0.15)
 wind_velocity_schedule = (
     2.0 + 4.0 * np.sin(0.7 * environment_phase - 0.2)
 )
 lead_velocity_schedule = (
-    25.0 - 6.0 * np.sin(0.5 * environment_phase)
+    24.0 - 6.0 * np.sin(0.9 * environment_phase)
 )
 
 def environment_index(t):
@@ -157,8 +157,8 @@ rng = np.random.default_rng(7)
 S_cal_init = []
 for k in range(N_cal):
     positions = rng.uniform(0.0, 500.0, I_length)
-    velocities = rng.uniform(18.0, 30.0, I_length)
-    distances = rng.uniform(8.0, 65.0, I_length)
+    velocities = rng.uniform(0.0, 30.0, I_length)
+    distances = rng.uniform(0.0, 30.0, I_length)
     states_cal = np.column_stack((positions, velocities, distances))
     times_cal = (
         k * interval_duration
@@ -184,7 +184,7 @@ S_cal_init = np.asarray(S_cal_init)
 
 # Adaptive conformal prediction and Algorithm 1 representation learning.
 olacp = OLACP(
-    S_cal_init,
+    [S_cal_init],
     N_cal=N_cal,
     acp_lr=0.02,
     delta_target=0.05,
@@ -195,8 +195,8 @@ olacp = OLACP(
     # Normalize each row's step by its reference feature magnitude and by the
     # number of samples accumulated in one representation-learning block.
     representation_lr=lambda j: (
-        0.1
-        / (B * I_length * psi_reference[:, None] ** 2)
+        0.001
+        / (psi_reference[:, None])
         / j
     ),
     Theta_lb=Theta_lb,
@@ -210,7 +210,7 @@ system.cp_quantile = olacp.Q_k
 # Simulation initialization.
 x = np.array([0.0, 24.0, 30.0])
 a_hat_cbf = a_center.copy()
-a_hat_cbf[3] = 25.0
+a_hat_cbf[3] = x[1].copy()
 rho_cbf = 0.0
 x_ext = np.hstack((x, a_hat_cbf, rho_cbf))
 
@@ -446,6 +446,18 @@ fig.suptitle("Uncertainty-prediction error")
 
 # Plot the learned representation. Multiplication by the reference feature
 # magnitude puts all nine rows on a comparable scale.
+fig, axs = plt.subplots(*Theta_init.shape, sharex=True)
+for row in range(Theta_init.shape[0]):
+    for column in range(Theta_init.shape[1]):
+        axs[row, column].plot(tt, Theta_hist[:, row, column])
+        axs[row, column].set_ylabel(
+            rf"$\Theta_{{{row + 1},{column + 1}}}$"
+        )
+        axs[row, column].grid(True)
+for ax in axs[-1, :]:
+    ax.set_xlabel("Time (s)")
+fig.suptitle("Learned representation")
+
 fig, axs = plt.subplots(3, 1, sharex=True, figsize=(9, 9))
 for column_index in range(3):
     normalized_column = (
