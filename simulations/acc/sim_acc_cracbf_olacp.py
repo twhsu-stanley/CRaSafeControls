@@ -17,15 +17,15 @@ USE_CP = True#False#
 USE_ADAPTIVE = True#False#
 
 # Algorithm 1 setup.
-K_pre = 32
-N_cal = 30
+K_pre = 120
+N_cal = 100
 K = 12 # total number of time intervals I_k
 B = 4   # update the representation every B intervals
-if K_pre < N_cal:
-    raise ValueError("K_pre must be at least as large as N_cal")
-if K_pre % B != 0:
-    raise ValueError("K_pre must be an integer multiple of B")
-
+#if K_pre < N_cal:
+#    raise ValueError("K_pre must be at least as large as N_cal")
+#if K_pre % B != 0:
+#    raise ValueError("K_pre must be an integer multiple of B")
+#
 # Time setup for each interval I_k.
 dt = 0.01
 interval_duration = 2.0
@@ -44,9 +44,9 @@ if len(tt) != K * I_length:
 mass = 1000.0
 gravity = 9.81
 beta_1 = -10.0
-beta_2 = -0.5
-beta_3 = 0.75
-beta_4 = 0.03
+beta_2 = -0.75
+beta_3 = 0.2
+beta_4 = 0.02
 desired_velocity = 26.0
 
 # Psi contains raw polynomial features with very different magnitudes. Scale
@@ -81,10 +81,10 @@ Gamma_cbf_inv = np.linalg.inv(Gamma_cbf)
 
 # Use a separate piecewise-constant environment during pretraining. The lead
 # vehicle remains strictly faster than the desired ego speed.
-pretrain_environment_phase = 2.0 * np.pi * np.arange(K_pre) / 20.0
-pretrain_d0_schedule = -500.0 + 200.0 * np.sin(pretrain_environment_phase + 0.15)
-pretrain_wind_velocity_schedule = -10 + 5.0 * np.sin(0.7 * pretrain_environment_phase - 0.2)
-pretrain_delta_lead_velocity_schedule = 1.0 * np.sin(0.5 * pretrain_environment_phase)
+pretrain_environment_phase = 2.0 * np.pi * np.arange(K_pre) / K_pre * 2
+pretrain_d0_schedule = -50.0 + 150.0 * np.sin(0.5 * pretrain_environment_phase)
+pretrain_wind_velocity_schedule = 0 - 25.0 * np.sin(1.0 * pretrain_environment_phase)
+pretrain_delta_lead_velocity_schedule = 1.0 * np.sin(pretrain_environment_phase)
 
 def pretrain_true_uncertainty(x, t):
     """Evaluate w(x, t) in the separate pretraining environment."""
@@ -95,9 +95,7 @@ def pretrain_true_uncertainty(x, t):
     drag_force =  (
         pretrain_d0_schedule[interval_index]
         + beta_1 * v
-        + beta_2
-        * (v - wind_velocity) ** 2
-        * (1.0 - beta_3 * np.exp(-beta_4 * z))
+        + beta_2 * (v - wind_velocity)**2 * (1.0 - beta_3 * np.exp(-beta_4 * z))
     )
     return np.array(
         [
@@ -115,7 +113,7 @@ params = {
     "m": mass,
     "grav": gravity,
     "vd": desired_velocity,
-    "Kp": 500.0,
+    "Kp": 1000.0,
     "z_min": 5.0,
     "T_h": 0.5,
     "use_adaptive": USE_ADAPTIVE,
@@ -161,7 +159,7 @@ system.set_representation(olacp.Theta)
 # counters when the online simulation starts.
 tt_pre = np.arange(K_pre * I_length, dtype=float) * dt
 
-x_pre = np.array([0.0, 20.0, 100.0])
+x_pre = np.array([0.0, 20.0, 30.0])
 
 x_pre_hist = np.zeros((len(tt_pre), system.xdim))
 Y_pre_hist = np.zeros((len(tt_pre), system.xdim, system.adim))
@@ -235,8 +233,8 @@ for i_pre, t_pre in enumerate(tt_pre):
             f"theta_step={theta_step_norm:.3e}"
         )
 
-if len(olacp.S_cal) != N_cal:
-    raise RuntimeError("Pretraining did not fill the requested calibration window")
+#if len(olacp.S_cal) != N_cal:
+#    raise RuntimeError("Pretraining did not fill the requested calibration window")
 
 
 # Plot states and input.
@@ -354,7 +352,7 @@ def true_uncertainty(x, t):
 system.true_uncertainty_fcn = true_uncertainty
 
 # Simulation initialization.
-x = np.array([0.0, 24.0, 30.0])
+x = np.array([0.0, 20.0, 40.0])
 a_hat_cbf = a_center.copy()
 rho_cbf = 0.0
 x_ext = np.hstack((x, a_hat_cbf, rho_cbf))

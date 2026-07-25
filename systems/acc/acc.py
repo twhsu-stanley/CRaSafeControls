@@ -22,7 +22,7 @@ class ACC(ControlAffineSystem):
     xdim = 3
     udim = 1
     adim = 4
-    nominal_lead_velocity = 27.0
+    nominal_lead_velocity = 25.0
     lead_velocity_scale = 1.0
     cbf_smoothing_epsilon = 1.0
 
