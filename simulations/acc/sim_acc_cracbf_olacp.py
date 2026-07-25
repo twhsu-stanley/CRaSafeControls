@@ -6,7 +6,6 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.integrate import solve_ivp
-from scipy.optimize import lsq_linear
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
@@ -18,8 +17,14 @@ USE_CP = True#False#
 USE_ADAPTIVE = True#False#
 
 # Algorithm 1 setup.
+K_pre = 32
+N_cal = 30
 K = 12 # total number of time intervals I_k
-B = 2   # update the representation every B intervals
+B = 4   # update the representation every B intervals
+if K_pre < N_cal:
+    raise ValueError("K_pre must be at least as large as N_cal")
+if K_pre % B != 0:
+    raise ValueError("K_pre must be an integer multiple of B")
 
 # Time setup for each interval I_k.
 dt = 0.01
@@ -35,22 +40,19 @@ tt = np.arange(0.0, sim_T, dt)
 if len(tt) != K * I_length:
     raise ValueError("K, interval_duration, and dt define inconsistent sample counts")
 
-N_cal = 200
-if N_cal < 100:
-    raise ValueError("N_cal must be at least 100")
-
 # System and environment parameters.
-mass = 1650.0
+mass = 1000.0
 gravity = 9.81
-beta_1 = -6.0
-beta_2 = -0.375
-beta_3 = 0.35
-beta_4 = 0.045
+beta_1 = -10.0
+beta_2 = -0.5
+beta_3 = 0.75
+beta_4 = 0.03
+desired_velocity = 26.0
 
 # Psi contains raw polynomial features with very different magnitudes. Scale
 # the representation bounds row-wise so every basis term has a comparable
 # effect near the reference ACC operating point.
-v_reference = 24.0
+v_reference = desired_velocity
 z_reference = 30.0
 psi_reference = np.kron(
     np.array([1.0, v_reference, v_reference**2]),
@@ -66,71 +68,54 @@ Theta_init = theta_rng.uniform(
     size=ACC.theta_shape,
 )
 
-# The first three coordinates are latent drag parameters. The fourth is the
-# lead velocity itself because the last column of Y_Theta is [0, 0, 1]^T.
-a_lb = np.array([-1.0, -1.0, -1.0, 18.0])
-a_ub = np.array([1.0, 1.0, 1.0, 24.0])
+# The first three coordinates are latent drag parameters.
+# The fourth is the scaled lead velocity
+a_lb = np.array([-1.0, -1.0, -1.0, -8.0])
+a_ub = np.array([1.0, 1.0, 1.0, 8.0])
 a_center = 0.5 * (a_lb + a_ub)
 
 projection_epsilon = 0.01
 a_hat_norm_max = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + projection_epsilon
-Gamma_cbf = np.diag([10.0, 10.0, 10.0, 4.0])
+Gamma_cbf = np.diag([10.0, 10.0, 10.0, 5.0])
 Gamma_cbf_inv = np.linalg.inv(Gamma_cbf)
 
-# Generate a piecewise-constant environment on the Algorithm 1 intervals.
-# beta_1,...,beta_4 are fixed; d_0, wind speed, and lead velocity vary.
-environment_interval_count = max(K, N_cal)
-environment_phase = (
-    2.0 * np.pi * np.arange(environment_interval_count) / 20.0
-)
-d0_schedule = 220.0 - 440.0 * np.sin(environment_phase + 0.15)
-wind_velocity_schedule = (
-    2.0 + 4.0 * np.sin(0.7 * environment_phase - 0.2)
-)
-lead_velocity_schedule = (
-    24.0 - 6.0 * np.sin(0.9 * environment_phase)
-)
+# Use a separate piecewise-constant environment during pretraining. The lead
+# vehicle remains strictly faster than the desired ego speed.
+pretrain_environment_phase = 2.0 * np.pi * np.arange(K_pre) / 20.0
+pretrain_d0_schedule = -500.0 + 200.0 * np.sin(pretrain_environment_phase + 0.15)
+pretrain_wind_velocity_schedule = -10 + 5.0 * np.sin(0.7 * pretrain_environment_phase - 0.2)
+pretrain_delta_lead_velocity_schedule = 1.0 * np.sin(0.5 * pretrain_environment_phase)
 
-def environment_index(t):
-    return min(
-        int(np.floor(max(float(t), 0.0) / interval_duration)),
-        environment_interval_count - 1,
-    )
-
-
-def total_drag_force(x, t):
-    """Evaluate the signed force d(t, x) from the updated draft."""
-    interval_index = environment_index(t)
+def pretrain_true_uncertainty(x, t):
+    """Evaluate w(x, t) in the separate pretraining environment."""
+    interval_index = min(int(np.floor(max(float(t), 0.0) / interval_duration)), K_pre - 1)
     x = np.asarray(x, dtype=float).reshape(3)
     v, z = x[1], x[2]
-    wind_velocity = wind_velocity_schedule[interval_index]
-    return (
-        d0_schedule[interval_index]
+    wind_velocity = pretrain_wind_velocity_schedule[interval_index]
+    drag_force =  (
+        pretrain_d0_schedule[interval_index]
         + beta_1 * v
         + beta_2
         * (v - wind_velocity) ** 2
         * (1.0 - beta_3 * np.exp(-beta_4 * z))
     )
-
-def true_uncertainty(x, t):
-    """Evaluate the unknown physical uncertainty w(x, t)"""
-    interval_index = environment_index(t)
     return np.array(
         [
             0.0,
-            total_drag_force(x, t) / mass,
-            lead_velocity_schedule[interval_index],
+            drag_force / mass,
+            pretrain_delta_lead_velocity_schedule[interval_index],
         ]
     )
 
 
+# Construct the ACC system
 params = {
     "Theta_init": Theta_init.copy(),
-    "true_uncertainty": true_uncertainty,
+    "true_uncertainty": pretrain_true_uncertainty,
     "m": mass,
     "grav": gravity,
-    "vd": 30.0,
-    "Kp": 100.0,
+    "vd": desired_velocity,
+    "Kp": 500.0,
     "z_min": 5.0,
     "T_h": 0.5,
     "use_adaptive": USE_ADAPTIVE,
@@ -147,44 +132,12 @@ params = {
     "u_min": -0.3 * mass * gravity,
     "dt": dt,
 }
-
-# Construct the ACC system.
 system = ACC(params)
 
-# Initial calibration set. Each historical interval follows lines 8 and 11 of
-# Algorithm 1: fit a bounded a_k and retain the largest residual norm.
-rng = np.random.default_rng(7)
-S_cal_init = []
-for k in range(N_cal):
-    positions = rng.uniform(0.0, 500.0, I_length)
-    velocities = rng.uniform(0.0, 30.0, I_length)
-    distances = rng.uniform(0.0, 30.0, I_length)
-    states_cal = np.column_stack((positions, velocities, distances))
-    times_cal = (
-        k * interval_duration
-        + (np.arange(I_length) + 0.5) * interval_duration / I_length
-    )
-
-    Y_cal = []
-    w_cal = []
-    for x_cal, t_cal in zip(states_cal, times_cal):
-        Y_cal.append(system.Y_Theta(x_cal, Theta_init))
-        w_cal.append(true_uncertainty(x_cal, t_cal))
-
-    Y_stack = np.vstack(Y_cal)
-    w_stack = np.hstack(w_cal)
-    a_cal = lsq_linear(Y_stack, w_stack, bounds=(a_lb, a_ub)).x
-    S_cal_init.append(
-        max(
-            np.linalg.norm(Y_t @ a_cal - w_t, ord=2)
-            for Y_t, w_t in zip(Y_cal, w_cal)
-        )
-    )
-S_cal_init = np.asarray(S_cal_init)
-
-# Adaptive conformal prediction and Algorithm 1 representation learning.
+# Initialize one OLACP object with an empty calibration set. This same object
+# is used for pretraining and the subsequent online CRaCBF simulation.
 olacp = OLACP(
-    [S_cal_init],
+    [],
     N_cal=N_cal,
     acp_lr=0.02,
     delta_target=0.05,
@@ -194,23 +147,215 @@ olacp = OLACP(
     representation_period=B,
     # Normalize each row's step by its reference feature magnitude and by the
     # number of samples accumulated in one representation-learning block.
-    representation_lr=lambda j: (
-        0.001
-        / (psi_reference[:, None])
-        / j
-    ),
+    representation_lr=lambda j: (1/ (psi_reference[:, None])/ j),
     Theta_lb=Theta_lb,
     Theta_ub=Theta_ub,
     Y_Theta=system.Y_Theta,
     representation_loss_gradient=system.representation_loss_gradient,
 )
 system.set_representation(olacp.Theta)
-system.cp_quantile = olacp.Q_k
+
+#############################################################################
+# Pretrain the representation and collect calibration scores. 
+# OLACP retains only the latest N_cal scores and continues its interval/update 
+# counters when the online simulation starts.
+tt_pre = np.arange(K_pre * I_length, dtype=float) * dt
+
+x_pre = np.array([0.0, 20.0, 100.0])
+
+x_pre_hist = np.zeros((len(tt_pre), system.xdim))
+Y_pre_hist = np.zeros((len(tt_pre), system.xdim, system.adim))
+a_pre_hist = np.zeros((len(tt_pre), system.adim))
+Theta_pre_hist = np.zeros((len(tt_pre),)+ Theta_init.shape)
+pretrain_prediction_error_hist = np.zeros(len(tt_pre))
+
+
+for i_pre, t_pre in enumerate(tt_pre):
+    pretrain_interval_index = i_pre // I_length
+
+    x_pre_hist[i_pre] = x_pre
+
+    Y_pre_hist[i_pre] = system.Y(x_pre)
+    Theta_pre_hist[i_pre] = system.Theta_hat
+    
+    u_pre = system.ctrl_nominal(x_pre)
+    
+    # Store the data required by line 6 of Algorithm 1.
+    olacp.add_data_to_buffers(
+        x_pre,
+        system.dynamics_nominal(x_pre, u_pre),
+        xdot=system.dynamics(x_pre, u_pre, t_pre),
+    )
+
+    # Propagate with zero-order hold on the CRaCBF control input.
+    if i_pre < len(tt_pre) - 1:
+        sol = solve_ivp(
+            lambda tau, y: system.dynamics(y, u_pre, tau),
+            (tt_pre[i_pre], tt_pre[i_pre + 1]),
+            x_pre,
+            method="BDF",
+            rtol=1e-7,
+            atol=1e-9,
+            t_eval=[tt_pre[i_pre + 1]],
+        )
+        if not sol.success:
+            raise RuntimeError(sol.message)
+        x_pre = sol.y[:, -1]
+
+    # Complete the pretraining version of lines 7--23 of Algorithm 1.
+    if (i_pre + 1) % I_length == 0:
+        olacp.estimate_uncertainty(dt)
+        s_pre = olacp.compute_score(system.a_ub, system.a_lb)
+        
+        interval_prediction_error = np.array(
+            [
+                np.linalg.norm(Y_t @ olacp.a_k - w_t, ord=2) ** 2
+                for Y_t, w_t in zip(olacp._Y_buffer, olacp._w_buffer)
+            ]
+        )
+
+        olacp.append_score(s_pre)
+        representation_update = olacp.update_representation()
+
+        interval_start = i_pre - I_length + 1
+        a_pre_hist[interval_start : i_pre + 1] = olacp.a_k
+        pretrain_prediction_error_hist[interval_start : i_pre + 1] = interval_prediction_error
+        
+        theta_step_norm = 0.0
+        if representation_update is not None:
+            theta_before = system.Theta_hat.copy()
+            system.set_representation(representation_update["Theta"])
+            theta_step_norm = np.max(np.abs(system.Theta_hat - theta_before))
+
+        olacp.clear_buffers()
+
+        print(
+            f"pretrain_interval={pretrain_interval_index + 1:03d}, "
+            f"score={s_pre:.3e}, "
+            f"theta_step={theta_step_norm:.3e}"
+        )
+
+if len(olacp.S_cal) != N_cal:
+    raise RuntimeError("Pretraining did not fill the requested calibration window")
+
+
+# Plot states and input.
+fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 11))
+axs[0].plot(tt_pre, x_pre_hist[:, 1], label="ego velocity")
+axs[0].axhline(params["vd"], color="k", linestyle=":", label="desired")
+axs[0].set_ylabel("v (m/s)")
+axs[0].legend(ncol=3)
+axs[1].plot(tt_pre, x_pre_hist[:, 2], label=r"$z(t)$")
+axs[1].axhline(params["z_min"], color="r", linestyle="--", label=r"$z_{\min}$")
+axs[1].set_ylabel("z (m)")
+axs[1].legend()
+for ax in axs:
+    ax.grid(True)
+fig.suptitle("State During Pre-training")
+
+fig, axs = plt.subplots(1, 3)
+axs[0].plot(tt_pre, Y_pre_hist[:,1,0])
+axs[0].set_ylabel("Y_21")
+axs[1].plot(tt_pre, Y_pre_hist[:,1,1])
+axs[1].set_ylabel("Y_22")
+axs[2].plot(tt_pre, Y_pre_hist[:,1,2])
+axs[2].set_ylabel("Y_23")
+for ax in axs:
+    ax.grid(True)
+
+fig, axs = plt.subplots(*Theta_init.shape, sharex=True)
+for row in range(Theta_init.shape[0]):
+    for column in range(Theta_init.shape[1]):
+        axs[row, column].plot(tt_pre, Theta_pre_hist[:, row, column])
+        axs[row, column].set_ylabel(
+            rf"$\Theta_{{{row + 1},{column + 1}}}$"
+        )
+        axs[row, column].grid(True)
+for ax in axs[-1, :]:
+    ax.set_xlabel("Time (s)")
+fig.suptitle("Pre-trianed Theta")
+
+fig, axs = plt.subplots(system.adim, 1, sharex=True, figsize=(8, 12))
+for i in range(system.adim):
+    axs[i].plot(tt_pre, a_pre_hist[:, i], "--", label="a_k")
+    axs[i].set_ylabel(f"ak{i + 1}")
+    axs[i].grid(True)
+axs[0].legend(ncol=3)
+axs[-1].set_xlabel("Time (s)")
+for ax in axs:
+    ax.grid(True)
+    for interval_index in range(1, K):
+        ax.axvline(
+            interval_index * interval_duration,
+            color="0.7",
+            linestyle=":",
+            linewidth=1.0,
+        )
+
+fig, ax = plt.subplots(1, 1, figsize=(8, 7))
+ax.semilogy(
+    tt_pre,
+    np.maximum(pretrain_prediction_error_hist, 1e-16),
+    label=r"$\|Y_{\Theta_j}(x_t)a_k-w_t\|_2^2$",
+)
+for update_index in range(B, K_pre, B):
+    ax.axvline(
+        update_index * interval_duration,
+        color="k",
+        linestyle=":",
+        alpha=0.4,
+        label=(
+            "new representation active"
+            if update_index == B
+            else None
+        ),
+    )
+ax.set_ylabel("squared prediction error")
+ax.grid(True)
+ax.legend()
+ax.set_title("Pretraining")
+ax.set_xlabel("Time (s)")
+fig.suptitle("Uncertainty-prediction error")
+
+plt.show()
+
+#########################################################################
+# The actual CRaCBF simulation begins here
+system.set_representation(olacp.Theta)
+system.cp_quantile = olacp.compute_quantile()
+
+# Generate a piecewise-constant environment on the Algorithm 1 intervals.
+# beta_1,...,beta_4 are fixed; d_0, wind speed, and lead velocity vary.
+environment_phase = 2.0 * np.pi * np.arange(K) / 20.0
+d0_schedule = -220.0 - 440.0 * np.sin(environment_phase + 0.15)
+wind_velocity_schedule = 2.0 + 4.0 * np.sin(0.7 * environment_phase - 0.2)
+delta_lead_velocity_schedule = -6.0 * np.sin(0.9 * environment_phase)
+
+def true_uncertainty(x, t):
+    """Evaluate the unknown physical uncertainty w(x, t)"""
+    interval_index = min(int(np.floor(max(float(t), 0.0) / interval_duration)), K - 1)
+    x = np.asarray(x, dtype=float).reshape(3)
+    v, z = x[1], x[2]
+    wind_velocity = wind_velocity_schedule[interval_index]
+    drag_force = (
+        d0_schedule[interval_index]
+        + beta_1 * v
+        + beta_2
+        * (v - wind_velocity) ** 2
+        * (1.0 - beta_3 * np.exp(-beta_4 * z))
+    )
+    return np.array(
+        [
+            0.0,
+            drag_force / mass,
+            delta_lead_velocity_schedule[interval_index],
+        ]
+    )
+system.true_uncertainty_fcn = true_uncertainty
 
 # Simulation initialization.
 x = np.array([0.0, 24.0, 30.0])
 a_hat_cbf = a_center.copy()
-a_hat_cbf[3] = x[1].copy()
 rho_cbf = 0.0
 x_ext = np.hstack((x, a_hat_cbf, rho_cbf))
 
@@ -235,18 +380,18 @@ s_k_hist = []
 delta_k_hist = []
 e_k_hist = []
 
-# Main simulation loop.
+# Main simulation loop
 for i, t in enumerate(tt):
     interval_index = i // I_length
 
     x_hist[i] = x
     a_hat_cbf_hist[i] = a_hat_cbf
-    lead_velocity_hist[i] = lead_velocity_schedule[interval_index]
+    lead_velocity_hist[i] = delta_lead_velocity_schedule[interval_index] + system.nominal_lead_velocity
     rho_cbf_hist[i] = rho_cbf
     nu_cbf_hist[i] = system.nu_cbf(rho_cbf)
     Q_k_hist[i] = system.cp_quantile
     Theta_hist[i] = system.Theta_hat
-    h_hist[i] = float(np.asarray(system.cbf(x, a_hat_cbf)).item())
+    h_hist[i] = system.cbf(x, a_hat_cbf)
     physical_safety_hist[i] = x[2] - params["z_min"]
     tightened_cbf_margin_hist[i] = h_hist[i] - 0.5 / nu_cbf_hist[i] * system.safe_set_tightening
     if i == 0 and h_hist[i] < 0.0:
@@ -299,7 +444,7 @@ for i, t in enumerate(tt):
     # Complete lines 7--23 of Algorithm 1 at the interval boundary
     if (i + 1) % I_length == 0:
         olacp.estimate_uncertainty(dt)
-        s_k = float(olacp.compute_score(system.a_ub, system.a_lb))
+        s_k = olacp.compute_score(system.a_ub, system.a_lb)
         interval_prediction_error = np.array(
             [
                 np.linalg.norm(Y_t @ olacp.a_k - w_t, ord=2) ** 2
@@ -426,22 +571,38 @@ for ax in axs:
         )
 fig.suptitle("Adaptive conformal prediction")
 
-# Plot the pointwise loss minimized by Algorithm 1. Each interval uses the
-# representation that was installed while that interval's data were sampled.
-fig, ax = plt.subplots(figsize=(8, 4))
-ax.semilogy(tt, np.maximum(prediction_error_hist, 1e-16), label=r"$\|Y_{\Theta_j}(x_t)a_k-w_t\|_2^2$")
-for update_index in range(B, K, B):
-    ax.axvline(
-        update_index * interval_duration,
-        color="k",
-        linestyle=":",
-        alpha=0.6,
-        label="new representation active" if update_index == B else None,
-    )
-ax.set_ylabel("squared prediction error")
-ax.set_xlabel("Time (s)")
-ax.grid(True)
-ax.legend()
+# Plot the pretraining and online losses minimized by Algorithm 1. Each
+# interval uses the representation installed while its data were sampled.
+fig, axs = plt.subplots(2, 1, figsize=(8, 7))
+axs[0].semilogy(
+    tt_pre,
+    np.maximum(pretrain_prediction_error_hist, 1e-16),
+    label=r"$\|Y_{\Theta_j}(x_t)a_k-w_t\|_2^2$",
+)
+axs[1].semilogy(
+    tt,
+    np.maximum(prediction_error_hist, 1e-16),
+    label=r"$\|Y_{\Theta_j}(x_t)a_k-w_t\|_2^2$",
+)
+for ax, interval_count in zip(axs, (K_pre, K)):
+    for update_index in range(B, interval_count, B):
+        ax.axvline(
+            update_index * interval_duration,
+            color="k",
+            linestyle=":",
+            alpha=0.4,
+            label=(
+                "new representation active"
+                if update_index == B
+                else None
+            ),
+        )
+    ax.set_ylabel("squared prediction error")
+    ax.grid(True)
+    ax.legend()
+axs[0].set_title("Pretraining")
+axs[1].set_title("Online implementation")
+axs[1].set_xlabel("Time (s)")
 fig.suptitle("Uncertainty-prediction error")
 
 # Plot the learned representation. Multiplication by the reference feature

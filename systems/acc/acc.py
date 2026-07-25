@@ -22,8 +22,9 @@ class ACC(ControlAffineSystem):
     xdim = 3
     udim = 1
     adim = 4
+    nominal_lead_velocity = 27.0
     lead_velocity_scale = 1.0
-    cbf_smoothing_epsilon = 0.2
+    cbf_smoothing_epsilon = 1.0
 
     def __init__(self, params=None):
         if params is None:
@@ -65,7 +66,7 @@ class ACC(ControlAffineSystem):
         """Return the nominal drift [v, 0, -v]"""
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         v = x[1]
-        return np.array([v, 0.0, -v])
+        return np.array([v, 0.0, self.nominal_lead_velocity - v])
 
     def g(self, x):
         """Return the wheel-force input matrix"""
@@ -143,7 +144,7 @@ class ACC(ControlAffineSystem):
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
         relative_velocity = (
-            x[1] - self.lead_velocity_scale * a_hat[3]
+            x[1] - self.nominal_lead_velocity - self.lead_velocity_scale * a_hat[3]
         )
         h = (
             x[2]
@@ -157,11 +158,9 @@ class ACC(ControlAffineSystem):
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
         relative_velocity = (
-            x[1] - self.lead_velocity_scale * a_hat[3]
+            x[1] - self.nominal_lead_velocity - self.lead_velocity_scale * a_hat[3]
         )
-        phi_prime = float(
-            self.smooth_max_derivative(relative_velocity, self.cbf_smoothing_epsilon)
-        )
+        phi_prime = self.smooth_max_derivative(relative_velocity, self.cbf_smoothing_epsilon)
         return np.array(
             [[0.0], [-self.lookahead_time * phi_prime], [1.0]]
         )
@@ -170,11 +169,9 @@ class ACC(ControlAffineSystem):
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
         relative_velocity = (
-            x[1] - self.lead_velocity_scale * a_hat[3]
+            x[1] - self.nominal_lead_velocity - self.lead_velocity_scale * a_hat[3]
         )
-        phi_prime = float(
-            self.smooth_max_derivative(relative_velocity, self.cbf_smoothing_epsilon)
-        )
+        phi_prime = self.smooth_max_derivative(relative_velocity, self.cbf_smoothing_epsilon)
         gradient = np.zeros((self.adim, 1))
         gradient[3, 0] = (
             self.lead_velocity_scale * self.lookahead_time * phi_prime
