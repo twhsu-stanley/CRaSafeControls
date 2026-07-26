@@ -17,8 +17,8 @@ from olacp import OLACP
 from systems.acc.acc import ACC
 
 
-USE_CP = True
-USE_ADAPTIVE = True
+USE_CP = False #True
+USE_ADAPTIVE = False #True
 
 # Algorithm 1 setup. Pretraining only supplies the initial calibration
 # window; the same OLACP object then continues through the main simulation.
@@ -53,7 +53,7 @@ beta_1 = -10.0
 beta_2 = -0.75
 beta_3 = 0.2
 beta_4 = 0.02
-desired_velocity = 26.0
+desired_velocity = 28.0
 nominal_lead_velocity = 23.0
 lead_velocity_scale = 10.0
 
@@ -396,7 +396,7 @@ system.true_uncertainty_fcn = true_uncertainty
 system.set_representation(olacp.Theta)
 system.cp_quantile = olacp.compute_quantile()
 
-x = np.array([0.0, 24.0, 20.0])
+x = np.array([0.0, 26.0, 60.0])
 a_hat_cbf = a_center.copy()
 rho_cbf = 0.0
 x_ext = np.hstack((x, a_hat_cbf, rho_cbf))
