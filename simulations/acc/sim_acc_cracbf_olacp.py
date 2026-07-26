@@ -337,26 +337,18 @@ if (
     np.min(x_pre_hist[:, 1]) < pretrain_v_lower - 1e-6
     or np.max(x_pre_hist[:, 1]) > pretrain_v_upper + 1e-6
 ):
-    raise RuntimeError(
-        "The expert pretraining velocity left [10, 30] m/s"
-    )
+    raise RuntimeError("The expert pretraining velocity left [10, 30] m/s")
 if (
     np.min(x_pre_hist[:, 2]) < pretrain_z_lower - 1e-6
     or np.max(x_pre_hist[:, 2]) > pretrain_z_upper + 1e-6
 ):
-    raise RuntimeError(
-        "The expert pretraining distance left [10, 50] m"
-    )
+    raise RuntimeError("The expert pretraining distance left [10, 50] m")
+
 if np.ptp(x_pre_hist[:, 1]) < 1.0 or np.ptp(x_pre_hist[:, 2]) < 5.0:
-    raise RuntimeError(
-        "The expert pretraining trajectory does not vary enough"
-    )
+    raise RuntimeError("The expert pretraining trajectory does not vary enough")
 if np.any(~np.isfinite(u_pre_hist)):
     raise RuntimeError("The expert pretraining input became non-finite")
-if (
-    np.min(u_pre_hist) < u_min - 1e-6
-    or np.max(u_pre_hist) > u_max + 1e-6
-):
+if (np.min(u_pre_hist) < u_min - 1e-6 or np.max(u_pre_hist) > u_max + 1e-6):
     raise RuntimeError("The expert pretraining input bounds were violated")
 
 print(
@@ -367,6 +359,93 @@ print(
     f"{np.max(x_pre_hist[:, 2]):.3f}] m"
 )
 
+fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 10))
+axs[0].plot(tt_pre, x_pre_hist[:, 1], label="ego velocity")
+axs[0].plot(
+    tt_pre,
+    lead_velocity_pre_hist,
+    "--",
+    label="lead velocity",
+)
+axs[0].plot(
+    tt_pre,
+    expert_velocity_command_pre_hist,
+    ":",
+    label="expert velocity command",
+)
+axs[0].axhline(
+    pretrain_v_lower,
+    color="r",
+    linestyle="--",
+    label="velocity bounds",
+)
+axs[0].axhline(pretrain_v_upper, color="r", linestyle="--")
+axs[0].set_ylabel("velocity (m/s)")
+axs[0].legend()
+axs[1].plot(tt_pre, x_pre_hist[:, 2], label="distance")
+axs[1].plot(
+    tt_pre,
+    gap_reference_pre_hist,
+    ":",
+    label="expert gap reference",
+)
+axs[1].axhline(
+    pretrain_z_lower,
+    color="r",
+    linestyle="--",
+    label="distance bounds",
+)
+axs[1].axhline(pretrain_z_upper, color="r", linestyle="--")
+axs[1].set_ylabel("z (m)")
+axs[1].legend()
+axs[2].plot(tt_pre, u_pre_hist, label="expert input")
+axs[2].axhline(u_max, color="k", linestyle="--")
+axs[2].axhline(u_min, color="k", linestyle="--")
+axs[2].set_ylabel("force (N)")
+axs[2].set_xlabel("time (s)")
+axs[2].legend()
+for ax in axs:
+    ax.grid(True)
+fig.suptitle("ACC pretraining with expert control")
+
+# Compare Y_Theta(x) a_k with the true uncertainty during pretraining.
+uncertainty_components = (
+    (1, r"$w_2=d/m$"),
+    (2, r"$w_3=\Delta v_l$"),
+)
+fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
+for ax, (component, component_label) in zip(axs, uncertainty_components):
+    ax.plot(
+        tt_pre,
+        true_uncertainty_pre_hist[:, component],
+        label="true uncertainty",
+        linewidth=2.0,
+    )
+    ax.plot(
+        tt_pre,
+        fitted_uncertainty_pre_hist[:, component],
+        "--",
+        label=r"$Y_\Theta(x)a_k$",
+    )
+    ax.set_ylabel(component_label)
+    ax.grid(True)
+    ax.legend()
+axs[-1].set_xlabel("time (s)")
+fig.suptitle(r"Pretraining: $Y_\Theta(x)a_k$ versus true uncertainty")
+
+fig, ax = plt.subplots(1, 1, figsize=(8, 7))
+ax.semilogy(
+    tt_pre,
+    np.maximum(pretrain_prediction_error_hist, 1e-16),
+    label="pretraining",
+)
+ax.set_ylabel("squared prediction error")
+ax.grid(True)
+ax.legend()
+ax.set_xlabel("Time (s)")
+fig.suptitle("Uncertainty-model prediction loss during pretraining")
+
+plt.show()
 
 # -------------------------------------------------------------------------
 # Main CRaCBF and Algorithm 1 simulation.
@@ -758,55 +837,6 @@ print(
 main_time_limits = (float(tt[0]), float(tt[-1]))
 
 fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 10))
-axs[0].plot(tt_pre, x_pre_hist[:, 1], label="ego velocity")
-axs[0].plot(
-    tt_pre,
-    lead_velocity_pre_hist,
-    "--",
-    label="lead velocity",
-)
-axs[0].plot(
-    tt_pre,
-    expert_velocity_command_pre_hist,
-    ":",
-    label="expert velocity command",
-)
-axs[0].axhline(
-    pretrain_v_lower,
-    color="r",
-    linestyle="--",
-    label="velocity bounds",
-)
-axs[0].axhline(pretrain_v_upper, color="r", linestyle="--")
-axs[0].set_ylabel("velocity (m/s)")
-axs[0].legend()
-axs[1].plot(tt_pre, x_pre_hist[:, 2], label="distance")
-axs[1].plot(
-    tt_pre,
-    gap_reference_pre_hist,
-    ":",
-    label="expert gap reference",
-)
-axs[1].axhline(
-    pretrain_z_lower,
-    color="r",
-    linestyle="--",
-    label="distance bounds",
-)
-axs[1].axhline(pretrain_z_upper, color="r", linestyle="--")
-axs[1].set_ylabel("z (m)")
-axs[1].legend()
-axs[2].plot(tt_pre, u_pre_hist, label="expert input")
-axs[2].axhline(u_max, color="k", linestyle="--")
-axs[2].axhline(u_min, color="k", linestyle="--")
-axs[2].set_ylabel("force (N)")
-axs[2].set_xlabel("time (s)")
-axs[2].legend()
-for ax in axs:
-    ax.grid(True)
-fig.suptitle("ACC pretraining with expert control")
-
-fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 10))
 axs[0].plot(tt, x_hist[:, 1], label="ego velocity")
 axs[0].plot(
     tt,
@@ -965,32 +995,11 @@ for ax in axs:
     ax.grid(True)
 fig.suptitle("CRaCBF scaling and parameter projection")
 
-# Compare Y_Theta(x) a_k with the true uncertainty during pretraining.
+# Compare Y_Theta(x) a_k with the true uncertainty in the main CRaCBF loop.
 uncertainty_components = (
     (1, r"$w_2=d/m$"),
     (2, r"$w_3=\Delta v_l$"),
 )
-fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
-for ax, (component, component_label) in zip(axs, uncertainty_components):
-    ax.plot(
-        tt_pre,
-        true_uncertainty_pre_hist[:, component],
-        label="true uncertainty",
-        linewidth=2.0,
-    )
-    ax.plot(
-        tt_pre,
-        fitted_uncertainty_pre_hist[:, component],
-        "--",
-        label=r"$Y_\Theta(x)a_k$",
-    )
-    ax.set_ylabel(component_label)
-    ax.grid(True)
-    ax.legend()
-axs[-1].set_xlabel("time (s)")
-fig.suptitle(r"Pretraining: $Y_\Theta(x)a_k$ versus true uncertainty")
-
-# Compare Y_Theta(x) a_k with the true uncertainty in the main CRaCBF loop.
 fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
 for ax, (component, component_label) in zip(axs, uncertainty_components):
     ax.plot(
