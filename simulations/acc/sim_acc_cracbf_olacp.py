@@ -17,8 +17,8 @@ from olacp import OLACP
 from systems.acc.acc import ACC
 
 
-USE_CP = False #True
-USE_ADAPTIVE = False #True
+USE_CP = True
+USE_ADAPTIVE = True
 
 # Algorithm 1 setup. Pretraining only supplies the initial calibration
 # window; the same OLACP object then continues through the main simulation.
@@ -54,12 +54,13 @@ beta_2 = -0.75
 beta_3 = 0.2
 beta_4 = 0.02
 desired_velocity = 28.0
-nominal_lead_velocity = 23.0
+nominal_lead_velocity = 25.0
 lead_velocity_scale = 10.0
 
 # A fixed, physically scaled starting representation. At the reference state,
-# its three columns evaluate to approximately [5, 5, 5] m/s^2. The fitted
-# coordinates can therefore remain small while representing the ACC drag.
+# its three columns evaluate to [20, 20, 20] m/s^2. This scaling lets the
+# longitudinal fitted coordinates use tight bounds without reducing the
+# physical uncertainty range represented by Y_Theta(x) a.
 v_reference = desired_velocity
 z_reference = 35.0
 psi_reference = np.kron(
@@ -67,20 +68,18 @@ psi_reference = np.kron(
     np.array([1.0, z_reference, z_reference**2]),
 )
 Theta_init = np.zeros(ACC.theta_shape)
-Theta_init[0, 0] = 5.0
-Theta_init[3, 1] = 5.0 / v_reference
-Theta_init[6, 2] = 5.0 / v_reference**2
-
-theta_margin = 1.0 / psi_reference
+Theta_init[0, 0] = 20.0
+Theta_init[3, 1] = 20.0 / v_reference
+Theta_init[6, 2] = 20.0 / v_reference**2
+theta_margin = 0.05 / psi_reference
 Theta_lb = Theta_init - theta_margin[:, None]
 Theta_ub = Theta_init + theta_margin[:, None]
-theta_rng = np.random.default_rng(11)
-Theta_init = theta_rng.uniform(Theta_lb, Theta_ub)
 
 #############################################################
 Theta_scale = 1 / psi_reference
-Theta_lb = -5.0 * Theta_scale[:, None] * np.ones((1, 3))
-Theta_ub = 5.0 * Theta_scale[:, None] * np.ones((1, 3))
+Theta_lb = -20.0 * Theta_scale[:, None] * np.ones((1, 3))
+Theta_ub = 20.0 * Theta_scale[:, None] * np.ones((1, 3))
+theta_rng = np.random.default_rng(11)
 Theta_init = theta_rng.uniform(
     -Theta_scale[:, None],
     Theta_scale[:, None],
@@ -88,25 +87,23 @@ Theta_init = theta_rng.uniform(
 )
 #############################################################
 
-
-# a_4 represents Delta v_l / 10. The online Delta v_l range is +/-1 m/s,
-# hence |a_4| <= 0.1. Keeping every coordinate on a comparable scale also
-# prevents the spherical projection from producing unphysical latent values.
-a_lb = -0.2 * np.ones(ACC.adim)
-a_ub = 0.2 * np.ones(ACC.adim)
+# The first three coordinates multiply the scaled longitudinal columns.
+# The fourth coordinate is Delta v_l / 10 and must contain [-0.4, 0].
+a_lb = np.array([-0.05, -0.05, -0.05, -0.42])
+a_ub = np.array([0.05, 0.05, 0.05, 0.42])
 a_center = 0.5 * (a_lb + a_ub)
 
-projection_epsilon = 0.02
+projection_epsilon = 0.01
 a_hat_norm_max = (
     0.5 * np.linalg.norm(a_ub - a_lb, ord=2)
     + projection_epsilon
 )
-Gamma_cbf = 0.05 * np.eye(ACC.adim)
+Gamma_cbf = np.eye(ACC.adim)
 Gamma_cbf_inv = np.linalg.inv(Gamma_cbf)
 
 # Pretraining uses the same CRaCBF and extended dynamics as the main loop.
-# Its physical lead velocity is always above v_d; this phase is used only to
-# initialize the calibration window and the representation.
+# This phase is used only to initialize the calibration window and
+# representation; the requested traffic scenario begins in the main loop.
 pretrain_phase = 2.0 * np.pi * np.arange(K_pre) / K_pre
 pretrain_d0_schedule = (
     -120.0 + 80.0 * np.sin(pretrain_phase + 0.2)
@@ -115,7 +112,7 @@ pretrain_wind_velocity_schedule = (
     2.0 + 3.0 * np.sin(0.7 * pretrain_phase - 0.1)
 )
 pretrain_delta_lead_velocity_schedule = (
-    0.5 * np.sin(0.9 * pretrain_phase)
+    -2.0 + 0.5 * np.sin(0.9 * pretrain_phase)
 )
 
 
@@ -170,12 +167,12 @@ params = {
     "true_uncertainty": pretrain_true_uncertainty,
     "m": mass,
     "vd": desired_velocity,
-    "Kp": 400.0,
+    "Kp": 2000.0,
     "nominal_lead_velocity": nominal_lead_velocity,
     "lead_velocity_scale": lead_velocity_scale,
-    "cbf_smoothing_epsilon": 0.2,
+    "cbf_smoothing_epsilon": 0.02,
     "z_min": 10.0,
-    "T_h": 1.0,
+    "T_h": 0.3,
     "use_adaptive": USE_ADAPTIVE,
     "use_cp": USE_CP,
     "Gamma_cbf": Gamma_cbf,
@@ -183,8 +180,8 @@ params = {
     "a_lb": a_lb,
     "a_hat_norm_max": a_hat_norm_max,
     "epsilon": projection_epsilon,
-    "eta_cbf": 0.1,
-    "cbf_rate": 0.5,
+    "eta_cbf": 0.005,
+    "cbf_rate": 2.5,
     "u_max": u_max,
     "u_min": u_min,
     "dt": dt,
@@ -355,14 +352,16 @@ if len(olacp.S_cal) != N_cal:
 # -------------------------------------------------------------------------
 environment_phase = 2.0 * np.pi * np.arange(K) / K
 d0_schedule = (
-    -150.0 + 500.0 * np.sin(environment_phase + 0.15)
+    -100.0 + 30.0 * np.sin(environment_phase + 0.15)
 )
 wind_velocity_schedule = (
-    2.0 + 4.0 * np.sin(0.7 * environment_phase - 0.2)
+    2.0 + np.sin(0.7 * environment_phase - 0.2)
 )
-delta_lead_velocity_schedule = (
-    -2.0 * np.sin(0.5 * environment_phase)
-)
+delta_lead_velocity_schedule = np.linspace(0.0, -4.0, K)
+if np.any(np.diff(delta_lead_velocity_schedule) > 0.0):
+    raise ValueError(
+        "The main lead vehicle must continue slowing down"
+    )
 if np.any(
     delta_lead_velocity_schedule / lead_velocity_scale
     < a_lb[3]
@@ -396,7 +395,7 @@ system.true_uncertainty_fcn = true_uncertainty
 system.set_representation(olacp.Theta)
 system.cp_quantile = olacp.compute_quantile()
 
-x = np.array([0.0, 26.0, 60.0])
+x = np.array([0.0, 26.0, 40.0])
 a_hat_cbf = a_center.copy()
 rho_cbf = 0.0
 x_ext = np.hstack((x, a_hat_cbf, rho_cbf))
@@ -635,6 +634,60 @@ if not np.allclose(system.Theta_hat, olacp.Theta):
     raise RuntimeError(
         "The learned representation was not installed in the ACC system"
     )
+if np.min(tightened_cbf_margin_hist) < -1e-6:
+    raise RuntimeError("The tightened CRaCBF set was violated")
+
+# Verify the requested traffic scenario, in addition to basic safety.
+controller_activation_threshold = 1e-3
+cracbf_active_hist = (
+    np.clip(u_ref_hist, u_min, u_max) - u_hist
+) > controller_activation_threshold
+cracbf_active_indices = np.flatnonzero(cracbf_active_hist)
+if cracbf_active_indices.size == 0:
+    raise RuntimeError("The CRaCBF never modifies the nominal input")
+cracbf_activation_index = int(cracbf_active_indices[0])
+cracbf_activation_time = tt[cracbf_activation_index]
+
+ego_peak_index = int(np.argmax(x_hist[:, 1]))
+minimum_gap_index = int(np.argmin(x_hist[:, 2]))
+minimum_gap_margin = (
+    x_hist[minimum_gap_index, 2] - system.z_min
+)
+if np.any(np.diff(lead_velocity_hist) > 1e-10):
+    raise RuntimeError("The lead vehicle did not keep slowing down")
+if x_hist[ego_peak_index, 1] <= x_hist[0, 1] + 1.0:
+    raise RuntimeError(
+        "The ego vehicle did not initially accelerate toward v_d"
+    )
+if abs(tt[ego_peak_index] - cracbf_activation_time) > 0.25:
+    raise RuntimeError(
+        "CRaCBF intervention did not cause the ego-velocity peak"
+    )
+if x_hist[-1, 1] >= x_hist[ego_peak_index, 1] - 1.0:
+    raise RuntimeError(
+        "The ego vehicle did not slow after CRaCBF intervention"
+    )
+if minimum_gap_index <= cracbf_activation_index:
+    raise RuntimeError(
+        "The closest approach did not occur after CRaCBF intervention"
+    )
+if minimum_gap_margin > 0.75:
+    raise RuntimeError(
+        "The closest approach is not sufficiently close to z_min"
+    )
+
+print(
+    "scenario: lead velocity "
+    f"{lead_velocity_hist[0]:.3f} -> "
+    f"{lead_velocity_hist[-1]:.3f} m/s, "
+    f"CRaCBF active at t={cracbf_activation_time:.3f} s, "
+    f"ego peak={x_hist[ego_peak_index, 1]:.3f} m/s, "
+    f"minimum z={x_hist[minimum_gap_index, 2]:.3f} m"
+)
+
+true_a4_hist = (
+    lead_velocity_hist - nominal_lead_velocity
+) / lead_velocity_scale
 
 # -------------------------------------------------------------------------
 # Diagnostics.
@@ -681,6 +734,29 @@ axs[2].axhline(u_min, color="k", linestyle="--")
 axs[2].set_ylabel("force (N)")
 axs[2].set_xlabel("time (s)")
 axs[2].legend()
+for ax in axs[1:]:
+    ax.axvline(
+        cracbf_activation_time,
+        color="tab:purple",
+        linestyle="-.",
+        linewidth=1.0,
+    )
+axs[0].axvline(
+    cracbf_activation_time,
+    color="tab:purple",
+    linestyle="-.",
+    linewidth=1.0,
+    label="first CRaCBF intervention",
+)
+axs[1].plot(
+    tt[minimum_gap_index],
+    x_hist[minimum_gap_index, 2],
+    "o",
+    color="tab:red",
+    label="closest approach",
+)
+for ax in axs:
+    ax.legend()
 for ax in axs:
     ax.grid(True)
 fig.suptitle("ACC with CRaCBF control")
@@ -775,6 +851,15 @@ for i in range(system.adim):
         "--",
         label=r"OLACP interval fit $a_k$",
     )
+    if i == 3:
+        axs[i].step(
+            tt,
+            true_a4_hist,
+            where="post",
+            linestyle=":",
+            linewidth=2.0,
+            label=r"true $\Delta v_l/10$",
+        )
     axs[i].set_ylabel(f"a{i + 1}")
     axs[i].grid(True)
 axs[0].legend()
