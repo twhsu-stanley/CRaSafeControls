@@ -54,7 +54,7 @@ beta_2 = -0.75
 beta_3 = 0.2
 beta_4 = 0.02
 desired_velocity = 26.0
-nominal_lead_velocity = 25.0
+nominal_lead_velocity = 23.0
 lead_velocity_scale = 10.0
 
 # A fixed, physically scaled starting representation. At the reference state,
@@ -71,17 +71,29 @@ Theta_init[0, 0] = 5.0
 Theta_init[3, 1] = 5.0 / v_reference
 Theta_init[6, 2] = 5.0 / v_reference**2
 
-# Keep representation updates close to the supplied Y_Theta. At the reference
-# state, the total permitted perturbation of one column is at most 0.18.
-theta_margin = 0.02 / psi_reference
+theta_margin = 1.0 / psi_reference
 Theta_lb = Theta_init - theta_margin[:, None]
 Theta_ub = Theta_init + theta_margin[:, None]
+theta_rng = np.random.default_rng(11)
+Theta_init = theta_rng.uniform(Theta_lb, Theta_ub)
+
+#############################################################
+Theta_scale = 1 / psi_reference
+Theta_lb = -5.0 * Theta_scale[:, None] * np.ones((1, 3))
+Theta_ub = 5.0 * Theta_scale[:, None] * np.ones((1, 3))
+Theta_init = theta_rng.uniform(
+    -Theta_scale[:, None],
+    Theta_scale[:, None],
+    size=ACC.theta_shape,
+)
+#############################################################
+
 
 # a_4 represents Delta v_l / 10. The online Delta v_l range is +/-1 m/s,
 # hence |a_4| <= 0.1. Keeping every coordinate on a comparable scale also
 # prevents the spherical projection from producing unphysical latent values.
-a_lb = -0.12 * np.ones(ACC.adim)
-a_ub = 0.12 * np.ones(ACC.adim)
+a_lb = -0.2 * np.ones(ACC.adim)
+a_ub = 0.2 * np.ones(ACC.adim)
 a_center = 0.5 * (a_lb + a_ub)
 
 projection_epsilon = 0.02
@@ -103,15 +115,8 @@ pretrain_wind_velocity_schedule = (
     2.0 + 3.0 * np.sin(0.7 * pretrain_phase - 0.1)
 )
 pretrain_delta_lead_velocity_schedule = (
-    1.1 + 0.05 * np.sin(0.9 * pretrain_phase)
+    0.5 * np.sin(0.9 * pretrain_phase)
 )
-if np.min(
-    nominal_lead_velocity
-    + pretrain_delta_lead_velocity_schedule
-) <= desired_velocity:
-    raise ValueError(
-        "The pretraining lead velocity must remain above v_d"
-    )
 
 
 def schedule_index(t, interval_count):
@@ -350,13 +355,13 @@ if len(olacp.S_cal) != N_cal:
 # -------------------------------------------------------------------------
 environment_phase = 2.0 * np.pi * np.arange(K) / K
 d0_schedule = (
-    -150.0 + 100.0 * np.sin(environment_phase + 0.15)
+    -150.0 + 500.0 * np.sin(environment_phase + 0.15)
 )
 wind_velocity_schedule = (
     2.0 + 4.0 * np.sin(0.7 * environment_phase - 0.2)
 )
 delta_lead_velocity_schedule = (
-    -1.0 * np.sin(environment_phase)
+    -2.0 * np.sin(0.5 * environment_phase)
 )
 if np.any(
     delta_lead_velocity_schedule / lead_velocity_scale
@@ -754,6 +759,48 @@ axs[2].set_xlabel("time (s)")
 for ax in axs:
     ax.grid(True)
 fig.suptitle("Algorithm 1 and adaptive conformal prediction")
+
+# Plot the CRaCBF safety state and the Algorithm 1 interval fit. Only the
+# fourth physical latent coordinate is known in this simulation.
+fig, axs = plt.subplots(system.adim, 1, sharex=True, figsize=(8, 12))
+for i in range(system.adim):
+    axs[i].plot(
+        tt,
+        a_hat_cbf_hist[:, i],
+        label=r"CRaCBF safety state $\hat a$",
+    )
+    axs[i].plot(
+        tt,
+        a_k_hist[:, i],
+        "--",
+        label=r"OLACP interval fit $a_k$",
+    )
+    axs[i].set_ylabel(f"a{i + 1}")
+    axs[i].grid(True)
+axs[0].legend()
+axs[3].legend()
+axs[-1].set_xlabel("Time (s)")
+for ax in axs:
+    ax.grid(True)
+    for interval_index in range(1, K):
+        ax.axvline(
+            interval_index * interval_duration,
+            color="0.7",
+            linestyle=":",
+            linewidth=1.0,
+        )
+fig.suptitle("CRaCBF safety adaptation versus interval identification")
+
+# Plot the CRaCBF scaling and spherical-projection variables.
+fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 10))
+axs[0].plot(tt, nu_cbf_hist)
+axs[0].set_ylabel("nu(rho)")
+axs[1].plot(tt, rho_cbf_hist)
+axs[1].set_ylabel("rho")
+axs[1].set_xlabel("Time (s)")
+for ax in axs:
+    ax.grid(True)
+fig.suptitle("CRaCBF scaling and parameter projection")
 
 fig, axs = plt.subplots(
     2,
