@@ -101,19 +101,13 @@ a_hat_norm_max = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + projection_epsilon
 Gamma_cbf = np.eye(ACC.adim)
 Gamma_cbf_inv = np.linalg.inv(Gamma_cbf)
 
-# Pretraining uses the same CRaCBF and extended dynamics as the main loop.
-# This phase is used only to initialize the calibration window and
-# representation; the requested traffic scenario begins in the main loop.
+# Pretraining uses an expert controller and the same extended dynamics as the
+# main loop. It initializes the calibration window and representation; the
+# requested CRaCBF traffic scenario begins in the main loop.
 pretrain_phase = 2.0 * np.pi * np.arange(K_pre) / K_pre
-pretrain_d0_schedule = (
-    -120.0 + 80.0 * np.sin(pretrain_phase + 0.2)
-)
-pretrain_wind_velocity_schedule = (
-    2.0 + 3.0 * np.sin(0.7 * pretrain_phase - 0.1)
-)
-pretrain_delta_lead_velocity_schedule = (
-    -2.0 + 0.5 * np.sin(0.9 * pretrain_phase)
-)
+pretrain_d0_schedule = -120.0 + 80.0 * np.sin(pretrain_phase + 0.2)
+pretrain_wind_velocity_schedule = 2.0 + 3.0 * np.sin(0.7 * pretrain_phase - 0.1)
+pretrain_delta_lead_velocity_schedule = -2.0 + 0.5 * np.sin(0.9 * pretrain_phase)
 
 
 def schedule_index(t, interval_count):
@@ -158,6 +152,48 @@ def pretrain_true_uncertainty(x, t):
 
 u_min = -0.5 * mass * gravity
 u_max = 0.5 * mass * gravity
+
+# Expert-controller references for pretraining. The controller uses only the
+# measured velocity and gap, a clock, and these fixed design constants. It has
+# no access to the simulated drag or the lead-velocity schedule.
+pretrain_z_lower = 10.0
+pretrain_z_upper = 50.0
+pretrain_v_lower = 10.0
+pretrain_v_upper = 30.0
+pretrain_gap_reference_center = 37.0
+pretrain_gap_reference_amplitude = 11.0
+pretrain_gap_reference_period = 20.0
+pretrain_gap_gain = 0.5
+pretrain_velocity_gain = 1.6
+
+
+def expert_pretrain_control(x, t):
+    """Return an expert input and its two references."""
+    x = np.asarray(x, dtype=float).reshape(ACC.xdim)
+    phase = (float(t) / pretrain_gap_reference_period + 0.25) % 1.0
+    triangular_wave = 1.0 - 4.0 * abs(phase - 0.5)
+    gap_reference = (
+        pretrain_gap_reference_center
+        + pretrain_gap_reference_amplitude * triangular_wave
+    )
+
+    # The desired ego velocity provides excitation. Gap feedback slows the
+    # ego vehicle when it gets too close and accelerates it when it falls too
+    # far behind, without measuring or estimating the lead velocity.
+    velocity_command = (
+        desired_velocity
+        + pretrain_gap_gain * (x[2] - gap_reference)
+    )
+    velocity_command = np.clip(velocity_command, pretrain_v_lower + 1.0, pretrain_v_upper - 1.0)
+
+    # Plain proportional velocity tracking: deliberately no drag
+    # cancellation or use of any environment schedule.
+    input_command = mass * pretrain_velocity_gain * (velocity_command - x[1])
+    input_command = np.clip(input_command, u_min, u_max)
+
+    return input_command, velocity_command, gap_reference
+
+
 params = {
     "Theta_init": Theta_init.copy(),
     "true_uncertainty": pretrain_true_uncertainty,
@@ -218,6 +254,10 @@ a_hat_pre = a_center.copy()
 rho_pre = 0.0
 x_pre_ext = np.hstack((x_pre, a_hat_pre, rho_pre))
 x_pre_hist = np.zeros((len(tt_pre), system.xdim))
+u_pre_hist = np.zeros(len(tt_pre))
+expert_velocity_command_pre_hist = np.zeros(len(tt_pre))
+gap_reference_pre_hist = np.zeros(len(tt_pre))
+lead_velocity_pre_hist = np.zeros(len(tt_pre))
 a_pre_hist = np.full((len(tt_pre), system.adim), np.nan)
 Theta_pre_hist = np.zeros((K_pre + 1,) + Theta_init.shape)
 Theta_pre_hist[0] = olacp.Theta
@@ -230,33 +270,20 @@ for i_pre, t_pre in enumerate(tt_pre):
     pretrain_interval_index = i_pre // I_length
     x_pre_hist[i_pre] = x_pre
 
-    excitation = (
-        250.0 * np.sin(2.0 * np.pi * 0.31 * t_pre)
-        + 100.0 * np.sin(2.0 * np.pi * 0.73 * t_pre)
-    )
-    u_ref_pre = np.array(
-        [
-            np.clip(
-                system.ctrl_nominal(x_pre).item() + excitation,
-                u_min,
-                u_max,
-            )
+    (
+        u_pre,
+        expert_velocity_command_pre_hist[i_pre],
+        gap_reference_pre_hist[i_pre],
+    ) = expert_pretrain_control(x_pre, t_pre)
+    u_pre_hist[i_pre] = u_pre
+    # Truth is recorded only for diagnostics after the expert has selected
+    # its input; the lead-velocity schedule is not available to the expert.
+    lead_velocity_pre_hist[i_pre] = (
+        nominal_lead_velocity
+        + pretrain_delta_lead_velocity_schedule[
+            pretrain_interval_index
         ]
     )
-    try:
-        u_pre = system.ctrl_cracbf(
-            x_pre,
-            a_hat_pre,
-            u_ref_pre,
-            rho_pre,
-        )
-    except ValueError as error:
-        raise RuntimeError(
-            "Pretraining CRaCBF QP failed at "
-            f"t={t_pre:.3f}, x={x_pre}, "
-            f"a_hat={a_hat_pre}, rho={rho_pre:.3e}"
-        ) from error
-    u_pre = float(u_pre.item())
     olacp.add_data_to_buffers(
         x_pre,
         system.dynamics_nominal(x_pre, u_pre),
@@ -323,6 +350,39 @@ if len(olacp.S_cal) != N_cal:
     raise RuntimeError(
         "Pretraining did not fill the calibration window"
     )
+if (
+    np.min(x_pre_hist[:, 1]) < pretrain_v_lower - 1e-6
+    or np.max(x_pre_hist[:, 1]) > pretrain_v_upper + 1e-6
+):
+    raise RuntimeError(
+        "The expert pretraining velocity left [10, 30] m/s"
+    )
+if (
+    np.min(x_pre_hist[:, 2]) < pretrain_z_lower - 1e-6
+    or np.max(x_pre_hist[:, 2]) > pretrain_z_upper + 1e-6
+):
+    raise RuntimeError(
+        "The expert pretraining distance left [10, 50] m"
+    )
+if np.ptp(x_pre_hist[:, 1]) < 1.0 or np.ptp(x_pre_hist[:, 2]) < 5.0:
+    raise RuntimeError(
+        "The expert pretraining trajectory does not vary enough"
+    )
+if np.any(~np.isfinite(u_pre_hist)):
+    raise RuntimeError("The expert pretraining input became non-finite")
+if (
+    np.min(u_pre_hist) < u_min - 1e-6
+    or np.max(u_pre_hist) > u_max + 1e-6
+):
+    raise RuntimeError("The expert pretraining input bounds were violated")
+
+print(
+    "expert pretraining: "
+    f"v=[{np.min(x_pre_hist[:, 1]):.3f}, "
+    f"{np.max(x_pre_hist[:, 1]):.3f}] m/s, "
+    f"z=[{np.min(x_pre_hist[:, 2]):.3f}, "
+    f"{np.max(x_pre_hist[:, 2]):.3f}] m"
+)
 
 # -------------------------------------------------------------------------
 # Main CRaCBF and Algorithm 1 simulation.
@@ -598,6 +658,55 @@ for uncertainty_history in (
 # -------------------------------------------------------------------------
 # Diagnostics.
 # -------------------------------------------------------------------------
+fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 10))
+axs[0].plot(tt_pre, x_pre_hist[:, 1], label="ego velocity")
+axs[0].plot(
+    tt_pre,
+    lead_velocity_pre_hist,
+    "--",
+    label="lead velocity",
+)
+axs[0].plot(
+    tt_pre,
+    expert_velocity_command_pre_hist,
+    ":",
+    label="expert velocity command",
+)
+axs[0].axhline(
+    pretrain_v_lower,
+    color="r",
+    linestyle="--",
+    label="velocity bounds",
+)
+axs[0].axhline(pretrain_v_upper, color="r", linestyle="--")
+axs[0].set_ylabel("velocity (m/s)")
+axs[0].legend()
+axs[1].plot(tt_pre, x_pre_hist[:, 2], label="distance")
+axs[1].plot(
+    tt_pre,
+    gap_reference_pre_hist,
+    ":",
+    label="expert gap reference",
+)
+axs[1].axhline(
+    pretrain_z_lower,
+    color="r",
+    linestyle="--",
+    label="distance bounds",
+)
+axs[1].axhline(pretrain_z_upper, color="r", linestyle="--")
+axs[1].set_ylabel("z (m)")
+axs[1].legend()
+axs[2].plot(tt_pre, u_pre_hist, label="expert input")
+axs[2].axhline(u_max, color="k", linestyle="--")
+axs[2].axhline(u_min, color="k", linestyle="--")
+axs[2].set_ylabel("force (N)")
+axs[2].set_xlabel("time (s)")
+axs[2].legend()
+for ax in axs:
+    ax.grid(True)
+fig.suptitle("ACC pretraining with expert control")
+
 fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 10))
 axs[0].plot(tt, x_hist[:, 1], label="ego velocity")
 axs[0].plot(
