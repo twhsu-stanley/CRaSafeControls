@@ -13,9 +13,10 @@ class ACC(ControlAffineSystem):
 
     where Psi(x) = [1, v, v^2] kron [1, z, z^2] and Theta has
     shape (9, 3). The fourth interval parameter is the lead-vehicle
-    velocity divided by lead_velocity_scale and is used by the
-    parameter-dependent CRaCBF. The physical uncertainty is supplied
-    independently so representation updates never alter the simulated plant.
+    velocity deviation Delta v_l divided by lead_velocity_scale and is
+    used by the parameter-dependent CRaCBF. The physical uncertainty is
+    supplied independently so representation updates never alter the
+    simulated plant.
     """
 
     theta_shape = (9, 3)
@@ -23,8 +24,8 @@ class ACC(ControlAffineSystem):
     udim = 1
     adim = 4
     nominal_lead_velocity = 25.0
-    lead_velocity_scale = 1.0
-    cbf_smoothing_epsilon = 1.0
+    lead_velocity_scale = 10.0
+    cbf_smoothing_epsilon = 0.1
 
     def __init__(self, params=None):
         if params is None:
@@ -47,12 +48,54 @@ class ACC(ControlAffineSystem):
         self.mass = float(params.get("m", 2000.0))
         self.desired_velocity = float(params.get("vd", 20.0))
         self.nominal_gain = float(params.get("Kp", 200.0))
+        self.nominal_lead_velocity = float(
+            params.get(
+                "nominal_lead_velocity",
+                self.nominal_lead_velocity,
+            )
+        )
+        self.lead_velocity_scale = float(
+            params.get(
+                "lead_velocity_scale",
+                self.lead_velocity_scale,
+            )
+        )
+        self.cbf_smoothing_epsilon = float(
+            params.get(
+                "cbf_smoothing_epsilon",
+                self.cbf_smoothing_epsilon,
+            )
+        )
         self.z_min = float(params.get("z_min", 5.0))
         self.lookahead_time = float(params.get("T_h", params.get("T", 1.0)))
         if not np.isfinite(self.mass) or self.mass <= 0.0:
             raise ValueError("m must be finite and strictly positive")
+        if not np.isfinite(self.desired_velocity):
+            raise ValueError("vd must be finite")
+        if not np.isfinite(self.nominal_gain) or self.nominal_gain < 0.0:
+            raise ValueError("Kp must be finite and nonnegative")
+        if not np.isfinite(self.nominal_lead_velocity):
+            raise ValueError(
+                "nominal_lead_velocity must be finite"
+            )
+        if (
+            not np.isfinite(self.lead_velocity_scale)
+            or self.lead_velocity_scale <= 0.0
+        ):
+            raise ValueError(
+                "lead_velocity_scale must be finite and strictly positive"
+            )
+        if (
+            not np.isfinite(self.cbf_smoothing_epsilon)
+            or self.cbf_smoothing_epsilon <= 0.0
+        ):
+            raise ValueError(
+                "cbf_smoothing_epsilon must be finite and strictly positive"
+            )
         if not np.isfinite(self.lookahead_time) or self.lookahead_time <= 0.0:
             raise ValueError("T_h must be finite and strictly positive")
+        if not np.isfinite(self.z_min):
+            raise ValueError("z_min must be finite")
         
         self.true_uncertainty_fcn = params.get("true_uncertainty")
         if self.true_uncertainty_fcn is None:
@@ -63,7 +106,7 @@ class ACC(ControlAffineSystem):
         super().__init__(params)
 
     def f(self, x):
-        """Return the nominal drift [v, 0, -v]"""
+        """Return the nominal drift [v, 0, nominal_lead_velocity - v]."""
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         v = x[1]
         return np.array([v, 0.0, self.nominal_lead_velocity - v])
@@ -160,7 +203,10 @@ class ACC(ControlAffineSystem):
         relative_velocity = (
             x[1] - self.nominal_lead_velocity - self.lead_velocity_scale * a_hat[3]
         )
-        phi_prime = self.smooth_max_derivative(relative_velocity, self.cbf_smoothing_epsilon)
+        phi_prime = self.smooth_max_derivative(
+            relative_velocity,
+            self.cbf_smoothing_epsilon,
+        )
         return np.array(
             [[0.0], [-self.lookahead_time * phi_prime], [1.0]]
         )
@@ -171,7 +217,10 @@ class ACC(ControlAffineSystem):
         relative_velocity = (
             x[1] - self.nominal_lead_velocity - self.lead_velocity_scale * a_hat[3]
         )
-        phi_prime = self.smooth_max_derivative(relative_velocity, self.cbf_smoothing_epsilon)
+        phi_prime = self.smooth_max_derivative(
+            relative_velocity,
+            self.cbf_smoothing_epsilon,
+        )
         gradient = np.zeros((self.adim, 1))
         gradient[3, 0] = (
             self.lead_velocity_scale * self.lookahead_time * phi_prime
