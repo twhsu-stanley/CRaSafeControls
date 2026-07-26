@@ -17,8 +17,8 @@ from olacp import OLACP
 from systems.acc.acc import ACC
 
 
-USE_CP = True
-USE_ADAPTIVE = True
+USE_CP = False
+USE_ADAPTIVE = False
 
 # Algorithm 1 setup. Pretraining only supplies the initial calibration
 # window; the same OLACP object then continues through the main simulation.
@@ -69,14 +69,13 @@ psi_reference = np.kron(
 )
 
 ###############################################################
-Theta_init = np.zeros(ACC.theta_shape)
-Theta_init[0, 0] = 20.0
-Theta_init[3, 1] = 20.0 / v_reference
-Theta_init[6, 2] = 20.0 / v_reference**2
-theta_margin = 0.05 / psi_reference
-Theta_lb = Theta_init - theta_margin[:, None]
-Theta_ub = Theta_init + theta_margin[:, None]
-
+#Theta_init = np.zeros(ACC.theta_shape)
+#Theta_init[0, 0] = 20.0
+#Theta_init[3, 1] = 20.0 / v_reference
+#Theta_init[6, 2] = 20.0 / v_reference**2
+#theta_margin = 0.05 / psi_reference
+#Theta_lb = Theta_init - theta_margin[:, None]
+#Theta_ub = Theta_init + theta_margin[:, None]
 #############################################################
 Theta_scale = 1 / psi_reference
 Theta_lb = -20.0 * Theta_scale[:, None] * np.ones((1, 3))
@@ -102,8 +101,7 @@ Gamma_cbf = np.eye(ACC.adim)
 Gamma_cbf_inv = np.linalg.inv(Gamma_cbf)
 
 # Pretraining uses an expert controller and the same extended dynamics as the
-# main loop. It initializes the calibration window and representation; the
-# requested CRaCBF traffic scenario begins in the main loop.
+# main loop. It initializes the calibration window and representation.
 pretrain_phase = 2.0 * np.pi * np.arange(K_pre) / K_pre
 pretrain_d0_schedule = -120.0 + 80.0 * np.sin(pretrain_phase + 0.2)
 pretrain_wind_velocity_schedule = 2.0 + 3.0 * np.sin(0.7 * pretrain_phase - 0.1)
@@ -153,7 +151,7 @@ def pretrain_true_uncertainty(x, t):
 u_min = -0.5 * mass * gravity
 u_max = 0.5 * mass * gravity
 
-# Expert-controller references for pretraining. The controller uses only the
+# Expert controller for pretraining. The controller uses only the
 # measured velocity and gap, a clock, and these fixed design constants. It has
 # no access to the simulated drag or the lead-velocity schedule.
 pretrain_z_lower = 10.0
@@ -430,8 +428,8 @@ rho_cbf = 0.0
 x_ext = np.hstack((x, a_hat_cbf, rho_cbf))
 
 x_hist = np.zeros((len(tt), system.xdim))
-u_hist = np.zeros(len(tt))
-u_ref_hist = np.zeros(len(tt))
+u_hist = np.full(len(tt), np.nan)
+u_ref_hist = np.full(len(tt), np.nan)
 h_hist = np.zeros(len(tt))
 physical_safety_hist = np.zeros(len(tt))
 tightened_cbf_margin_hist = np.zeros(len(tt))
@@ -457,9 +455,12 @@ interval_times = []
 s_k_hist = []
 delta_k_hist = []
 e_k_hist = []
+safety_violation_index = None
+last_simulation_index = -1
 
 for i, t in enumerate(tt):
     interval_index = i // I_length
+    last_simulation_index = i
 
     x_hist[i] = x
     a_hat_cbf_hist[i] = a_hat_cbf
@@ -472,8 +473,23 @@ for i, t in enumerate(tt):
     physical_safety_hist[i] = x[2] - system.z_min
     tightened_cbf_margin_hist[i] = h_hist[i] - 0.5 / nu_cbf_hist[i] * system.safe_set_tightening
     
-    if i == 0 and h_hist[i] < 0.0:
-        raise ValueError("Initial state is outside the certificate set")
+    # A negative CBF value is a terminal safety event. Preserve this state in
+    # the histories, but do not ask the now-infeasible QP for another input.
+    if h_hist[i] < 0.0:
+        safety_violation_index = i
+        estimated_lead_velocity = (
+            nominal_lead_velocity
+            + lead_velocity_scale * a_hat_cbf[3]
+        )
+        print(
+            "SAFETY VIOLATION: "
+            f"h={h_hist[i]:.3e} at t={t:.3f} s; "
+            f"actual v_l={lead_velocity_hist[i]:.3f} m/s, "
+            f"CBF estimate={estimated_lead_velocity:.3f} m/s; "
+            "terminating the main CRaCBF loop"
+        )
+        break
+
     if (
         i % I_length == 0
         and USE_ADAPTIVE
@@ -592,57 +608,255 @@ for i, t in enumerate(tt):
             f"miscoverage={e_k}"
         )
 
+# If termination occurs partway through an Algorithm 1 interval, use the
+# most recently available a_k to finish the diagnostic histories. Algorithm 1
+# itself is not updated on this incomplete interval.
+if safety_violation_index is not None:
+    partial_interval_start = (
+        safety_violation_index // I_length
+    ) * I_length
+    buffered_sample_count = (
+        safety_violation_index - partial_interval_start
+    )
+    partial_buffer_lengths = (
+        len(olacp._x_buffer),
+        len(olacp._xdot_buffer),
+        len(olacp._xdot_nom_buffer),
+        len(olacp._Y_buffer),
+    )
+    if any(
+        length != buffered_sample_count
+        for length in partial_buffer_lengths
+    ):
+        raise RuntimeError(
+            "The partial Algorithm 1 buffers do not match the "
+            "safety-termination time: "
+            f"expected {buffered_sample_count}, got "
+            f"{partial_buffer_lengths}"
+        )
+
+    partial_true_uncertainty = [
+        np.asarray(xdot_t, dtype=float)
+        - np.asarray(xdot_nom_t, dtype=float)
+        for xdot_t, xdot_nom_t in zip(
+            olacp._xdot_buffer,
+            olacp._xdot_nom_buffer,
+        )
+    ]
+    partial_Y = [
+        np.asarray(Y_t, dtype=float)
+        for Y_t in olacp._Y_buffer
+    ]
+    violation_time = tt[safety_violation_index]
+    violation_state = x_hist[safety_violation_index]
+    partial_true_uncertainty.append(
+        true_uncertainty(violation_state, violation_time)
+    )
+    partial_Y.append(system.Y(violation_state))
+
+    partial_true_uncertainty = np.asarray(
+        partial_true_uncertainty,
+        dtype=float,
+    )
+    partial_fitted_a = olacp.a_k.copy()
+    partial_fitted_uncertainty = np.asarray(
+        [Y_t @ partial_fitted_a for Y_t in partial_Y],
+        dtype=float,
+    )
+    partial_prediction_error = np.sum(
+        (
+            partial_fitted_uncertainty
+            - partial_true_uncertainty
+        )
+        ** 2,
+        axis=1,
+    )
+    partial_interval_stop = safety_violation_index + 1
+    partial_slice = slice(
+        partial_interval_start,
+        partial_interval_stop,
+    )
+    a_k_hist[partial_slice] = partial_fitted_a
+    true_uncertainty_hist[partial_slice] = (
+        partial_true_uncertainty
+    )
+    fitted_uncertainty_hist[partial_slice] = (
+        partial_fitted_uncertainty
+    )
+    prediction_error_hist[partial_slice] = (
+        partial_prediction_error
+    )
+
+    partial_z_b = np.empty(
+        partial_interval_stop - partial_interval_start
+    )
+    for local_index, history_index in enumerate(
+        range(partial_interval_start, partial_interval_stop)
+    ):
+        a_tilde = (
+            a_hat_cbf_hist[history_index] - partial_fitted_a
+        )
+        partial_z_b[local_index] = (
+            nu_cbf_hist[history_index] * h_hist[history_index]
+            - 0.5 * a_tilde @ Gamma_cbf_inv @ a_tilde
+        )
+    z_b_hist[partial_slice] = partial_z_b
+    partial_time = tt[partial_slice]
+    z_b_exponential_bound_hist[partial_slice] = (
+        partial_z_b[0]
+        * np.exp(
+            -system.cbf_rate
+            * (partial_time - partial_time[0])
+        )
+    )
+
+# All subsequent checks and plots use only the states actually simulated,
+# including the first state for which h < 0.
+main_sample_count = last_simulation_index + 1
+tt = tt[:main_sample_count]
+x_hist = x_hist[:main_sample_count]
+u_hist = u_hist[:main_sample_count]
+u_ref_hist = u_ref_hist[:main_sample_count]
+h_hist = h_hist[:main_sample_count]
+physical_safety_hist = physical_safety_hist[:main_sample_count]
+tightened_cbf_margin_hist = tightened_cbf_margin_hist[
+    :main_sample_count
+]
+z_b_hist = z_b_hist[:main_sample_count]
+z_b_exponential_bound_hist = z_b_exponential_bound_hist[
+    :main_sample_count
+]
+a_hat_cbf_hist = a_hat_cbf_hist[:main_sample_count]
+a_k_hist = a_k_hist[:main_sample_count]
+lead_velocity_hist = lead_velocity_hist[:main_sample_count]
+rho_cbf_hist = rho_cbf_hist[:main_sample_count]
+nu_cbf_hist = nu_cbf_hist[:main_sample_count]
+Q_k_hist = Q_k_hist[:main_sample_count]
+Theta_hist = Theta_hist[:main_sample_count]
+prediction_error_hist = prediction_error_hist[:main_sample_count]
+true_uncertainty_hist = true_uncertainty_hist[
+    :main_sample_count
+]
+fitted_uncertainty_hist = fitted_uncertainty_hist[
+    :main_sample_count
+]
+
 interval_times = np.asarray(interval_times)
 s_k_hist = np.asarray(s_k_hist)
 delta_k_hist = np.asarray(delta_k_hist)
 e_k_hist = np.asarray(e_k_hist)
 
-if np.min(physical_safety_hist) < -1e-6:
-    raise RuntimeError("The physical collision-avoidance set was violated")
-if np.min(h_hist) < -1e-6:
-    raise RuntimeError("The CRaCBF certificate set was violated")
-if np.any(~np.isfinite(u_hist)):
+safety_violated = safety_violation_index is not None
+if safety_violated:
+    if h_hist[-1] >= 0.0 or np.any(h_hist[:-1] < 0.0):
+        raise RuntimeError(
+            "The recorded safety-termination index is inconsistent"
+        )
+else:
+    if np.min(physical_safety_hist) < -1e-6:
+        raise RuntimeError(
+            "The physical collision-avoidance set was violated"
+        )
+    if np.min(h_hist) < -1e-6:
+        raise RuntimeError(
+            "The CRaCBF certificate set was violated"
+        )
+
+expected_control_mask = np.ones(len(tt), dtype=bool)
+if safety_violated:
+    expected_control_mask[-1] = False
+if not np.array_equal(np.isfinite(u_hist), expected_control_mask):
     raise RuntimeError("The CRaCBF input became non-finite")
-if np.min(u_hist) < u_min - 1e-6 or np.max(u_hist) > u_max + 1e-6:
+if not np.array_equal(
+    np.isfinite(u_ref_hist),
+    expected_control_mask,
+):
+    raise RuntimeError("The nominal input history became non-finite")
+issued_u_hist = u_hist[expected_control_mask]
+if (
+    issued_u_hist.size > 0
+    and (
+        np.min(issued_u_hist) < u_min - 1e-6
+        or np.max(issued_u_hist) > u_max + 1e-6
+    )
+):
     raise RuntimeError("The CRaCBF input bounds were violated")
 if np.max(np.linalg.norm(a_hat_cbf_hist - a_center, axis=1)) > a_hat_norm_max + 1e-6:
     raise RuntimeError("The CRaCBF parameter projection set was violated")
-if len(s_k_hist) != K:
+expected_completed_intervals = (
+    safety_violation_index // I_length
+    if safety_violated
+    else K
+)
+if len(s_k_hist) != expected_completed_intervals:
     raise RuntimeError("Algorithm 1 did not complete every online interval")
 if not np.allclose(system.Theta_hat, olacp.Theta):
     raise RuntimeError("The learned representation was not installed in the ACC system")
-if np.min(tightened_cbf_margin_hist) < -1e-6:
+if (
+    not safety_violated
+    and USE_ADAPTIVE
+    and np.min(tightened_cbf_margin_hist) < -1e-6
+):
     raise RuntimeError("The tightened CRaCBF set was violated")
 
 # Verify the requested traffic scenario, in addition to basic safety.
 controller_activation_threshold = 1e-3
 cracbf_active_hist = np.clip(u_ref_hist, u_min, u_max) - u_hist > controller_activation_threshold
 cracbf_active_indices = np.flatnonzero(cracbf_active_hist)
-if cracbf_active_indices.size == 0:
-    raise RuntimeError("The CRaCBF never modifies the nominal input")
-cracbf_activation_index = int(cracbf_active_indices[0])
-cracbf_activation_time = tt[cracbf_activation_index]
+if cracbf_active_indices.size > 0:
+    cracbf_activation_index = int(cracbf_active_indices[0])
+    cracbf_activation_time = tt[cracbf_activation_index]
+else:
+    cracbf_activation_index = None
+    cracbf_activation_time = None
 
 ego_peak_index = int(np.argmax(x_hist[:, 1]))
 minimum_gap_index = int(np.argmin(x_hist[:, 2]))
 minimum_gap_margin = x_hist[minimum_gap_index, 2] - system.z_min
 
-if np.any(np.diff(lead_velocity_hist) > 1e-10):
-    raise RuntimeError("The lead vehicle did not keep slowing down")
-if x_hist[ego_peak_index, 1] <= x_hist[0, 1] + 1.0:
-    raise RuntimeError("The ego vehicle did not initially accelerate toward v_d")
-if abs(tt[ego_peak_index] - cracbf_activation_time) > 0.25:
-    raise RuntimeError("CRaCBF intervention did not cause the ego-velocity peak")
-if x_hist[-1, 1] >= x_hist[ego_peak_index, 1] - 1.0:
-    raise RuntimeError("The ego vehicle did not slow after CRaCBF intervention")
+if not safety_violated:
+    if np.any(np.diff(lead_velocity_hist) > 1e-10):
+        raise RuntimeError(
+            "The lead vehicle did not keep slowing down"
+        )
+    if x_hist[ego_peak_index, 1] <= x_hist[0, 1] + 1.0:
+        raise RuntimeError(
+            "The ego vehicle did not initially accelerate toward v_d"
+        )
+    if cracbf_activation_time is None:
+        raise RuntimeError(
+            "The CRaCBF never modifies the nominal input"
+        )
+    if (
+        abs(tt[ego_peak_index] - cracbf_activation_time)
+        > 0.25
+    ):
+        raise RuntimeError(
+            "CRaCBF intervention did not cause the ego-velocity peak"
+        )
+    if x_hist[-1, 1] >= x_hist[ego_peak_index, 1] - 1.0:
+        raise RuntimeError(
+            "The ego vehicle did not slow after CRaCBF intervention"
+        )
 
+activation_summary = (
+    f"CRaCBF active at t={cracbf_activation_time:.3f} s"
+    if cracbf_activation_time is not None
+    else "CRaCBF never active"
+)
+safety_summary = (
+    f"terminated at h={h_hist[-1]:.3e}"
+    if safety_violated
+    else "safety maintained"
+)
 print(
     "scenario: lead velocity "
     f"{lead_velocity_hist[0]:.3f} -> "
     f"{lead_velocity_hist[-1]:.3f} m/s, "
-    f"CRaCBF active at t={cracbf_activation_time:.3f} s, "
+    f"{activation_summary}, "
     f"ego peak={x_hist[ego_peak_index, 1]:.3f} m/s, "
-    f"minimum z={x_hist[minimum_gap_index, 2]:.3f} m"
+    f"minimum z={x_hist[minimum_gap_index, 2]:.3f} m, "
+    f"{safety_summary}"
 )
 
 true_a4_hist = (lead_velocity_hist - nominal_lead_velocity) / lead_velocity_scale
@@ -658,6 +872,8 @@ for uncertainty_history in (
 # -------------------------------------------------------------------------
 # Diagnostics.
 # -------------------------------------------------------------------------
+main_time_limits = (float(tt[0]), float(tt[-1]))
+
 fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 10))
 axs[0].plot(tt_pre, x_pre_hist[:, 1], label="ego velocity")
 axs[0].plot(
@@ -739,21 +955,23 @@ axs[2].axhline(u_min, color="k", linestyle="--")
 axs[2].set_ylabel("force (N)")
 axs[2].set_xlabel("time (s)")
 axs[2].legend()
-for ax in axs[1:]:
-    ax.axvline(
+if cracbf_activation_time is not None:
+    for ax in axs[1:]:
+        ax.axvline(
+            cracbf_activation_time,
+            color="tab:purple",
+            linestyle="-.",
+            linewidth=1.0,
+        )
+    axs[0].axvline(
         cracbf_activation_time,
         color="tab:purple",
         linestyle="-.",
         linewidth=1.0,
+        label="first CRaCBF intervention",
     )
-axs[0].axvline(
-    cracbf_activation_time,
-    color="tab:purple",
-    linestyle="-.",
-    linewidth=1.0,
-    label="first CRaCBF intervention",
-)
 for ax in axs:
+    ax.set_xlim(*main_time_limits)
     ax.legend()
     ax.grid(True)
 fig.suptitle("ACC with CRaCBF control")
@@ -771,6 +989,7 @@ axs[2].plot(tt, z_b_exponential_bound_hist, "--", label="comparison bound")
 axs[2].set_ylabel("z_b")
 axs[2].set_xlabel("time (s)")
 for ax in axs:
+    ax.set_xlim(*main_time_limits)
     ax.grid(True)
     ax.legend()
 fig.suptitle("CRaCBF safety diagnostics")
@@ -804,6 +1023,7 @@ axs[2].step(
 axs[2].set_ylabel("miscoverage")
 axs[2].set_xlabel("time (s)")
 for ax in axs:
+    ax.set_xlim(*main_time_limits)
     ax.grid(True)
 fig.suptitle("Algorithm 1 and adaptive conformal prediction")
 
@@ -836,8 +1056,12 @@ axs[0].legend()
 axs[3].legend()
 axs[-1].set_xlabel("Time (s)")
 for ax in axs:
+    ax.set_xlim(*main_time_limits)
     ax.grid(True)
-    for interval_index in range(1, K):
+    for interval_index in range(
+        1,
+        int(np.floor(tt[-1] / interval_duration)) + 1,
+    ):
         ax.axvline(
             interval_index * interval_duration,
             color="0.7",
@@ -854,6 +1078,7 @@ axs[1].plot(tt, rho_cbf_hist)
 axs[1].set_ylabel("rho")
 axs[1].set_xlabel("Time (s)")
 for ax in axs:
+    ax.set_xlim(*main_time_limits)
     ax.grid(True)
 fig.suptitle("CRaCBF scaling and parameter projection")
 
@@ -898,6 +1123,7 @@ for ax, (component, component_label) in zip(axs, uncertainty_components):
         label=r"$Y_\Theta(x)a_k$",
     )
     ax.set_ylabel(component_label)
+    ax.set_xlim(*main_time_limits)
     ax.grid(True)
     ax.legend()
 axs[-1].set_xlabel("time (s)")
@@ -921,6 +1147,7 @@ for ax in axs:
     ax.grid(True)
     ax.legend()
 axs[1].set_xlabel("time (s)")
+axs[1].set_xlim(*main_time_limits)
 fig.suptitle("Uncertainty-model prediction loss")
 
 plt.show()
