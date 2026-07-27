@@ -300,7 +300,7 @@ def run_cracbf_simulation(
     initial_state = x.copy()
     a_hat = system.a_center.copy()
     rho = 0.0
-    extended_state = np.hstack((x, a_hat, rho))
+    x_ext = np.hstack((x, a_hat, rho))
     x_hist = np.zeros((len(t_full), system.xdim))
     u_hist = np.full(len(t_full), np.nan)
     u_ref_hist = np.full(len(t_full), np.nan)
@@ -376,7 +376,7 @@ def run_cracbf_simulation(
             solution = solve_ivp(
                 lambda tau, state: system.dynamics_extended(state, u, tau),
                 (t_full[sample_index], t_full[sample_index + 1]),
-                extended_state,
+                x_ext,
                 method="BDF",
                 rtol=1e-7,
                 atol=1e-9,
@@ -384,12 +384,12 @@ def run_cracbf_simulation(
             )
             if not solution.success:
                 raise RuntimeError(solution.message)
-            extended_state = solution.y[:, -1]
-            if not np.all(np.isfinite(extended_state)):
+            x_ext = solution.y[:, -1]
+            if not np.all(np.isfinite(x_ext)):
                 raise RuntimeError(f"{run_label}: the extended ACC state became non-finite")
-            x = extended_state[: system.xdim]
-            a_hat = extended_state[system.xdim : system.xdim + system.adim]
-            rho = float(extended_state[system.xdim + system.adim])
+            x = x_ext[: system.xdim]
+            a_hat = x_ext[system.xdim : system.xdim + system.adim]
+            rho = float(x_ext[system.xdim + system.adim])
 
         if (sample_index + 1) % I_length == 0:
             online_olacp.estimate_uncertainty(dt)
