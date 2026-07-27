@@ -855,9 +855,11 @@ def main():
     theta_lb = -20.0 * theta_scale[:, None] * np.ones((1, 3))
     theta_ub = 20.0 * theta_scale[:, None] * np.ones((1, 3))
     theta_rng = np.random.default_rng(11)
-    theta_init = theta_rng.uniform(
-        -theta_scale[:, None], theta_scale[:, None], size=ACC.theta_shape
-    )
+    #theta_init = theta_rng.uniform(
+    #    -theta_scale[:, None], theta_scale[:, None], size=ACC.theta_shape
+    #)
+    theta_init = theta_rng.uniform(theta_lb, theta_ub)
+
     a_lb = np.array([-0.05, -0.05, -0.05, -0.42])
     a_ub = np.array([0.05, 0.05, 0.05, 0.42])
     projection_epsilon = 0.01
