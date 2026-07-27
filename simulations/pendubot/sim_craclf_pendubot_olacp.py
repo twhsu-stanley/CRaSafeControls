@@ -73,7 +73,7 @@ def run_pretraining(system, olacp, config, plot=True):
                     lambda tau, state: system.dynamics(state, u, tau),
                     (t, t + dt),
                     x,
-                    method="LSODA", #"RK45",
+                    method="RK45",
                     rtol=1e-7,
                     atol=1e-9,
                     t_eval=[t + dt],
@@ -178,7 +178,6 @@ def run_pretraining(system, olacp, config, plot=True):
             ax.legend()
         axs[-1].set_xlabel("time (s)")
         fig.suptitle(r"Pretraining: $Y_\Theta(x)a_k$ versus true uncertainty")
-        plt.show()
 
     return olacp, history
 
@@ -225,7 +224,7 @@ def run_craclf_simulation(
 
     x = config["main_initial_state"].copy()
     initial_state = x.copy()
-    a_hat = system.a_center.copy()
+    a_hat = online_olacp.a_k.copy() if use_adaptive else system.a_center.copy()
     rho = 0.0
     x_ext = np.hstack((x, a_hat, rho))
     x_hist = np.zeros((len(t_full), system.xdim))
@@ -274,7 +273,7 @@ def run_craclf_simulation(
                 lambda tau, state: system.dynamics_extended(state, u, tau),
                 (t_full[sample_index], t_full[sample_index + 1]),
                 x_ext,
-                method="LSODA", #"RK45",
+                method="RK45",
                 rtol=1e-7,
                 atol=1e-9,
                 t_eval=[t_full[sample_index + 1]],
@@ -340,6 +339,7 @@ def run_craclf_simulation(
     state_norm = np.linalg.norm(x_hist, axis=1)
     tail_start = max(int(0.8 * len(state_norm)), 0)
     tail_norm = state_norm[tail_start:]
+    a_hat_rate = np.diff(a_hat_hist, axis=0) / dt
     metrics = {
         "final_norm": float(state_norm[-1]),
         "tail_rms": float(np.sqrt(np.mean(tail_norm**2))),
@@ -348,6 +348,12 @@ def run_craclf_simulation(
         "V_ratio": float(V_hist[-1] / max(V_hist[0], np.finfo(float).eps)),
         "max_control": float(np.nanmax(np.abs(u_hist))),
         "max_slack": float(np.nanmax(slack_hist)),
+        "a_hat_change": float(np.linalg.norm(a_hat_hist[-1] - a_hat_hist[0])),
+        "a_hat_path_length": float(np.sum(np.linalg.norm(np.diff(a_hat_hist, axis=0), axis=1))),
+        "max_a_hat_dot": float(np.max(np.linalg.norm(a_hat_rate, axis=1))),
+        "rho_change": float(rho_hist[-1] - rho_hist[0]),
+        "rho_range": float(np.ptp(rho_hist)),
+        "nu_range": float(np.ptp(nu_hist)),
     }
     result = {
         "label": run_label,
@@ -384,7 +390,9 @@ def run_craclf_simulation(
         f"{run_label}: status={status}, t_final={t[-1]:.3f}, "
         f"final_norm={metrics['final_norm']:.3e}, tail_rms={metrics['tail_rms']:.3e}, "
         f"max_norm={metrics['max_norm']:.3e}, V_final/V_initial={metrics['V_ratio']:.3e}, "
-        f"max|u|={metrics['max_control']:.2f}, max_slack={metrics['max_slack']:.3e}"
+        f"max|u|={metrics['max_control']:.2f}, max_slack={metrics['max_slack']:.3e}, "
+        f"Delta_a={metrics['a_hat_change']:.3e}, a_path={metrics['a_hat_path_length']:.3e}, "
+        f"Delta_rho={metrics['rho_change']:.3e}, Delta_nu={metrics['nu_range']:.3e}"
     )
 
     if plot:
@@ -471,9 +479,9 @@ def plot_craclf_results(results):
     for label, result in items:
         color = color_map[label]
         result_end_time = float(result["t"][-1])
-        fig, axs = plt.subplots(Pendubot.adim, 1, sharex=True, figsize=(8, 9))
+        fig, axs = plt.subplots(Pendubot.adim + 2, 1, sharex=True, figsize=(8, 11))
         figures.append(fig)
-        for parameter_index, ax in enumerate(axs):
+        for parameter_index, ax in enumerate(axs[: Pendubot.adim]):
             ax.plot(
                 result["t"],
                 result["a_hat_hist"][:, parameter_index],
@@ -490,6 +498,14 @@ def plot_craclf_results(results):
             ax.set_ylabel(f"a{parameter_index + 1}")
             ax.set_xlim(0.0, result_end_time)
             ax.grid(True)
+        axs[-2].plot(result["t"], result["rho_hist"], color=color, label=r"$\rho$")
+        axs[-1].plot(result["t"], result["nu_hist"], color=color, label=r"$\nu(\rho)$")
+        axs[-2].set_ylabel(r"$\rho$")
+        axs[-1].set_ylabel(r"$\nu$")
+        for ax in axs[-2:]:
+            ax.set_xlim(0.0, result_end_time)
+            ax.grid(True)
+            ax.legend()
         axs[0].legend()
         axs[-1].set_xlabel("time (s)")
         fig.suptitle(f"{label}: CRaCLF adaptation and OLACP identification")
@@ -565,9 +581,9 @@ def plot_craclf_results(results):
 
 def main():
     """Build the shared experiment, run two controller settings, and compare them."""
-    K_pre = 50
+    K_pre = 45
     N_cal = 30
-    K = 2
+    K = 15
     B = 5
     dt = 0.01
     interval_duration = 2.0
@@ -578,6 +594,8 @@ def main():
         raise ValueError("K_pre must be an integer multiple of B")
     if I_length < 10 or not np.isclose(I_length * dt, interval_duration):
         raise ValueError("interval_duration must be an integer multiple of dt")
+    if interval_duration < 2.0:
+        raise ValueError("interval_duration must be at least 2.0 seconds")
 
     m1 = 1.0
     m2 = 2.0
@@ -595,7 +613,9 @@ def main():
     a_ub = 1.5 * np.ones(Pendubot.adim)
     projection_epsilon = 0.01
     a_hat_norm_max = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + projection_epsilon
-    gamma_clf = 1e-5 * np.eye(Pendubot.adim)
+    clf_scale = 5e-4
+    effective_gamma_clf = 7.5e-4
+    gamma_clf = (effective_gamma_clf / clf_scale) * np.eye(Pendubot.adim)
     u_min = -120.0
     u_max = 120.0
 
@@ -629,28 +649,28 @@ def main():
         "damping": np.array([0.20, 0.20]),
         "true_damping": np.array([0.03, 0.03]),
         "L_w": 0.5,
-        "c_w": 0.35,
+        "c_w": 0.15,
         "Theta_init": theta_init.copy(),
-        "lqr_Q": np.diag([20.0, 20.0, 2.0, 2.0]),
-        "lqr_R": 0.1,
+        "lqr_Q": clf_scale * np.diag([20.0, 20.0, 2.0, 2.0]),
+        "lqr_R": clf_scale * 0.1,
         "Gamma_clf": gamma_clf,
         "a_ub": a_ub,
         "a_lb": a_lb,
         "a_hat_norm_max": a_hat_norm_max,
         "epsilon": projection_epsilon,
-        "eta_clf": 10.0,
-        "clf_rate": 2.0,
-        "weight_slack": 1e5,
+        "eta_clf": clf_scale * 10.0,
+        "clf_rate": 0.5,
+        "weight_slack": 1e5 / clf_scale**2,
         "u_min": u_min,
         "u_max": u_max,
         "dt": dt,
     }
 
     pretrain_params = dict(base_pendubot_params)
-    pretrain_params.update({"use_cp": True, "use_adaptive": True})
+    pretrain_params.update({"use_cp": False, "use_adaptive": False})
     pretrain_system = Pendubot(pretrain_params)
     def representation_rate(update_index):
-        return 2e-2 / np.sqrt(update_index)
+        return 1e-2 / np.sqrt(update_index)
 
     olacp = OLACP(
         [],
@@ -714,20 +734,24 @@ def main():
     if trained_olacp.representation_update_index != canonical_update_index:
         raise RuntimeError("A main simulation mutated the representation-update index")
 
-    #adaptive_result = results["CP + adaptive"]
-    #baseline_result = results["No CP + nonadaptive"]
-    #if adaptive_result["status"] != "completed" or adaptive_result["metrics"]["tail_rms"] >= 0.05:
-    #    raise RuntimeError("The CP + adaptive run did not stabilize")
-    #baseline_failed = (
-    #    baseline_result["status"] != "completed"
-    #    or baseline_result["metrics"]["tail_rms"] > 0.25
-    #)
-    #separated = (
-    #    baseline_result["metrics"]["tail_rms"]
-    #    > 5.0 * adaptive_result["metrics"]["tail_rms"]
-    #)
-    #if not baseline_failed or not separated:
-    #    raise RuntimeError("The no-CP nonadaptive run did not fail clearly")
+    adaptive_result = results["CP + adaptive"]
+    baseline_result = results["No CP + nonadaptive"]
+    adaptive_metrics = adaptive_result["metrics"]
+    baseline_metrics = baseline_result["metrics"]
+    if adaptive_result["status"] != "completed" or adaptive_metrics["tail_rms"] >= 0.05:
+        raise RuntimeError("The CP + adaptive run did not stabilize")
+    if adaptive_metrics["max_slack"] >= 1e-2:
+        raise RuntimeError("The CP + adaptive QP slack exceeded 1e-2")
+    if adaptive_metrics["a_hat_change"] <= 3e-2 or adaptive_metrics["rho_range"] <= 0.5:
+        raise RuntimeError("The CRaCLF adaptive states did not change materially")
+    if adaptive_metrics["nu_range"] <= 0.1:
+        raise RuntimeError("rho did not materially change the adaptation scaling")
+    baseline_failed = (
+        baseline_result["status"] != "completed" or baseline_metrics["tail_rms"] > 0.25
+    )
+    separated = baseline_metrics["tail_rms"] > 5.0 * adaptive_metrics["tail_rms"]
+    if not baseline_failed or not separated:
+        raise RuntimeError("The no-CP nonadaptive run did not fail clearly")
 
     plot_craclf_results(results)
     plt.tight_layout()
