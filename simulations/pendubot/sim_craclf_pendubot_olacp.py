@@ -6,6 +6,7 @@ import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.integrate import solve_ivp
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
@@ -21,21 +22,18 @@ def run_pretraining(system, olacp, config, plot=True):
     interval_duration = config["interval_duration"]
     t_pre = np.arange(K_pre * I_length, dtype=float) * dt
 
-    vertical_wind_schedule = -7.0 * np.ones(K_pre)
-    vertical_wind_schedule[:5] = np.array([-3.0, -4.0, -5.0, -6.0, -7.0])
+    wind_indices = np.arange(K_pre)
+    vertical_wind_schedule = -8.0
+    vertical_wind_schedule += 1.5 * np.sin(2.0 * np.pi * wind_indices / 7.0)
+    vertical_wind_schedule += 0.5 * np.sin(2.0 * np.pi * wind_indices / 3.0)
+    if np.ptp(vertical_wind_schedule) <= 0.0 or np.any(vertical_wind_schedule >= 0.0):
+        raise ValueError("Pretraining requires a time-varying downward vertical wind")
 
     def schedule_index(t):
         return min(int(np.floor(max(float(t), 0.0) / interval_duration)), K_pre - 1)
 
     def wind_velocity(t):
         return np.array([0.0, vertical_wind_schedule[schedule_index(t)]])
-
-    def rk4_step(rhs, t, state):
-        k1 = rhs(t, state)
-        k2 = rhs(t + 0.5 * dt, state + 0.5 * dt * k1)
-        k3 = rhs(t + 0.5 * dt, state + 0.5 * dt * k2)
-        k4 = rhs(t + dt, state + dt * k3)
-        return state + dt * (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0
 
     system.wind_velocity_fcn = wind_velocity
     system.set_representation(olacp.Theta)
@@ -49,16 +47,16 @@ def run_pretraining(system, olacp, config, plot=True):
     prediction_error_hist = np.full(len(t_pre), np.nan)
     true_uncertainty_hist = np.full((len(t_pre), system.xdim), np.nan)
     fitted_uncertainty_hist = np.full((len(t_pre), system.xdim), np.nan)
-    a_for_control = system.a_center.copy()
+    a_for_control = np.zeros(system.adim)
 
     for interval_index in range(K_pre):
-        phase = 2.0 * np.pi * (interval_index % config["B"]) / config["B"]
+        phase = 2.0 * np.pi * interval_index / config["pretrain_state_period"]
         x = np.array(
             [
                 config["pretrain_q1_amplitude"] * np.cos(phase),
                 -config["pretrain_q2_amplitude"] * np.sin(phase),
-                config["pretrain_q1_velocity"],
-                config["pretrain_q2_velocity"],
+                config["pretrain_q1_velocity"] * np.sin(2.0 * phase + 0.2),
+                config["pretrain_q2_velocity"] * np.cos(phase - 0.3),
             ]
         )
 
@@ -77,8 +75,19 @@ def run_pretraining(system, olacp, config, plot=True):
             xdot = system.dynamics(x, u, t)
             olacp.add_data_to_buffers(x, system.dynamics_nominal(x, u), xdot=xdot)
 
-            if interval_sample_index < I_length - 1:
-                x = rk4_step(lambda tau, state: system.dynamics(state, u, tau), t, x)
+            if sample_index < len(t_pre) - 1:
+                solution = solve_ivp(
+                    lambda tau, state: system.dynamics(state, u, tau),
+                    (t, t + dt),
+                    x,
+                    method="LSODA", #"RK45",
+                    rtol=1e-7,
+                    atol=1e-9,
+                    t_eval=[t + dt],
+                )
+                if not solution.success:
+                    raise RuntimeError(solution.message)
+                x = solution.y[:, -1]
 
         olacp.estimate_uncertainty(dt)
         score = float(olacp.compute_score(system.a_ub, system.a_lb))
@@ -98,7 +107,6 @@ def run_pretraining(system, olacp, config, plot=True):
         fitted_uncertainty_hist[interval_slice] = interval_fitted
         score_hist[interval_index] = score
         theta_hist[interval_index + 1] = olacp.Theta
-        a_for_control = olacp.a_k.copy()
         olacp.clear_buffers()
 
     if len(olacp.S_cal) != config["N_cal"]:
@@ -107,6 +115,8 @@ def run_pretraining(system, olacp, config, plot=True):
         raise RuntimeError("Pretraining left an incomplete representation block")
     if not np.allclose(system.Theta_hat, olacp.Theta):
         raise RuntimeError("The trained representation was not installed in the Pendubot")
+    if np.max(np.linalg.norm(x_hist, axis=1)) > config["pretrain_state_norm_max"]:
+        raise RuntimeError("Pendubot pretraining left the prescribed local state region")
 
     quantile = olacp.compute_quantile()
     history = {
@@ -124,7 +134,14 @@ def run_pretraining(system, olacp, config, plot=True):
         "quantile": quantile,
     }
 
-    print(f"Pretraining complete: Q_0={quantile:.3e}, a_last={olacp.a_k}")
+    theta_change = np.linalg.norm(theta_hist[-1] - theta_hist[0])
+    print(
+        f"Pretraining complete: Q_0={quantile:.3e}, a_last={olacp.a_k}, "
+        f"score_first={score_hist[0]:.3e}, score_last={score_hist[-1]:.3e}, "
+        f"theta_change={theta_change:.3e}, "
+        f"max_state_norm={np.max(np.linalg.norm(x_hist, axis=1)):.3e}, "
+        f"max|u|={np.max(np.abs(u_hist)):.3e}"
+    )
 
     if plot:
         state_labels = (
@@ -188,21 +205,18 @@ def run_craclf_simulation(
     t_full = np.arange(K * I_length, dtype=float) * dt
     run_label = label or f"CP={bool(use_cp)}, adaptive={bool(use_adaptive)}"
 
-    vertical_wind_schedule = -7.0 * np.ones(K)
-    vertical_wind_schedule[:5] = np.array([-3.0, -4.0, -5.0, -6.0, -7.0])
+    wind_indices = np.arange(K) + config["K_pre"]
+    vertical_wind_schedule = -9.0
+    vertical_wind_schedule += 2.0 * np.sin(2.0 * np.pi * wind_indices / 7.0)
+    vertical_wind_schedule += 0.5 * np.sin(2.0 * np.pi * wind_indices / 3.0)
+    if np.ptp(vertical_wind_schedule) <= 0.0 or np.any(vertical_wind_schedule >= 0.0):
+        raise ValueError("Main simulation requires a time-varying downward vertical wind")
 
     def schedule_index(t):
         return min(int(np.floor(max(float(t), 0.0) / interval_duration)), K - 1)
 
     def wind_velocity(t):
         return np.array([0.0, vertical_wind_schedule[schedule_index(t)]])
-
-    def rk4_step(rhs, t, state):
-        k1 = rhs(t, state)
-        k2 = rhs(t + 0.5 * dt, state + 0.5 * dt * k1)
-        k3 = rhs(t + 0.5 * dt, state + 0.5 * dt * k2)
-        k4 = rhs(t + dt, state + dt * k3)
-        return state + dt * (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0
 
     online_olacp.clear_buffers()
     if online_olacp._representation_intervals:
@@ -217,7 +231,7 @@ def run_craclf_simulation(
 
     x = config["main_initial_state"].copy()
     initial_state = x.copy()
-    a_hat = online_olacp.a_k.copy() if use_adaptive else np.zeros(system.adim)
+    a_hat = system.a_center.copy()
     rho = 0.0
     extended_state = np.hstack((x, a_hat, rho))
     x_hist = np.zeros((len(t_full), system.xdim))
@@ -262,10 +276,21 @@ def run_craclf_simulation(
         online_olacp.add_data_to_buffers(x, system.dynamics_nominal(x, u), xdot=xdot)
 
         if sample_index < len(t_full) - 1:
-            extended_derivative = system.dynamics_extended(extended_state, u, t)
-            x_next = rk4_step(lambda tau, state: system.dynamics(state, u, tau), t, x)
-            adaptive_next = extended_state[system.xdim:] + dt * extended_derivative[system.xdim:]
-            extended_state = np.hstack((x_next, adaptive_next))
+            solution = solve_ivp(
+                lambda tau, state: system.dynamics_extended(state, u, tau),
+                (t_full[sample_index], t_full[sample_index + 1]),
+                extended_state,
+                method="LSODA", #"RK45",
+                rtol=1e-7,
+                atol=1e-9,
+                t_eval=[t_full[sample_index + 1]],
+            )
+            if not solution.success:
+                raise RuntimeError(
+                    f"{run_label}: extended dynamics failed at t={t:.3f}, x={x}, "
+                    f"a_hat={a_hat}, rho={rho:.3e}: {solution.message}"
+                )
+            extended_state = solution.y[:, -1]
             x = extended_state[: system.xdim]
             a_hat = extended_state[system.xdim : system.xdim + system.adim]
             rho = float(extended_state[-1])
@@ -403,7 +428,7 @@ def plot_craclf_results(results):
         r"$\dot q_1$ (deg/s)",
         r"$\dot q_2$ (deg/s)",
     )
-    fig, axs = plt.subplots(4, 1, sharex=True, figsize=(8, 9))
+    fig, axs = plt.subplots(4, 1, sharex=True, figsize=(8, 7))
     figures.append(fig)
     for state_index, ax in enumerate(axs):
         for label, result in items:
@@ -428,68 +453,64 @@ def plot_craclf_results(results):
     axs[-1].set_xlabel("time (s)")
     fig.suptitle("Pendubot state comparison")
 
-    fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
-    figures.append(fig)
     for label, result in items:
         color = color_map[label]
-        axs[0].plot(result["t"], result["u_hist"], color=color, label=label)
+        result_end_time = float(result["t"][-1])
+        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
+        figures.append(fig)
+        axs[0].plot(result["t"], result["u_hist"], color=color, label="control")
         axs[1].semilogy(
-            result["t"],
-            np.maximum(np.linalg.norm(result["x_hist"], axis=1), 1e-12),
-            color=color,
-            label=label,
-        )
-        axs[2].semilogy(
             result["t"],
             np.maximum(result["slack_hist"], 1e-12),
             color=color,
-            label=label,
+            label="QP slack",
         )
-    axs[0].set_ylabel("torque (N m)")
-    axs[1].set_ylabel(r"$\|x\|_2$")
-    axs[2].set_ylabel("QP slack")
-    axs[2].set_xlabel("time (s)")
-    for ax in axs:
-        ax.set_xlim(0.0, maximum_time)
-        ax.grid(True)
-        ax.legend()
-    fig.suptitle("Control and convergence comparison")
+        axs[0].set_ylabel("torque (N m)")
+        axs[1].set_ylabel("QP slack")
+        axs[1].set_xlabel("time (s)")
+        for ax in axs:
+            ax.set_xlim(0.0, result_end_time)
+            ax.grid(True)
+            ax.legend()
+        fig.suptitle(f"{label}: control and QP slack")
 
-    fig, axs = plt.subplots(Pendubot.adim, 1, sharex=True, figsize=(8, 9))
-    figures.append(fig)
-    for parameter_index, ax in enumerate(axs):
-        for label, result in items:
-            color = color_map[label]
+    for label, result in items:
+        color = color_map[label]
+        result_end_time = float(result["t"][-1])
+        fig, axs = plt.subplots(Pendubot.adim, 1, sharex=True, figsize=(8, 9))
+        figures.append(fig)
+        for parameter_index, ax in enumerate(axs):
             ax.plot(
                 result["t"],
                 result["a_hat_hist"][:, parameter_index],
                 color=color,
-                label=f"hat a: {label}",
+                label=r"$\hat a$",
             )
             ax.plot(
                 result["t"],
                 result["a_k_hist"][:, parameter_index],
                 "--",
                 color=color,
-                label=f"a_k: {label}",
+                label=r"$a_k$",
             )
-        ax.set_ylabel(f"a{parameter_index + 1}")
-        ax.set_xlim(0.0, maximum_time)
-        ax.grid(True)
-    axs[0].legend()
-    axs[-1].set_xlabel("time (s)")
-    fig.suptitle("CRaCLF adaptation and OLACP identification comparison")
+            ax.set_ylabel(f"a{parameter_index + 1}")
+            ax.set_xlim(0.0, result_end_time)
+            ax.grid(True)
+        axs[0].legend()
+        axs[-1].set_xlabel("time (s)")
+        fig.suptitle(f"{label}: CRaCLF adaptation and OLACP identification")
 
-    fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
-    figures.append(fig)
     for label, result in items:
         color = color_map[label]
+        result_end_time = float(result["t"][-1])
+        fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
+        figures.append(fig)
         axs[0].step(
             result["interval_times"],
             result["score_hist"],
             where="post",
             color=color,
-            label=f"s_k: {label}",
+            label=r"$s_k$",
         )
         axs[0].step(
             result["t"],
@@ -497,38 +518,37 @@ def plot_craclf_results(results):
             where="post",
             color=color,
             linestyle=":",
-            label=f"Q_k: {label}",
+            label=r"$Q_k$",
         )
         axs[1].step(
             result["interval_times"],
             result["delta_hist"],
             where="post",
             color=color,
-            label=label,
+            label=r"$\delta_k$",
         )
         axs[2].step(
             result["interval_times"],
             result["miscoverage_hist"],
             where="post",
             color=color,
-            label=label,
+            label="miscoverage",
         )
-    axs[0].set_ylabel("score")
-    axs[1].set_ylabel(r"$\delta_k$")
-    axs[2].set_ylabel("miscoverage")
-    axs[2].set_xlabel("time (s)")
-    for ax in axs:
-        ax.set_xlim(0.0, maximum_time)
-        ax.grid(True)
-        ax.legend()
-    fig.suptitle("Algorithm 1 comparison")
+        axs[0].set_ylabel("score")
+        axs[1].set_ylabel(r"$\delta_k$")
+        axs[2].set_ylabel("miscoverage")
+        axs[2].set_xlabel("time (s)")
+        for ax in axs:
+            ax.set_xlim(0.0, result_end_time)
+            ax.grid(True)
+            ax.legend()
+        fig.suptitle(f"{label}: Algorithm 1")
 
     components = ((2, r"$w_3$"), (3, r"$w_4$"))
-    fig, axs = plt.subplots(2, len(items), squeeze=False, figsize=(6 * len(items), 7))
-    figures.append(fig)
-    for column, (label, result) in enumerate(items):
-        for row, (component, component_label) in enumerate(components):
-            ax = axs[row, column]
+    for label, result in items:
+        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
+        figures.append(fig)
+        for ax, (component, component_label) in zip(axs, components):
             ax.plot(
                 result["t"],
                 result["true_uncertainty_hist"][:, component],
@@ -542,22 +562,21 @@ def plot_craclf_results(results):
             )
             ax.set_xlim(0.0, float(result["t"][-1]))
             ax.set_ylabel(component_label)
-            ax.set_title(label)
             ax.grid(True)
             ax.legend()
-        axs[-1, column].set_xlabel("time (s)")
-    fig.suptitle(r"Main CRaCLF uncertainty-model comparison")
+        axs[-1].set_xlabel("time (s)")
+        fig.suptitle(rf"{label}: $Y_\Theta(x)a_k$ versus true uncertainty")
     return figures
 
 
 def main():
     """Build the shared experiment, run two controller settings, and compare them."""
-    K_pre = 75
-    N_cal = 70
-    K = 30
+    K_pre = 400
+    N_cal = 100
+    K = 60
     B = 5
-    dt = 0.005
-    interval_duration = 1.0
+    dt = 0.01
+    interval_duration = 0.2
     I_length = int(round(interval_duration / dt))
     if K_pre < N_cal:
         raise ValueError("K_pre must be at least as large as N_cal")
@@ -570,20 +589,19 @@ def main():
     m2 = 2.0
     L1 = 1.0
     L2 = 1.5
-    theta_init = np.zeros(Pendubot.theta_shape)
-    theta_init[1, 0] = 60.0
-    theta_init[2, 1] = 10.0
-    theta_init[8, 1] = 10.0
-    theta_init[5, 2] = 1.0
-    theta_init[12, 3] = 1.0
-    theta_init[3, 4] = 20.0
-    theta_lb = theta_init.copy()
-    theta_ub = theta_init.copy()
+    nominal_gravity = 9.0
+    true_gravity = 11.0
+    
+    theta_lb = -10.0 * np.ones(Pendubot.theta_shape)
+    theta_ub = 10.0 * np.ones(Pendubot.theta_shape)
+    theta_rng = np.random.default_rng(11)
+    theta_init = theta_rng.uniform(theta_lb, theta_ub)
+
     a_lb = -1.5 * np.ones(Pendubot.adim)
     a_ub = 1.5 * np.ones(Pendubot.adim)
     projection_epsilon = 0.01
     a_hat_norm_max = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + projection_epsilon
-    gamma_clf = np.diag([1e-5, 2e-5, 1e-4, 1e-4, 2e-5])
+    gamma_clf = 1e-5 * np.eye(Pendubot.adim)
     u_min = -120.0
     u_max = 120.0
 
@@ -595,14 +613,16 @@ def main():
         "dt": dt,
         "interval_duration": interval_duration,
         "I_length": I_length,
-        "pretrain_q1_amplitude": 0.14,
+        "pretrain_state_period": 37.0,
+        "pretrain_q1_amplitude": 0.12,
         "pretrain_q2_amplitude": 0.10,
-        "pretrain_q1_velocity": 0.04,
-        "pretrain_q2_velocity": -0.03,
-        "pretrain_excitation_amplitude": 0.8,
-        "pretrain_excitation_frequency": 0.7,
-        "main_initial_state": np.array([0.16, -0.10, 0.0, 0.0]),
-        "divergence_norm": 8.0,
+        "pretrain_q1_velocity": 0.08,
+        "pretrain_q2_velocity": 0.06,
+        "pretrain_excitation_amplitude": 0.2,
+        "pretrain_excitation_frequency": 0.2,
+        "pretrain_state_norm_max": 5.0,
+        "main_initial_state": np.array([0.18, -0.12, 0.0, 0.0]),
+        "divergence_norm": 10.0,
         "u_min": u_min,
         "u_max": u_max,
     }
@@ -615,24 +635,24 @@ def main():
         "r2": 0.5,
         "I1": m1 * L1**2 / 12.0,
         "I2": m2 * L2**2 / 12.0,
-        "grav": 9.30,
-        "true_grav": 12.0,
-        "damping": np.array([0.16, 0.18]),
-        "true_damping": np.array([0.01, 0.01]),
+        "grav": nominal_gravity,
+        "true_grav": true_gravity,
+        "damping": np.array([0.20, 0.20]),
+        "true_damping": np.array([0.03, 0.03]),
         "L_w": 0.5,
-        "c_w": 0.5,
-        "wind_velocity": lambda t: np.zeros(2),
+        "c_w": 0.35,
+        "wind_velocity": lambda t: np.zeros(2), #TODO: define this once and use it across functions
         "Theta_init": theta_init.copy(),
-        "lqr_Q": np.diag([30.0, 20.0, 3.0, 3.0]),
-        "lqr_R": 0.5,
+        "lqr_Q": np.diag([20.0, 20.0, 2.0, 2.0]),
+        "lqr_R": 0.1,
         "Gamma_clf": gamma_clf,
         "a_ub": a_ub,
         "a_lb": a_lb,
         "a_hat_norm_max": a_hat_norm_max,
         "epsilon": projection_epsilon,
-        "eta_clf": 2.0,
-        "clf_rate": 0.08,
-        "weight_slack": 1e3,
+        "eta_clf": 10.0,
+        "clf_rate": 2.0,
+        "weight_slack": 1e5,
         "u_min": u_min,
         "u_max": u_max,
         "dt": dt,
@@ -641,6 +661,9 @@ def main():
     pretrain_params = dict(base_pendubot_params)
     pretrain_params.update({"use_cp": True, "use_adaptive": True})
     pretrain_system = Pendubot(pretrain_params)
+    def representation_rate(update_index):
+        return 2e-2 / np.sqrt(update_index)
+
     olacp = OLACP(
         [],
         N_cal=N_cal,
@@ -650,7 +673,7 @@ def main():
         buffer_maxlen=I_length,
         Theta_init=theta_init,
         representation_period=B,
-        representation_lr=1e-8,
+        representation_lr=representation_rate,
         Theta_lb=theta_lb,
         Theta_ub=theta_ub,
         Y_Theta=pretrain_system.Y_Theta,
