@@ -61,7 +61,7 @@ def run_pretraining(system, olacp, config, plot=True):
             #    2.0 * np.pi * config["pretrain_excitation_frequency"] * 2 * t
             #)
             u = system.local_lqr_control(x, a_hat_0) + excitation
-            u = np.clip(u, config["u_min"], config["u_max"])
+            u = np.clip(u, system.params["u_min"], system.params["u_max"])
 
             x_hist[sample_index] = x
             u_hist[sample_index] = float(u.item())
@@ -74,7 +74,7 @@ def run_pretraining(system, olacp, config, plot=True):
                     lambda tau, state: system.dynamics(state, u, tau),
                     (t, t + dt),
                     x,
-                    method="RK45",
+                    method="RK45", #"LSODA", #
                     rtol=1e-7,
                     atol=1e-9,
                     t_eval=[t + dt],
@@ -271,7 +271,7 @@ def run_craclf_simulation(
                 lambda tau, state: system.dynamics_extended(state, u, tau),
                 (t_full[sample_index], t_full[sample_index + 1]),
                 x_ext,
-                method="RK45",
+                method="RK45",#"LSODA", #
                 rtol=1e-7,
                 atol=1e-9,
                 t_eval=[t_full[sample_index + 1]],
@@ -597,7 +597,7 @@ def main():
     """Build the shared experiment, run two controller settings, and compare them."""
     K_pre = 45
     N_cal = 30
-    K = 7.0
+    K = 6.0
     B = 5
     dt = 0.01
     interval_duration = 2.0
@@ -644,10 +644,8 @@ def main():
         "pretrain_excitation_amplitude": 6.0,
         "pretrain_excitation_frequency": 0.1,
         "pretrain_state_norm_max": 5.0,
-        "main_initial_state": np.array([0.18, -0.12, 0.0, 0.0]),
+        "main_initial_state": np.array([0.18, -0.10, 0.0, 0.0]),
         "divergence_norm": 8.0,
-        "u_min": u_min,
-        "u_max": u_max,
     }
     base_pendubot_params = {
         "m1": m1,
