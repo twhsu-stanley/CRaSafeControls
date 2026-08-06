@@ -711,6 +711,7 @@ def main():
 
     settings = (
         ("CP + adaptive", True, True),
+        ("No CP + adaptive", False, True),
         ("No CP + nonadaptive", False, False),
     )
     results = {}
@@ -746,22 +747,26 @@ def main():
     if trained_olacp.representation_update_index != canonical_update_index:
         raise RuntimeError("A main simulation mutated the representation-update index")
 
-    adaptive_result = results["CP + adaptive"]
-    baseline_result = results["No CP + nonadaptive"]
-    adaptive_metrics = adaptive_result["metrics"]
-    baseline_metrics = baseline_result["metrics"]
-    if adaptive_result["status"] != "completed" or adaptive_metrics["tail_rms"] >= 0.05:
+    cp_adaptive_result = results["CP + adaptive"]
+    cp_adaptive_metrics = cp_adaptive_result["metrics"]
+    nonadaptive_result = results["No CP + nonadaptive"]
+    nonadaptive_metrics = nonadaptive_result["metrics"]
+    if cp_adaptive_result["status"] != "completed" or cp_adaptive_metrics["tail_rms"] >= 0.05:
         warnings.warn("The CP + adaptive run did not stabilize")
-    if adaptive_metrics["max_slack"] >= 1e-2:
+    if cp_adaptive_metrics["max_slack"] >= 1e-2:
         warnings.warn("The CP + adaptive QP slack exceeded 1e-2")
-    if adaptive_metrics["a_hat_change"] <= 3e-2 or adaptive_metrics["rho_range"] <= 0.5:
+    if cp_adaptive_metrics["a_hat_change"] <= 3e-2 or cp_adaptive_metrics["rho_range"] <= 0.5:
         warnings.warn("The CRaCLF adaptive states did not change materially")
-    if adaptive_metrics["nu_range"] <= 0.1:
+    if cp_adaptive_metrics["nu_range"] <= 0.1:
         warnings.warn("rho did not materially change the adaptation scaling")
-    baseline_failed = baseline_result["status"] != "completed" or baseline_metrics["tail_rms"] > 0.25
-    separated = baseline_metrics["tail_rms"] > 5.0 * adaptive_metrics["tail_rms"]
-    if not baseline_failed or not separated:
-       warnings.warn("The no-CP nonadaptive run did not fail clearly")
+    nonadaptive_failed = (
+        nonadaptive_result["status"] != "completed" or nonadaptive_metrics["tail_rms"] > 0.25
+    )
+    separated = nonadaptive_metrics["tail_rms"] > 5.0 * cp_adaptive_metrics["tail_rms"]
+    if not nonadaptive_failed or not separated:
+        warnings.warn("The no-CP nonadaptive run did not fail clearly")
+    if nonadaptive_metrics["a_hat_change"] > 1e-12 or nonadaptive_metrics["rho_range"] > 1e-12:
+        warnings.warn("The nonadaptive run unexpectedly changed its CRaCLF adaptive states")
 
     plot_craclf_results(results)
     plt.tight_layout()
