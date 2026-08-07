@@ -958,6 +958,7 @@ def main():
 
     settings = (
         ("CP + adaptive", True, True),
+        ("No CP + adaptive", False, True),
         ("No CP + nonadaptive", False, False),
     )
     results = {}
