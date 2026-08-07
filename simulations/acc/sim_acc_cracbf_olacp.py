@@ -32,7 +32,7 @@ def run_pretraining(system, olacp, config, plot=True):
     t_pre = np.arange(K_pre * I_length, dtype=float) * dt
 
     pretrain_phase = 2.0 * np.pi * np.arange(K_pre) / K_pre
-    d0_schedule = -120.0 + 800.0 * np.sin(pretrain_phase + 0.2)
+    d0_schedule = 500.0 * np.sin(pretrain_phase + 0.2)
     wind_schedule = 2.0 + 3.0 * np.sin(0.7 * pretrain_phase - 0.1)
     delta_lead_schedule = -2.0 + 0.5 * np.sin(0.9 * pretrain_phase)
 
@@ -254,13 +254,13 @@ def run_cracbf_simulation(
     t_full = np.arange(K * I_length, dtype=float) * dt
     run_label = label or f"CP={bool(use_cp)}, adaptive={bool(use_adaptive)}"
 
-    environment_phase = 2.0 * np.pi * np.arange(K) / 14.0
+    environment_phase = 2.0 * np.pi * np.arange(K) / K / 2.0
     d0_schedule = -100.0 + 300.0 * np.sin(environment_phase + 0.15)
     wind_schedule = 10.0 * np.sin(0.7 * environment_phase - 0.2)
     delta_lead_schedule = np.hstack((np.linspace(0.0, -4.0, 8), -4.0 * np.ones(K - 8)))
     late_drag_start = 7.0 * interval_duration
-    late_drag_end = 8.0 * interval_duration
-    late_drag_force = 2560.0
+    late_drag_end = 9.0 * interval_duration
+    late_drag_force = 1400.0
 
     if np.any(np.diff(delta_lead_schedule) > 0.0):
         raise ValueError("The main lead vehicle must continue slowing down")
@@ -858,15 +858,15 @@ def main():
         np.array([1.0, z_reference, z_reference**2]),
     )
     theta_scale = 1.0 / psi_reference
-    theta_lb = -20.0 * theta_scale[:, None] * np.ones((1, 3))
-    theta_ub = 20.0 * theta_scale[:, None] * np.ones((1, 3))
+    theta_lb = -1.0 * theta_scale[:, None] * np.ones((1, 3))
+    theta_ub = 1.0 * theta_scale[:, None] * np.ones((1, 3))
     theta_rng = np.random.default_rng(11)
     theta_init = theta_rng.uniform(
         -theta_scale[:, None], theta_scale[:, None], size=ACC.theta_shape
     )
 
-    a_lb = np.array([-0.005, -0.005, -0.005, -0.42])
-    a_ub = np.array([0.005, 0.005, 0.005, 0.42])
+    a_lb = np.array([-0.1, -0.1, -0.1, -0.42])
+    a_ub = np.array([0.1, 0.1, 0.1, 0.42])
     projection_epsilon = 0.01
     a_hat_norm_max = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + projection_epsilon
     gamma_cbf = 10.0 * np.eye(ACC.adim)
