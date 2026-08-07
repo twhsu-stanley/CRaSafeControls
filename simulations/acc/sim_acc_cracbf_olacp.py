@@ -32,7 +32,9 @@ def run_pretraining(system, olacp, config, plot=True):
     t_pre = np.arange(K_pre * I_length, dtype=float) * dt
 
     pretrain_phase = 2.0 * np.pi * np.arange(K_pre) / K_pre
-    d0_schedule = 500.0 * np.sin(pretrain_phase + 0.2)
+    d0_schedule = mass * config["gravity"] * np.sin(
+        np.deg2rad(5.0 * np.sin(pretrain_phase + 0.2))
+    )
     wind_schedule = 2.0 + 3.0 * np.sin(0.7 * pretrain_phase - 0.1)
     delta_lead_schedule = -2.0 + 0.5 * np.sin(0.9 * pretrain_phase)
 
@@ -255,12 +257,12 @@ def run_cracbf_simulation(
     run_label = label or f"CP={bool(use_cp)}, adaptive={bool(use_adaptive)}"
 
     environment_phase = 2.0 * np.pi * np.arange(K) / K / 2.0
-    d0_schedule = -100.0 + 300.0 * np.sin(environment_phase + 0.15)
+    decline_angle_schedule = np.zeros(K)
+    decline_angle_schedule[8:] = 10.0
+    d0_schedule = mass * config["gravity"] * np.sin(np.deg2rad(decline_angle_schedule))
     wind_schedule = 10.0 * np.sin(0.7 * environment_phase - 0.2)
-    delta_lead_schedule = np.hstack((np.linspace(0.0, -4.0, 8), -4.0 * np.ones(K - 8)))
-    late_drag_start = 7.0 * interval_duration
-    late_drag_end = 9.0 * interval_duration
-    late_drag_force = 1400.0
+    wind_schedule[8:] = 21.0
+    delta_lead_schedule = np.hstack((np.linspace(0.0, -4.199, 8), -4.199 * np.ones(K - 8)))
 
     if np.any(np.diff(delta_lead_schedule) > 0.0):
         raise ValueError("The main lead vehicle must continue slowing down")
@@ -278,10 +280,7 @@ def run_cracbf_simulation(
 
     def true_uncertainty(x, t):
         index = schedule_index(t)
-        d0 = d0_schedule[index]
-        if late_drag_start <= t < late_drag_end:
-            d0 += late_drag_force
-        drag = drag_force(x, d0, wind_schedule[index])
+        drag = drag_force(x, d0_schedule[index], wind_schedule[index])
         return np.array([0.0, drag / mass, delta_lead_schedule[index]])
 
     online_olacp.clear_buffers()
@@ -828,7 +827,7 @@ def main():
     """Build the shared experiment, run the controller settings, and compare them."""
     K_pre = 32
     N_cal = 30
-    K = 10
+    K = 12
     B = 4
     dt = 0.01
     interval_duration = 2.0
@@ -849,7 +848,7 @@ def main():
     desired_velocity = 28.0
     nominal_lead_velocity = 25.0
     lead_velocity_scale = 10.0
-    u_min = -0.75 * mass * gravity
+    u_min = -1.0 * mass * gravity
     u_max = 0.5 * mass * gravity
     v_reference = desired_velocity
     z_reference = 35.0
@@ -914,14 +913,14 @@ def main():
         "lead_velocity_scale": lead_velocity_scale,
         "cbf_smoothing_epsilon": 0.02,
         "z_min": 10.0,
-        "T_h": 0.3,
+        "T_h": 0.45,
         "Gamma_cbf": gamma_cbf,
         "a_ub": a_ub,
         "a_lb": a_lb,
         "a_hat_norm_max": a_hat_norm_max,
         "epsilon": projection_epsilon,
         "eta_cbf": 1.0,
-        "cbf_rate": 2.5,
+        "cbf_rate": 7.0,
         "u_max": u_max,
         "u_min": u_min,
         "dt": dt,
