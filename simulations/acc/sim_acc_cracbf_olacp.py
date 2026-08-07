@@ -32,7 +32,7 @@ def run_pretraining(system, olacp, config, plot=True):
     t_pre = np.arange(K_pre * I_length, dtype=float) * dt
 
     pretrain_phase = 2.0 * np.pi * np.arange(K_pre) / K_pre
-    d0_schedule = -120.0 + 80.0 * np.sin(pretrain_phase + 0.2)
+    d0_schedule = -120.0 + 800.0 * np.sin(pretrain_phase + 0.2)
     wind_schedule = 2.0 + 3.0 * np.sin(0.7 * pretrain_phase - 0.1)
     delta_lead_schedule = -2.0 + 0.5 * np.sin(0.9 * pretrain_phase)
 
@@ -254,14 +254,16 @@ def run_cracbf_simulation(
     t_full = np.arange(K * I_length, dtype=float) * dt
     run_label = label or f"CP={bool(use_cp)}, adaptive={bool(use_adaptive)}"
 
-    environment_phase = 2.0 * np.pi * np.arange(K) / K
+    environment_phase = 2.0 * np.pi * np.arange(K) / 14.0
     d0_schedule = -100.0 + 300.0 * np.sin(environment_phase + 0.15)
     wind_schedule = 10.0 * np.sin(0.7 * environment_phase - 0.2)
-    #delta_lead_schedule = np.linspace(0.0, -4.0, K)
-    delta_lead_schedule = np.hstack((np.linspace(0.0, -4.0, K-3), -4.0 * np.ones(3)))
+    delta_lead_schedule = np.hstack((np.linspace(0.0, -4.0, 8), -4.0 * np.ones(K - 8)))
+    late_drag_start = 7.0 * interval_duration
+    late_drag_end = 8.0 * interval_duration
+    late_drag_force = 2560.0
 
-    #if np.any(np.diff(delta_lead_schedule) > 0.0):
-    #    raise ValueError("The main lead vehicle must continue slowing down")
+    if np.any(np.diff(delta_lead_schedule) > 0.0):
+        raise ValueError("The main lead vehicle must continue slowing down")
     true_a4_schedule = delta_lead_schedule / lead_velocity_scale
     if np.any(true_a4_schedule < system.a_lb[3]) or np.any(true_a4_schedule > system.a_ub[3]):
         raise ValueError("The online Delta v_l schedule is outside the a_4 bounds")
@@ -276,7 +278,10 @@ def run_cracbf_simulation(
 
     def true_uncertainty(x, t):
         index = schedule_index(t)
-        drag = drag_force(x, d0_schedule[index], wind_schedule[index])
+        d0 = d0_schedule[index]
+        if late_drag_start <= t < late_drag_end:
+            d0 += late_drag_force
+        drag = drag_force(x, d0, wind_schedule[index])
         return np.array([0.0, drag / mass, delta_lead_schedule[index]])
 
     online_olacp.clear_buffers()
@@ -353,7 +358,8 @@ def run_cracbf_simulation(
             )
             break
 
-        if sample_index % I_length == 0 and use_adaptive:
+        # The unsafe baseline may leave the tightened set before its certificate crosses zero.
+        if sample_index % I_length == 0 and use_adaptive and use_cp:
             if tightened_margin_hist[sample_index] < -1e-8:
                 raise ValueError(
                     f"{run_label}: interval {interval_index + 1} starts outside the tightened set"
@@ -542,7 +548,7 @@ def run_cracbf_simulation(
             raise RuntimeError(f"{run_label}: CRaCBF intervention did not cause the velocity peak")
         if x_hist[-1, 1] >= x_hist[ego_peak_index, 1] - 1.0:
             raise RuntimeError(f"{run_label}: the ego vehicle did not slow after intervention")
-        if use_adaptive and np.min(tightened_margin_hist) < -1e-6:
+        if use_adaptive and use_cp and np.min(tightened_margin_hist) < -1e-6:
             raise RuntimeError(f"{run_label}: the tightened CRaCBF set was violated")
 
     true_a4_hist = (lead_velocity_hist - nominal_lead_velocity) / lead_velocity_scale
@@ -819,10 +825,10 @@ def plot_cracbf_results(results):
 
 
 def main():
-    """Build the shared experiment, run two controller settings, and compare them."""
+    """Build the shared experiment, run the controller settings, and compare them."""
     K_pre = 32
     N_cal = 30
-    K = 14
+    K = 10
     B = 4
     dt = 0.01
     interval_duration = 2.0
@@ -843,7 +849,7 @@ def main():
     desired_velocity = 28.0
     nominal_lead_velocity = 25.0
     lead_velocity_scale = 10.0
-    u_min = -0.5 * mass * gravity
+    u_min = -0.75 * mass * gravity
     u_max = 0.5 * mass * gravity
     v_reference = desired_velocity
     z_reference = 35.0
@@ -855,16 +861,15 @@ def main():
     theta_lb = -20.0 * theta_scale[:, None] * np.ones((1, 3))
     theta_ub = 20.0 * theta_scale[:, None] * np.ones((1, 3))
     theta_rng = np.random.default_rng(11)
-    #theta_init = theta_rng.uniform(
-    #    -theta_scale[:, None], theta_scale[:, None], size=ACC.theta_shape
-    #)
-    theta_init = theta_rng.uniform(theta_lb, theta_ub)
+    theta_init = theta_rng.uniform(
+        -theta_scale[:, None], theta_scale[:, None], size=ACC.theta_shape
+    )
 
-    a_lb = np.array([-0.05, -0.05, -0.05, -0.42])
-    a_ub = np.array([0.05, 0.05, 0.05, 0.42])
+    a_lb = np.array([-0.005, -0.005, -0.005, -0.42])
+    a_ub = np.array([0.005, 0.005, 0.005, 0.42])
     projection_epsilon = 0.01
     a_hat_norm_max = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + projection_epsilon
-    gamma_cbf = np.eye(ACC.adim)
+    gamma_cbf = 10.0 * np.eye(ACC.adim)
 
     config = {
         "K_pre": K_pre,
@@ -915,7 +920,7 @@ def main():
         "a_lb": a_lb,
         "a_hat_norm_max": a_hat_norm_max,
         "epsilon": projection_epsilon,
-        "eta_cbf": 0.005,
+        "eta_cbf": 1.0,
         "cbf_rate": 2.5,
         "u_max": u_max,
         "u_min": u_min,
@@ -935,8 +940,8 @@ def main():
         [],
         N_cal=N_cal,
         acp_lr=0.02,
-        delta_target=0.05,
-        delta_init=0.05,
+        delta_target=0.1,
+        delta_init=0.1,
         buffer_maxlen=I_length,
         Theta_init=theta_init,
         representation_period=B,
