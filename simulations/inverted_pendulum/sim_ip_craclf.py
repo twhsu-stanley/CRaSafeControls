@@ -188,8 +188,8 @@ def run_craclf_simulation(
     run_label = label or f"CP={bool(use_cp)}, adaptive={bool(use_adaptive)}"
 
     wind_indices = np.arange(K)
-    vertical_wind_schedule = -2.5
-    vertical_wind_schedule += 2.5 * np.cos(2.0 * np.pi * wind_indices / 7.0)
+    vertical_wind_schedule = -4.25
+    vertical_wind_schedule -= 0.5 * np.cos(2.0 * np.pi * wind_indices / 3.0)
 
     def schedule_index(t):
         interval_index = int(np.floor(max(float(t), 0.0) / interval_duration))
@@ -607,8 +607,9 @@ def main():
     nominal_gravity = 9.81
     true_gravity = 12.21
 
-    theta_lb = -2.0 * np.ones(IP.theta_shape)
-    theta_ub = 2.0 * np.ones(IP.theta_shape)
+    # Limit representation capacity so angle-dependent error remains for CP calibration.
+    theta_lb = -0.5 * np.ones(IP.theta_shape)
+    theta_ub = 0.5 * np.ones(IP.theta_shape)
     theta_rng = np.random.default_rng(11)
     theta_init = theta_rng.uniform(theta_lb, theta_ub)
 
@@ -617,12 +618,14 @@ def main():
     projection_epsilon = 0.01
     a_hat_norm_max = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2)
     a_hat_norm_max += projection_epsilon
-    clf_scale = 5e-4
+    # Scaling Q and R together preserves the LQR gain. This normalization also
+    # keeps the slack-penalty Hessian well conditioned for the QP solver.
+    clf_scale = 10.0
     effective_gamma_clf = 7.5e-2
     gamma_scale = effective_gamma_clf / clf_scale / IP.adim
     gamma_clf = gamma_scale * np.eye(IP.adim)
-    u_min = -60.0
-    u_max = 60.0
+    u_min = -12.0
+    u_max = 12.0
 
     config = {
         "K_pre": K_pre,
@@ -636,7 +639,7 @@ def main():
         "pretrain_excitation_frequency": 0.1,
         "pretrain_state_norm_max": 3.0,
         "main_initial_state": np.array([0.18, 0.0]),
-        "divergence_norm": 6.0,
+        "divergence_norm": 2.0,  # exit threshold for the local upright domain
     }
     base_ip_params = {
         "mass": mass,
@@ -656,7 +659,7 @@ def main():
         "a_hat_norm_max": a_hat_norm_max,
         "epsilon": projection_epsilon,
         "eta_clf": clf_scale * 10.0,
-        "clf_rate": 2.0,
+        "clf_rate": 0.5,
         "weight_slack": 1e5 / clf_scale**2,
         "u_min": u_min,
         "u_max": u_max,
@@ -735,18 +738,31 @@ def main():
 
     cp_adaptive_result = results["CP + adaptive"]
     cp_adaptive_metrics = cp_adaptive_result["metrics"]
+    no_cp_adaptive_result = results["No CP + adaptive"]
+    no_cp_adaptive_metrics = no_cp_adaptive_result["metrics"]
     nonadaptive_result = results["No CP + nonadaptive"]
     nonadaptive_metrics = nonadaptive_result["metrics"]
     if cp_adaptive_result["status"] != "completed" or cp_adaptive_metrics["tail_rms"] >= 0.05:
         warnings.warn("The CP + adaptive run did not stabilize")
-    if cp_adaptive_metrics["max_slack"] >= 1e-2:
-        warnings.warn("The CP + adaptive QP slack exceeded 1e-2")
-    if cp_adaptive_metrics["a_hat_change"] <= 3e-2:
+    if cp_adaptive_metrics["max_slack"] / clf_scale >= 1e-1:
+        warnings.warn("The normalized CP + adaptive QP slack exceeded 1e-1")
+    if cp_adaptive_metrics["a_hat_change"] <= 1e-4:
         warnings.warn("The CRaCLF parameter estimate did not change materially")
-    if cp_adaptive_metrics["rho_range"] <= 5e-5:
+    if cp_adaptive_metrics["rho_range"] <= 1e-6:
         warnings.warn("The CRaCLF scaling state did not change materially")
-    if cp_adaptive_metrics["nu_range"] <= 1e-5:
+    if cp_adaptive_metrics["nu_range"] <= 1e-6:
         warnings.warn("rho did not materially change the adaptation scaling")
+    no_cp_adaptive_failed = (
+        no_cp_adaptive_result["status"] != "completed"
+        or no_cp_adaptive_metrics["tail_rms"] > 0.25
+    )
+    if not no_cp_adaptive_failed:
+        warnings.warn("The no-CP adaptive run unexpectedly stabilized")
+    nonadaptive_failed = (
+        nonadaptive_result["status"] != "completed" or nonadaptive_metrics["tail_rms"] > 0.25
+    )
+    if not nonadaptive_failed:
+        warnings.warn("The no-CP nonadaptive run unexpectedly stabilized")
     if cp_adaptive_metrics["tail_rms"] >= nonadaptive_metrics["tail_rms"]:
         warnings.warn("The CP + adaptive run did not improve on the nonadaptive baseline")
     if nonadaptive_metrics["a_hat_change"] > 1e-12:

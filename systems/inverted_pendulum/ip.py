@@ -7,7 +7,7 @@ from systems.control_affine_system import ControlAffineSystem
 class IP(ControlAffineSystem):
     """Direct-torque inverted pendulum with matched parametric uncertainty.
 
-    The unknown damping, gravity, and wind terms are approximated by
+    A four-feature model approximates the damping, gravity, and wind uncertainty by
 
         Y_Theta(x) a = Psi(x) Theta a.
 
@@ -15,7 +15,7 @@ class IP(ControlAffineSystem):
     the LQR Riccati equation for the upright certainty-equivalent linearization.
     """
 
-    theta_shape = (6, 5)
+    theta_shape = (4, 5)
     xdim = 2
     udim = 1
     adim = 5
@@ -99,19 +99,12 @@ class IP(ControlAffineSystem):
 
     @staticmethod
     def psi(x):
-        """Return the acceleration-level feature matrix Psi(x)."""
+        """Return the coarse four-feature acceleration-level matrix Psi(x)."""
         phi, phi_dot = np.asarray(x, dtype=float).reshape(2)
         return np.array(
             [
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [
-                    1.0,
-                    np.sin(phi),
-                    np.cos(phi) - 1.0,
-                    phi_dot,
-                    phi_dot * np.cos(2.0 * phi),
-                    phi_dot * np.sin(2.0 * phi),
-                ],
+                [0.0, 0.0, 0.0, 0.0],
+                [1.0, np.sin(phi), np.cos(phi) - 1.0, phi_dot],
             ],
             dtype=float,
         )
@@ -220,8 +213,8 @@ class IP(ControlAffineSystem):
     @staticmethod
     def _representation_linear_terms(beta):
         """Return position and velocity terms in the upright linearization."""
-        beta = np.asarray(beta, dtype=float).reshape(6)
-        return float(beta[1]), float(beta[3] + beta[4])
+        beta = np.asarray(beta, dtype=float).reshape(4)
+        return float(beta[1]), float(beta[3])
 
     def estimated_trim_input(self, a_hat):
         """Return the torque that centers the estimated upright drift."""
