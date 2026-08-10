@@ -21,9 +21,9 @@ def noise_fcn(t):
     """Return deterministic noise in the uncertain state channels."""
     return np.array(
         [
-            0.001 * np.sin(2.0 * np.pi * 0.67 * t + 0.3),
+            0.005 * np.sin(2.0 * np.pi * 0.67 * t + 0.3),
             0.0,
-            0.001 * np.cos(2.0 * np.pi * 0.87 * t + 0.1),
+            0.008 * np.cos(2.0 * np.pi * 0.87 * t + 0.1),
         ]
     )
 
@@ -45,11 +45,22 @@ def true_uncertainty_fcn(x, t, schedule):
 def pretraining_control(x, t, config):
     """Return a bounded stabilizing and persistently exciting nominal input."""
     x = np.asarray(x, dtype=float).reshape(3)
-    feedback = -np.tanh(x[1]) - 2.0 * x[0] - 2.0 * x[2]
-    excitation = config["pretrain_excitation_amplitude"] * np.sin(
-        2.0 * np.pi * config["pretrain_excitation_frequency"] * t
+    amplitude = config["pretrain_excitation_amplitude"]
+    omega = 2.0 * np.pi * config["pretrain_excitation_frequency"]
+    phase_1 = omega * t
+    phase_2 = 2.3 * omega * t + 0.4
+    x1_reference = 0.4 + amplitude * (
+        0.75 * np.sin(phase_1) + 0.35 * np.sin(phase_2)
     )
-    return np.array([feedback + excitation])
+    x3_reference = amplitude * omega * (
+        0.75 * np.cos(phase_1) + 0.805 * np.cos(phase_2)
+    )
+    x3_reference_dot = -amplitude * omega**2 * (
+        0.75 * np.sin(phase_1) + 1.8515 * np.sin(phase_2)
+    )
+    feedback = x3_reference_dot - np.tanh(x[1])
+    feedback += 6.0 * (x1_reference - x[0]) + 4.0 * (x3_reference - x[2])
+    return np.array([feedback])
 
 
 def run_pretraining(system, olacp, config, plot=True):
@@ -238,17 +249,22 @@ def run_craccm_simulation(
     K = config["K"]
     interval_duration = config["interval_duration"]
 
-    interval_indices = np.arange(K, dtype=float)
-    latent_1 = -0.65 + 0.30 * np.sin(2.0 * np.pi * interval_indices / 9.0)
-    latent_2 = 0.65 * np.cos(2.0 * np.pi * interval_indices / 7.0)
+    interval_times = interval_duration * np.arange(K, dtype=float)
+    alternating = np.cos(np.pi * interval_times / interval_duration)
+    latent_1 = -0.45 + 0.35 * np.sin(
+        2.0 * np.pi * interval_times / (7.0 * interval_duration) + 0.2
+    )
+    latent_2 = 0.45 * np.cos(
+        2.0 * np.pi * interval_times / (5.0 * interval_duration) - 0.3
+    )
     schedule_values = np.vstack(
         (
-            latent_1,
-            latent_2,
-            latent_1 + 0.08 * np.sin(2.0 * np.pi * interval_indices / 5.0 + 0.3),
-            latent_2 + 0.07 * np.cos(2.0 * np.pi * interval_indices / 6.0 - 0.2),
-            latent_1 + 0.06 * np.cos(2.0 * np.pi * interval_indices / 8.0 + 0.4),
-            latent_2 + 0.09 * np.sin(2.0 * np.pi * interval_indices / 10.0 + 0.6),
+            latent_1 + 0.70 * alternating,
+            latent_2 + 0.10 * np.sin(np.pi * interval_times / interval_duration + 0.4),
+            latent_1 + 0.12 * np.sin(0.40 * interval_times + 0.3),
+            latent_2 - 0.40 * alternating,
+            latent_1 + 0.10 * np.cos(0.35 * interval_times + 0.2),
+            latent_2 + 0.40 * alternating,
         )
     )
 
@@ -515,21 +531,23 @@ def main():
     """Pretrain Algorithm 1, plan once, and compare three controller settings."""
     K_pre = 100
     N_cal = 80
-    K = 5
+    K = 10
     B = 5
     dt = 0.01
-    interval_duration = 2.0
+    interval_duration = 1.0
     I_length = int(round(interval_duration / dt))
     if K_pre < N_cal or K_pre % B != 0:
         raise ValueError("K_pre must fill N_cal and contain complete representation blocks")
     if I_length < 10 or not np.isclose(I_length * dt, interval_duration):
         raise ValueError("interval_duration must be an integer multiple of dt")
 
-    theta_init = np.array([[0.8, -0.3], [0.2, 0.7], [-0.4, 0.5]])
-    theta_lb = -2.0 * np.ones(NONLINEAR_TOY.theta_shape)
-    theta_ub = 2.0 * np.ones(NONLINEAR_TOY.theta_shape)
-    a_lb = -1.5 * np.ones(NONLINEAR_TOY.adim)
-    a_ub = 1.5 * np.ones(NONLINEAR_TOY.adim)
+    theta_lb = -1.25 * np.ones(NONLINEAR_TOY.theta_shape)
+    theta_ub = 1.25 * np.ones(NONLINEAR_TOY.theta_shape)
+    theta_rng = np.random.default_rng(42)
+    theta_init = theta_rng.uniform(theta_lb, theta_ub, size=NONLINEAR_TOY.theta_shape)
+
+    a_lb = -2.0 * np.ones(NONLINEAR_TOY.adim)
+    a_ub = 2.0 * np.ones(NONLINEAR_TOY.adim)
     projection_epsilon = 0.01
     a_hat_norm_max = 0.5 * np.linalg.norm(a_ub - a_lb) + projection_epsilon
 
@@ -541,16 +559,16 @@ def main():
         "dt": dt,
         "interval_duration": interval_duration,
         "I_length": I_length,
-        "pretrain_excitation_amplitude": 0.5,
-        "pretrain_excitation_frequency": 0.25,
+        "pretrain_excitation_amplitude": 0.75,
+        "pretrain_excitation_frequency": 0.12,
         "pretrain_initial_state": np.array([0.5, -0.3, 0.0]),
         "nominal_initial_state": np.array([1.0, -1.8, -1.2]),
-        "nominal_goal_state": np.array([2.0, 1.0, 1.5]),
-        "tracking_initial_offset": np.array([0.25, -0.20, 0.15]),
+        "nominal_goal_state": np.array([2.5, 1.5, 0.8]),
+        "tracking_initial_offset": np.array([0.15, -0.12, 0.10]),
         "divergence_norm": 20.0,
         "geodesic_degree": 2,
         "geodesic_nodes": 8,
-        "use_qpsolvers": True,
+        "use_qpsolvers": False,
         "verify_geodesic": False,
     }
     base_params = {
@@ -560,9 +578,9 @@ def main():
         "a_lb": a_lb,
         "a_hat_norm_max": a_hat_norm_max,
         "epsilon": projection_epsilon,
-        "eta_ccm": 5.0,
+        "eta_ccm": 2.0,
         "ccm_rate": 0.8,
-        "weight_slack": 1e4,
+        "weight_slack": 1e3,
         "u_min": -20.0,
         "u_max": 20.0,
         "dt": dt,
@@ -574,12 +592,12 @@ def main():
     pretrain_system = NONLINEAR_TOY(pretrain_params)
 
     def representation_rate(update_index):
-        return 1e-2 / np.sqrt(update_index)
+        return 5e-3 / np.sqrt(update_index)
 
     olacp = OLACP(
         [],
         N_cal=N_cal,
-        acp_lr=0.02,
+        acp_lr=0.1,
         delta_target=0.1,
         delta_init=0.1,
         buffer_maxlen=I_length,
