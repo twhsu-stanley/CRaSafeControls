@@ -562,7 +562,7 @@ def main():
         "epsilon": projection_epsilon,
         "eta_ccm": 5.0,
         "ccm_rate": 0.8,
-        "weight_slack": 1000.0,
+        "weight_slack": 1e4,
         "u_min": -20.0,
         "u_max": 20.0,
         "dt": dt,
