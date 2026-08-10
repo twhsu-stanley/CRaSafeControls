@@ -1,4 +1,4 @@
-"""Algorithm 1 and CRaCLF comparison for the underactuated Pendubot."""
+"""Algorithm 1 and CRaCLF for the Pendubot"""
 
 import copy
 import os

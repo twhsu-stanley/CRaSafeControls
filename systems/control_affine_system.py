@@ -72,9 +72,26 @@ class ControlAffineSystem:
                     "epsilon must satisfy 0 < epsilon < a_hat_norm_max"
                 )
 
+            # Check if at least one of Gamma_cbf, Gamma_clf, and Gamma_ccm is not None
+            if self.Gamma_cbf is None and self.Gamma_clf is None and self.Gamma_ccm is None:
+                raise ValueError("At least one of Gamma_cbf, Gamma_clf, or Gamma_ccm must be provided")
+
+            # Check if Gamma_cbf, Gamma_clf, and Gamma_ccm, if not none, are positive definite
+            for name in ("Gamma_cbf", "Gamma_clf", "Gamma_ccm"):
+                Gamma = getattr(self, name)
+                if Gamma is None:
+                    continue
+                if Gamma.ndim != 2 or Gamma.shape[0] != self.adim or Gamma.shape[1] != self.adim:
+                    raise ValueError(f"{name} must be a square matrix of size ({self.adim}, {self.adim})")
+                if not np.allclose(Gamma, Gamma.T):
+                    raise ValueError(f"{name} must be symmetric")
+                try:
+                    np.linalg.cholesky(Gamma)
+                except np.linalg.LinAlgError as exc:
+                    raise ValueError(f"{name} must be positive definite") from exc
+            
             if self.Gamma_cbf is not None:
                 # NOTE: self.a_err_max is only used by the CRaCBF
-                # NOTE: assuming Gamma_cbf is positive definite and symmetric
                 # Find min_a a^T @ inv(Gamma_cbf) @ a subject to ||a|| == a_err_norm_max
                 eigvals, eigvecs = np.linalg.eigh(np.linalg.inv(self.Gamma_cbf))
                 #self.a_err_max = a_err_norm_max * eigvecs[:,np.argmin(eigvals)]

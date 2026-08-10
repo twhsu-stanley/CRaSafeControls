@@ -1,4 +1,4 @@
-"""Algorithm 1 and CRaCLF comparison for the inverted pendulum."""
+"""Algorithm 1 and CRaCLF for the inverted pendulum"""
 
 import copy
 import os

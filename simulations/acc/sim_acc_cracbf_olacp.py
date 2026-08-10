@@ -1,4 +1,4 @@
-"""Algorithm 1 and CRaCBF comparison for adaptive cruise control."""
+"""Algorithm 1 and CRaCBF for adaptive cruise control (acc)"""
 
 import copy
 import os
