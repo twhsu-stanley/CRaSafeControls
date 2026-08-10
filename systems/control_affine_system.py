@@ -365,7 +365,10 @@ class ControlAffineSystem:
         # x_d: desired state
         # u_d: nominal control input; u_d.shape = (self.udim,) or (self.udim, 1)
 
-        u_d = u_d.reshape(self.udim, 1) # ensure correct shape
+        x = np.asarray(x, dtype=float).reshape(self.xdim)
+        x_d = np.asarray(x_d, dtype=float).reshape(self.xdim)
+        a_hat_ccm = np.asarray(a_hat_ccm, dtype=float).reshape(self.adim)
+        u_d = np.asarray(u_d, dtype=float).reshape(self.udim, 1)
 
         # Compute geodesic
         self.calc_geodesic(geodesic_solver, x, x_d, a_hat_ccm, verify_geodesic) # update gamma, gamma_s, and E_rem
@@ -373,12 +376,17 @@ class ControlAffineSystem:
         gamma_s1_M_x = self.gamma_s[:, -1].reshape(1,-1) @ np.linalg.inv(self.W_fcn(x, a_hat_ccm))
         gamma_s0_M_d = self.gamma_s[:, 0].reshape(1,-1) @ np.linalg.inv(self.W_fcn(x_d, a_hat_ccm))
         
-        if self.use_adaptive: 
+        f_x = np.asarray(self.f(x), dtype=float).reshape(self.xdim, 1)
+        f_d = np.asarray(self.f(x_d), dtype=float).reshape(self.xdim, 1)
+        g_x = np.asarray(self.g(x), dtype=float).reshape(self.xdim, self.udim)
+        g_d = np.asarray(self.g(x_d), dtype=float).reshape(self.xdim, self.udim)
+
+        if self.use_adaptive:
             Y_x_a = (self.Y(x) @ a_hat_ccm).reshape(-1,1)
             Y_d_a = (self.Y(x_d) @ a_hat_ccm).reshape(-1,1)
         else:
-            Y_x_a = 0.0
-            Y_d_a = 0.0
+            Y_x_a = np.zeros((self.xdim, 1))
+            Y_d_a = np.zeros((self.xdim, 1))
 
         if self.use_cp:
             #Theta = np.linalg.cholesky(M_x)
@@ -388,9 +396,9 @@ class ControlAffineSystem:
         else:
             tightening = 0.0
         
-        A = gamma_s1_M_x @ self.g(x)
-        B = (gamma_s1_M_x @ (self.f(x) + self.g(x) @ u_d + Y_x_a)
-            - gamma_s0_M_d @ (self.f(x_d) + self.g(x_d) @ u_d + Y_d_a)
+        A = gamma_s1_M_x @ g_x
+        B = (gamma_s1_M_x @ (f_x + g_x @ u_d + Y_x_a)
+            - gamma_s0_M_d @ (f_d + g_d @ u_d + Y_d_a)
             + self.ccm_rate * self.Erem).item()
 
         if use_qpsolvers is True: 
