@@ -17,6 +17,31 @@ from olacp import OLACP
 from systems.nonlinear_toy.nonlinear_toy import NONLINEAR_TOY
 
 
+def noise_fcn(t):
+    """Return deterministic noise in the uncertain state channels."""
+    return np.array(
+        [
+            0.001 * np.sin(2.0 * np.pi * 0.67 * t + 0.3),
+            0.0,
+            0.001 * np.cos(2.0 * np.pi * 0.87 * t + 0.1),
+        ]
+    )
+
+
+def true_uncertainty_fcn(x, t, schedule):
+    """Evaluate the fixed physical uncertainty structure at scheduled values."""
+    x1, _, x3 = np.asarray(x, dtype=float).reshape(NONLINEAR_TOY.xdim)
+    schedule = np.asarray(schedule, dtype=float).reshape(6)
+    noise = noise_fcn(t)
+    if not np.all(np.isfinite(schedule)) or not np.all(np.isfinite(noise)):
+        raise ValueError("uncertainty schedules and noise must be finite")
+
+    w1 = (0.8 * schedule[0] + 1.3 * schedule[1]) * x1 + noise[0]
+    w3 = (0.23 * schedule[2] + 0.87 * schedule[3]) * x3
+    w3 += (0.23 * schedule[4] + 0.87 * schedule[5]) * x1**2 + noise[2]
+    return np.array([w1, 0.0, w3])
+
+
 def pretraining_control(x, t, config):
     """Return a bounded stabilizing and persistently exciting nominal input."""
     x = np.asarray(x, dtype=float).reshape(3)
@@ -32,8 +57,30 @@ def run_pretraining(system, olacp, config, plot=True):
     K_pre = config["K_pre"]
     I_length = config["I_length"]
     dt = config["dt"]
+    interval_duration = config["interval_duration"]
     t_pre = np.arange(K_pre * I_length, dtype=float) * dt
 
+    interval_indices = np.arange(K_pre, dtype=float)
+    latent_1 = -0.65 + 0.30 * np.sin(2.0 * np.pi * interval_indices / 9.0)
+    latent_2 = 0.65 * np.cos(2.0 * np.pi * interval_indices / 7.0)
+    schedule_values = np.vstack(
+        (
+            latent_1,
+            latent_2,
+            latent_1 + 0.08 * np.sin(2.0 * np.pi * interval_indices / 5.0 + 0.3),
+            latent_2 + 0.07 * np.cos(2.0 * np.pi * interval_indices / 6.0 - 0.2),
+            latent_1 + 0.06 * np.cos(2.0 * np.pi * interval_indices / 8.0 + 0.4),
+            latent_2 + 0.09 * np.sin(2.0 * np.pi * interval_indices / 10.0 + 0.6),
+        )
+    )
+
+    def schedule_index(t):
+        return min(int(np.floor(max(float(t), 0.0) / interval_duration)), K_pre - 1)
+
+    def true_uncertainty(x, t):
+        return true_uncertainty_fcn(x, t, schedule_values[:, schedule_index(t)])
+
+    system.true_uncertainty_fcn = true_uncertainty
     system.set_representation(olacp.Theta)
     x = config["pretrain_initial_state"].copy()
     x_hist = np.zeros((len(t_pre), system.xdim))
@@ -106,6 +153,7 @@ def run_pretraining(system, olacp, config, plot=True):
         "score_hist": score_hist,
         "true_uncertainty_hist": true_uncertainty_hist,
         "fitted_uncertainty_hist": fitted_uncertainty_hist,
+        "uncertainty_schedule_values": schedule_values,
         "quantile": quantile,
     }
 
@@ -187,6 +235,30 @@ def run_craccm_simulation(
     if bool(system.use_cp) != bool(use_cp) or bool(system.use_adaptive) != bool(use_adaptive):
         raise ValueError("The toy system must be constructed with the requested controller flags")
 
+    K = config["K"]
+    interval_duration = config["interval_duration"]
+
+    interval_indices = np.arange(K, dtype=float)
+    latent_1 = -0.65 + 0.30 * np.sin(2.0 * np.pi * interval_indices / 9.0)
+    latent_2 = 0.65 * np.cos(2.0 * np.pi * interval_indices / 7.0)
+    schedule_values = np.vstack(
+        (
+            latent_1,
+            latent_2,
+            latent_1 + 0.08 * np.sin(2.0 * np.pi * interval_indices / 5.0 + 0.3),
+            latent_2 + 0.07 * np.cos(2.0 * np.pi * interval_indices / 6.0 - 0.2),
+            latent_1 + 0.06 * np.cos(2.0 * np.pi * interval_indices / 8.0 + 0.4),
+            latent_2 + 0.09 * np.sin(2.0 * np.pi * interval_indices / 10.0 + 0.6),
+        )
+    )
+
+    def schedule_index(t):
+        return min(int(np.floor(max(float(t), 0.0) / interval_duration)), K - 1)
+
+    def true_uncertainty(x, t):
+        return true_uncertainty_fcn(x, t, schedule_values[:, schedule_index(t)])
+
+    system.true_uncertainty_fcn = true_uncertainty
     online_olacp.clear_buffers()
     if online_olacp._representation_intervals:
         raise RuntimeError("The pretrained OLACP contains an incomplete representation block")
@@ -199,7 +271,7 @@ def run_craccm_simulation(
 
     I_length = config["I_length"]
     dt = config["dt"]
-    t_full = np.arange(config["K"] * I_length, dtype=float) * dt
+    t_full = np.arange(K * I_length, dtype=float) * dt
     run_label = label or f"CP={bool(use_cp)}, adaptive={bool(use_adaptive)}"
 
     x = trajectory["x_d"][:, 0] + config["tracking_initial_offset"]
@@ -371,6 +443,7 @@ def run_craccm_simulation(
         "score_hist": np.asarray(score_hist),
         "delta_hist": np.asarray(delta_hist),
         "miscoverage_hist": np.asarray(miscoverage_hist),
+        "uncertainty_schedule_values": schedule_values,
         "status": status,
         "metrics": metrics,
         "final_theta": online_olacp.Theta.copy(),
@@ -440,9 +513,9 @@ def plot_craccm_results(results, trajectory):
 
 def main():
     """Pretrain Algorithm 1, plan once, and compare three controller settings."""
-    K_pre = 30
-    N_cal = 30
-    K = 3
+    K_pre = 100
+    N_cal = 80
+    K = 5
     B = 5
     dt = 0.01
     interval_duration = 2.0
@@ -493,6 +566,7 @@ def main():
         "u_min": -20.0,
         "u_max": 20.0,
         "dt": dt,
+        "true_uncertainty": lambda x, t: np.zeros(NONLINEAR_TOY.xdim),
     }
 
     pretrain_params = dict(base_params)
