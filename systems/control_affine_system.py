@@ -446,14 +446,13 @@ class ControlAffineSystem:
                         u_qp = np.zeros((self.udim,1))
                         slack = B + tightening
             else:
-                #TODO: complete this
                 raise ValueError(f"Analytic QP solution for CRaCCM with no slack is not supported")
 
         uc = u_d + u_qp
 
-        # Pint uncertainty terms for debugging
+        # Print uncertainty terms for debugging
         #U1 = -((a_hat_ccm - self.a_true).T @ self.Y(x).T @ gamma_s1_M_x.T).item() # term to be cancelled by adaptive a_dot
-        #U2 = (gamma_s0_M_d @ self.Y(x_d) @ a_hat_ccm).item() # term to be cancelled by adaptive rho_dot
+        #U2 = 2 * (gamma_s0_M_d @ self.Y(x_d) @ a_hat_ccm).item() # term to be cancelled by adaptive rho_dot
         #print("U1=", U1, "; U2=", U2)
 
         return uc, slack
