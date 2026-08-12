@@ -428,23 +428,12 @@ class ControlAffineSystem:
             # Analytic solution
             if use_slack:
                 denom = (1 + self.weight_slack * A @ A.T).item()
-                #tightening = (tightening * denom + B)/(denom-1)
-                A_norm = np.linalg.norm(A, 2)
-                if A_norm > 1e-5:
-                    if B + tightening <= 0:
-                        u_qp = np.zeros((self.udim,1))
-                        slack = 0.0
-                    else:
-                        u_qp = (-self.weight_slack * (B + tightening) * A.T) / denom
-                        slack = (B + tightening) / denom
+                if B + tightening <= 0:
+                    u_qp = np.zeros((self.udim,1))
+                    slack = 0.0
                 else:
-                    print(f"Loss of control authority: norm(A)={A_norm:2E}")
-                    if B + tightening <= 0:
-                        u_qp = np.zeros((self.udim,1))
-                        slack = 0.0
-                    else:
-                        u_qp = np.zeros((self.udim,1))
-                        slack = B + tightening
+                    u_qp = (-self.weight_slack * (B + tightening) * A.T) / denom
+                    slack = (B + tightening) / denom
             else:
                 raise ValueError(f"Analytic QP solution for CRaCCM with no slack is not supported")
 

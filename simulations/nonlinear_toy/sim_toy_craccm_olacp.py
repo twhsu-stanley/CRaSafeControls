@@ -837,7 +837,7 @@ def main():
         "rho_divergence_threshold": 1e10,
         "geodesic_degree": 2,
         "geodesic_nodes": 8,
-        "use_qpsolvers": False,
+        "use_qpsolvers": True,
         "verify_geodesic": False,
     }
     base_params = {
