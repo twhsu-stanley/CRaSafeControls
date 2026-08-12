@@ -588,7 +588,7 @@ class ControlAffineSystem:
     @staticmethod
     def dnu_drho_ccm(rho_ccm):
         dnu_drho = 1/(1+(rho_ccm)**2)/np.pi
-        return max(dnu_drho, 1e-20)
+        return dnu_drho
     
     # Functions for projection-based adaptive controls
     @staticmethod
