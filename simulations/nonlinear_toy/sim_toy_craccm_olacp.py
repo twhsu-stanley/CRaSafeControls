@@ -21,9 +21,9 @@ def noise_fcn(t):
     """Return deterministic noise in the uncertain state channels."""
     return np.array(
         [
-            0.4 * np.sin(2.0 * np.pi * 0.67 * t + 0.3),
+            0.20 * np.sin(2.0 * np.pi * 0.67 * t + 0.3),
             0.0,
-            0.2 * np.cos(2.0 * np.pi * 0.87 * t + 0.1),
+            0.30 * np.cos(2.0 * np.pi * 0.87 * t + 0.1),
         ]
     )
 
@@ -262,16 +262,16 @@ def run_craccm_simulation(
 
     interval_times = interval_duration * np.arange(K, dtype=float)
     alternating = np.cos(np.pi * interval_times / interval_duration)
-    latent_1 = -0.55 + 0.35 * np.sin(2.0 * np.pi * interval_times / (7.0 * interval_duration) + 0.2)
-    latent_2 = 0.45 * np.cos(2.0 * np.pi * interval_times / (5.0 * interval_duration) - 0.3)
+    latent_1 = 0.80 + 0.40 * np.sin(2.0 * np.pi * interval_times / (7.0 * interval_duration) + 0.2)
+    latent_2 = 0.35 * np.cos(2.0 * np.pi * interval_times / (5.0 * interval_duration) - 0.3)
     schedule_values = np.vstack(
         (
-            latent_1 + 0.070 * alternating,
+            latent_1 + 0.10 * alternating,
             latent_2 + 0.010 * np.sin(np.pi * interval_times / interval_duration + 0.4),
             latent_1 + 0.012 * np.sin(0.40 * interval_times + 0.3),
-            latent_2 - 0.040 * alternating,
+            latent_2 - 0.06 * alternating,
             latent_1 + 0.010 * np.cos(0.35 * interval_times + 0.2),
-            latent_2 + 0.040 * alternating,
+            latent_2 + 0.06 * alternating,
         )
     )
 
@@ -832,7 +832,7 @@ def main():
         "motion_planner_Q": np.diag([100.0, 1.0, 100.0]),
         "motion_planner_R": 1e-3 * np.eye(NONLINEAR_TOY.udim),
         "motion_planner_Q_f": np.diag([1000.0, 10.0, 1000.0]),
-        "tracking_initial_offset": np.array([0.9, 5.0, 0.1]),
+        "tracking_initial_offset": np.array([0.3, -0.2, 0.4]),
         "x_norm_divergence_threshold": 10.0,
         "rho_divergence_threshold": 1e10,
         "geodesic_degree": 2,
