@@ -202,9 +202,9 @@ def plan_nominal_trajectory(system, config):
     planner = MotionPlanner(
         system=system,
         dt=config["dt"],
-        Q=np.eye(system.xdim),
-        R=0.1 * np.eye(system.udim),
-        Q_f=10.0 * np.eye(system.xdim),
+        Q=config["motion_planner_Q"],
+        R=config["motion_planner_R"],
+        Q_f=config["motion_planner_Q_f"],
         u_min=np.array([system.params["u_min"]]),
         u_max=np.array([system.params["u_max"]]),
     )
@@ -223,6 +223,17 @@ def plan_nominal_trajectory(system, config):
     )
     t_x = config["dt"] * np.arange(horizon_steps + 1)
     t_u = t_x[:-1]
+    regressor_norm = np.asarray(
+        [
+            np.linalg.norm(system.Y(x_d[:, index]), ord="fro")
+            for index in range(horizon_steps + 1)
+        ]
+    )
+    maximum_regressor_norm = float(np.max(regressor_norm))
+    print(
+        "Nominal plan complete: "
+        f"max ||Y_Theta(x_d)||_F={maximum_regressor_norm:.3e}, "
+    )
     return {
         "t_x": t_x,
         "t_u": t_u,
@@ -251,20 +262,16 @@ def run_craccm_simulation(
 
     interval_times = interval_duration * np.arange(K, dtype=float)
     alternating = np.cos(np.pi * interval_times / interval_duration)
-    latent_1 = -5.5 + 3.5 * np.sin(
-        2.0 * np.pi * interval_times / (7.0 * interval_duration) + 0.2
-    )
-    latent_2 = 4.5 * np.cos(
-        2.0 * np.pi * interval_times / (5.0 * interval_duration) - 0.3
-    )
+    latent_1 = -0.55 + 0.35 * np.sin(2.0 * np.pi * interval_times / (7.0 * interval_duration) + 0.2)
+    latent_2 = 0.45 * np.cos(2.0 * np.pi * interval_times / (5.0 * interval_duration) - 0.3)
     schedule_values = np.vstack(
         (
-            latent_1 + 0.70 * alternating,
-            latent_2 + 0.10 * np.sin(np.pi * interval_times / interval_duration + 0.4),
-            latent_1 + 0.12 * np.sin(0.40 * interval_times + 0.3),
-            latent_2 - 0.40 * alternating,
-            latent_1 + 0.10 * np.cos(0.35 * interval_times + 0.2),
-            latent_2 + 0.40 * alternating,
+            latent_1 + 0.070 * alternating,
+            latent_2 + 0.010 * np.sin(np.pi * interval_times / interval_duration + 0.4),
+            latent_1 + 0.012 * np.sin(0.40 * interval_times + 0.3),
+            latent_2 - 0.040 * alternating,
+            latent_1 + 0.010 * np.cos(0.35 * interval_times + 0.2),
+            latent_2 + 0.040 * alternating,
         )
     )
 
@@ -289,6 +296,15 @@ def run_craccm_simulation(
     dt = config["dt"]
     t_full = np.arange(K * I_length, dtype=float) * dt
     run_label = label or f"CP={bool(use_cp)}, adaptive={bool(use_adaptive)}"
+    rho_divergence_threshold = config["rho_divergence_threshold"]
+    if not np.isfinite(rho_divergence_threshold) or rho_divergence_threshold <= 0.0:
+        raise ValueError("rho_divergence_threshold must be finite and positive")
+
+    def rho_divergence_event(_time, state):
+        return rho_divergence_threshold - abs(float(state[-1]))
+
+    rho_divergence_event.terminal = True
+    rho_divergence_event.direction = -1.0
 
     x = trajectory["x_d"][:, 0] + config["tracking_initial_offset"]
     a_hat = system.a_center.copy()
@@ -323,7 +339,34 @@ def run_craccm_simulation(
     delta_hist = []
     miscoverage_hist = []
     status = "completed"
+    failure_reason = None
+    failure_time = None
+    failure_rho = None
     last_sample_index = -1
+
+    def record_terminal_sample(index, sample_time, state, held_u, held_u_d, held_slack):
+        terminal_x = state[: system.xdim]
+        terminal_a_hat = state[system.xdim : system.xdim + system.adim]
+        terminal_rho = float(state[-1])
+        terminal_x_d = np.asarray(
+            trajectory["interp_x_d"](sample_time), dtype=float
+        ).reshape(system.xdim)
+        x_hist[index] = terminal_x
+        x_d_hist[index] = terminal_x_d
+        u_hist[index] = float(held_u.item())
+        u_d_hist[index] = float(held_u_d.item())
+        energy_hist[index] = float(system.Erem)
+        slack_hist[index] = float(held_slack)
+        a_hat_hist[index] = terminal_a_hat
+        rho_hist[index] = terminal_rho
+        nu_hist[index] = system.nu_ccm(terminal_rho)
+        quantile_hist[index] = system.cp_quantile
+        theta_hist[index] = system.Theta_hat
+        if np.all(np.isfinite(terminal_x)):
+            true_uncertainty_hist[index] = system.true_uncertainty(
+                terminal_x, sample_time
+            )
+        return terminal_x, terminal_a_hat, terminal_rho
 
     for sample_index, t in enumerate(t_full):
         last_sample_index = sample_index
@@ -367,7 +410,21 @@ def run_craccm_simulation(
                 rtol=1e-7,
                 atol=1e-9,
                 t_eval=[t_full[sample_index + 1]],
+                events=rho_divergence_event if use_adaptive else None,
             )
+            if use_adaptive and solution.t_events[0].size:
+                event_state = solution.y_events[0][-1]
+                status = "diverged"
+                failure_reason = "rho_divergence"
+                failure_time = float(solution.t_events[0][-1])
+                failure_rho = float(event_state[-1])
+                event_index = sample_index + 1
+                last_sample_index = event_index
+                x_ext = event_state
+                x, a_hat, rho = record_terminal_sample(
+                    event_index, failure_time, x_ext, u, u_d, slack
+                )
+                break
             if not solution.success:
                 raise RuntimeError(
                     f"{run_label}: extended dynamics failed at t={t:.3f}: {solution.message}"
@@ -377,8 +434,25 @@ def run_craccm_simulation(
             a_hat = x_ext[system.xdim : system.xdim + system.adim]
             rho = float(x_ext[-1])
 
-        if not np.all(np.isfinite(x_ext)) or np.linalg.norm(x) > config["divergence_norm"]:
+        rho_diverged = not np.isfinite(rho) or abs(rho) >= rho_divergence_threshold
+        state_is_finite = np.all(np.isfinite(x_ext))
+        state_norm_diverged = np.linalg.norm(x) > config["x_norm_divergence_threshold"]
+        if rho_diverged or not state_is_finite or state_norm_diverged:
             status = "diverged"
+            failure_time = float(t_full[min(sample_index + 1, len(t_full) - 1)])
+            failure_rho = rho
+            if rho_diverged:
+                failure_reason = "rho_divergence"
+            elif not state_is_finite:
+                failure_reason = "nonfinite_extended_state"
+            else:
+                failure_reason = "state_norm"
+            if sample_index < len(t_full) - 1:
+                terminal_index = sample_index + 1
+                last_sample_index = terminal_index
+                x, a_hat, rho = record_terminal_sample(
+                    terminal_index, failure_time, x_ext, u, u_d, slack
+                )
             break
 
         if (sample_index + 1) % I_length == 0:
@@ -461,12 +535,24 @@ def run_craccm_simulation(
         "miscoverage_hist": np.asarray(miscoverage_hist),
         "uncertainty_schedule_values": schedule_values,
         "status": status,
+        "failure_reason": failure_reason,
+        "failure_time": failure_time,
+        "failure_rho": failure_rho,
+        "rho_divergence_threshold": rho_divergence_threshold,
         "metrics": metrics,
         "final_theta": online_olacp.Theta.copy(),
     }
 
+    failure_summary = ""
+    if failure_reason is not None:
+        failure_summary = (
+            f", failure_reason={failure_reason}, failure_time={failure_time:.6f}, "
+            f"failure_rho={failure_rho:.3e}"
+        )
+    
     print(
-        f"{run_label}: status={status}, final_error={metrics['final_error']:.3e}, "
+        f"{run_label}: status={status}{failure_summary}, "
+        f"final_error={metrics['final_error']:.3e}, "
         f"tail_rms={metrics['tail_rms']:.3e}, max_error={metrics['max_error']:.3e}, "
         f"max|u|={metrics['max_control']:.3e}, max_slack={metrics['max_slack']:.3e}"
     )
@@ -742,10 +828,15 @@ def main():
         "pretrain_excitation_amplitude": 0.75,
         "pretrain_excitation_frequency": 0.12,
         "pretrain_initial_state": np.array([0.5, -0.3, 0.0]),
-        "nominal_initial_state": np.array([0.0, 5.0, 0.0]),
-        "nominal_goal_state": np.array([0.0, 0.0, 0.0]),
-        "tracking_initial_offset": np.array([1.5, -1.2, 1.0]),
-        "divergence_norm": 20.0,
+        "nominal_initial_state": np.array([0.01, 5.0, -0.05]),
+        "nominal_goal_state": np.array([-0.05, 0.0, 0.01]),
+        #"nominal_input_reference": np.array([-np.tanh(0.75**2)]),
+        "motion_planner_Q": np.diag([100.0, 1.0, 100.0]),
+        "motion_planner_R": 1e-3 * np.eye(NONLINEAR_TOY.udim),
+        "motion_planner_Q_f": np.diag([1000.0, 10.0, 1000.0]),
+        "tracking_initial_offset": np.array([0.9, 5.0, 0.1]),
+        "x_norm_divergence_threshold": 10.0,
+        "rho_divergence_threshold": 1e10,
         "geodesic_degree": 2,
         "geodesic_nodes": 8,
         "use_qpsolvers": False,
@@ -753,14 +844,14 @@ def main():
     }
     base_params = {
         "Theta_init": theta_init.copy(),
-        "Gamma_ccm": 2.0 * np.eye(NONLINEAR_TOY.adim),
+        "Gamma_ccm": 0.5 * np.eye(NONLINEAR_TOY.adim),
         "a_ub": a_ub,
         "a_lb": a_lb,
         "a_hat_norm_max": a_hat_norm_max,
         "epsilon": projection_epsilon,
-        "eta_ccm": 2.0,
-        "ccm_rate": 0.8,
-        "weight_slack": 1e3,
+        "eta_ccm": 50.0,
+        "ccm_rate": 0.1,
+        "weight_slack": 1e5,
         "u_min": -20.0,
         "u_max": 20.0,
         "dt": dt,

@@ -67,13 +67,21 @@ class MotionPlanner:
         k4 = f_eval(x_vec + dt * k3)
         return x_vec + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
-    def plan(self, x_init, x_goal, horizon_steps, x_guess, u_guess):
-        """ Plan a trajectory from x_init towards x_goal by solving the following optimization problem
-        minimize_{x_0,...,x_N, u_0,...,u_{N-1}} sum_{k=0}^{N-1} (x_k - x_goal)^T Q (x_k - x_goal) + u_k^T R u_k + (x_N - x_goal)^T Q_f (x_N - x_goal)
-        subject to: 1) x_0 = x_init
-                    2) x_{k+1} = f_d(x_k, u_k), for k=0,...,N-1, where f_d is the discrete-time nominal dynamics obtained by applying RK4
-                    3) u_min <= u_k <= u_max, for k=0,...,N-1
-                    4) TODO: include inequality constraints for obstacle avoidance
+    def plan(
+        self,
+        x_init,
+        x_goal,
+        horizon_steps,
+        x_guess,
+        u_guess,
+        u_reference=None,
+    ):
+        """Plan a bounded-input nominal trajectory toward ``x_goal``.
+
+        The running cost penalizes state error and deviation from
+        ``u_reference``. The latter permits nonzero-input equilibria to have
+        zero running cost while retaining the original zero reference by
+        default. Dynamics constraints use the nominal RK4 map.
         """
 
         horizon_steps = int(horizon_steps)
@@ -82,6 +90,11 @@ class MotionPlanner:
 
         x_init = np.asarray(x_init, dtype=float).reshape(self.xdim)
         x_goal = np.asarray(x_goal, dtype=float).reshape(self.xdim)
+        if u_reference is None:
+            u_reference = np.zeros(self.udim)
+        u_reference = np.asarray(u_reference, dtype=float).reshape(self.udim)
+        if not np.all(np.isfinite(u_reference)):
+            raise ValueError("u_reference must be finite")
 
         opti = ca.Opti()
         X = opti.variable(self.xdim, horizon_steps + 1)
@@ -92,6 +105,7 @@ class MotionPlanner:
         Q = ca.DM(self.Q)
         R = ca.DM(self.R)
         Q_f = ca.DM(self.Q_f)
+        u_reference = ca.DM(u_reference)
 
         objective = 0
         for k in range(horizon_steps):
@@ -101,7 +115,8 @@ class MotionPlanner:
             opti.subject_to(X[:, k + 1] == x_next)
 
             dx = xk - x_goal
-            objective += ca.mtimes([dx.T, Q, dx]) + ca.mtimes([uk.T, R, uk])
+            du = uk - u_reference
+            objective += ca.mtimes([dx.T, Q, dx]) + ca.mtimes([du.T, R, du])
 
             if self.u_min is not None and self.u_max is not None:
                 opti.subject_to(opti.bounded(ca.DM(self.u_min), uk, ca.DM(self.u_max)))
