@@ -359,7 +359,7 @@ class ControlAffineSystem:
 
         return u_qp
     
-    def ctrl_craccm(self, x, a_hat_ccm, x_d, u_d, geodesic_solver, use_qpsolvers=False, use_slack=True, verify_geodesic=False):
+    def ctrl_craccm(self, x, a_hat_ccm, x_d, u_d, geodesic_solver, use_qpsolvers=True, use_slack=True, verify_geodesic=False):
         """CRaCCM control law"""
         # x: current state
         # x_d: desired state
@@ -439,11 +439,6 @@ class ControlAffineSystem:
 
         uc = u_d + u_qp
 
-        # Print uncertainty terms for debugging
-        #U1 = -((a_hat_ccm - self.a_true).T @ self.Y(x).T @ gamma_s1_M_x.T).item() # term to be cancelled by adaptive a_dot
-        #U2 = 2 * (gamma_s0_M_d @ self.Y(x_d) @ a_hat_ccm).item() # term to be cancelled by adaptive rho_dot
-        #print("U1=", U1, "; U2=", U2)
-
         return uc, slack
 
     # Solve for geodesics for CCM-based controllers
@@ -476,7 +471,7 @@ class ControlAffineSystem:
     def adaptation_craclf(self, x, a_hat_clf, rho_clf):
         """CRaCLF adaptation law"""
         V = self.clf(x, a_hat_clf)
-        #NOTE: using reshape to enforce correct shape
+        
         dclfda = self.dclfda(x, a_hat_clf).reshape(self.adim,1)
         dclfdx = self.dclfdx(x, a_hat_clf).reshape(self.xdim,1)
         
@@ -494,7 +489,7 @@ class ControlAffineSystem:
     def adaptation_cracbf(self, x, a_hat_cbf, rho_cbf):
         """CRaCBF adaptation law"""
         h = self.cbf(x, a_hat_cbf)
-        #NOTE: using reshape to enforce correct shape
+        
         dcbfda = self.dcbfda(x, a_hat_cbf).reshape(self.adim,1)
         dcbfdx = self.dcbfdx(x, a_hat_cbf).reshape(self.xdim,1)
 
@@ -536,7 +531,7 @@ class ControlAffineSystem:
                                               self.epsilon,
                                               self.Gamma_ccm)
         #a_hat_dot = self.nu_ccm(rho_ccm) * self.Gamma_ccm @ self.Y(x).T @ gamma_s1_M_x.T
-        
+
         c1 = (2 * gamma_s0_M_d @ self.Y(x_d) @ a_hat_ccm).item()
         c2 = (dErem_dai @ a_hat_ccm_dot).item()
         # Printing for debugging
