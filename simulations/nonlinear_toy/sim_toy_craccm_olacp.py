@@ -100,6 +100,7 @@ def run_pretraining(system, olacp, config, plot=True):
     theta_hist = np.zeros((K_pre + 1,) + olacp.Theta.shape)
     theta_hist[0] = olacp.Theta
     score_hist = np.zeros(K_pre)
+    prediction_error_hist = np.full(len(t_pre), np.nan)
     true_uncertainty_hist = np.full((len(t_pre), system.xdim), np.nan)
     fitted_uncertainty_hist = np.full((len(t_pre), system.xdim), np.nan)
 
@@ -133,6 +134,7 @@ def run_pretraining(system, olacp, config, plot=True):
         score = float(olacp.compute_score(system.a_ub, system.a_lb))
         interval_true = np.asarray(olacp._w_buffer, dtype=float)
         interval_fitted = np.asarray([Y_t @ olacp.a_k for Y_t in olacp._Y_buffer])
+        interval_error = np.sum((interval_fitted - interval_true) ** 2, axis=1)
         olacp.append_score(score)
         representation_update = olacp.update_representation()
         if representation_update is not None:
@@ -141,6 +143,7 @@ def run_pretraining(system, olacp, config, plot=True):
         interval_start = interval_index * I_length
         interval_slice = slice(interval_start, interval_start + I_length)
         a_k_hist[interval_slice] = olacp.a_k
+        prediction_error_hist[interval_slice] = interval_error
         true_uncertainty_hist[interval_slice] = interval_true
         fitted_uncertainty_hist[interval_slice] = interval_fitted
         score_hist[interval_index] = score
@@ -162,6 +165,7 @@ def run_pretraining(system, olacp, config, plot=True):
         "a_k_hist": a_k_hist,
         "theta_hist": theta_hist,
         "score_hist": score_hist,
+        "prediction_error_hist": prediction_error_hist,
         "true_uncertainty_hist": true_uncertainty_hist,
         "fitted_uncertainty_hist": fitted_uncertainty_hist,
         "uncertainty_schedule_values": schedule_values,
@@ -170,8 +174,10 @@ def run_pretraining(system, olacp, config, plot=True):
 
     print(
         f"Pretraining complete: Q_0={quantile:.3e}, a_last={olacp.a_k}, "
+        f"score_first={score_hist[0]:.3e}, score_last={score_hist[-1]:.3e}, "
         f"theta_change={np.linalg.norm(theta_hist[-1] - theta_hist[0]):.3e}, "
-        f"max_state_norm={np.max(np.linalg.norm(x_hist, axis=1)):.3e}"
+        f"max_state_norm={np.max(np.linalg.norm(x_hist, axis=1)):.3e}, "
+        f"max|u|={np.max(np.abs(u_hist)):.3e}"
     )
 
     if plot:
@@ -181,17 +187,35 @@ def run_pretraining(system, olacp, config, plot=True):
             ax.set_ylabel(rf"$x_{state_index + 1}$")
             ax.grid(True)
         axs[-1].set_xlabel("time (s)")
-        fig.suptitle("Nonlinear-toy pretraining states")
+        fig.suptitle("Pretraining: states")
 
-        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 5))
-        axs[0].plot(t_pre, u_hist)
-        axs[0].set_ylabel("input")
-        axs[1].plot(np.arange(K_pre), score_hist, marker="o")
-        axs[1].set_ylabel("score")
-        axs[1].set_xlabel("interval")
-        for ax in axs:
+        fig, ax = plt.subplots(1, 1, sharex=True, figsize=(8, 7))
+        ax.plot(t_pre, u_hist)
+        ax.set_ylabel("input")
+        ax.set_xlabel("time (s)")
+        ax.grid(True)
+        fig.suptitle("Pretraining: control input")
+
+        components = ((0, r"$w_1$"), (2, r"$w_3$"))
+        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
+        for ax, (component, component_label) in zip(axs, components):
+            ax.plot(t_pre, true_uncertainty_hist[:, component], label="true uncertainty")
+            ax.plot(t_pre, fitted_uncertainty_hist[:, component], "--", label=r"$Y_\Theta(x)a_k$")
+            ax.set_ylabel(component_label)
             ax.grid(True)
-        fig.suptitle("Nonlinear-toy pretraining diagnostics")
+            ax.legend()
+        axs[-1].set_xlabel("time (s)")
+        fig.suptitle(r"Pretraining: $Y_\Theta(x)a_k$ versus true uncertainty")
+
+        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+        ax.semilogy(t_pre, np.maximum(prediction_error_hist, 1e-16), label="pretraining")
+        ax.set_ylabel("squared prediction error")
+        ax.set_xlabel("time (s)")
+        ax.grid(True)
+        ax.legend()
+        fig.suptitle("Pretraining: uncertainty-model prediction loss")
+
+        plt.show()
 
     return olacp, history
 

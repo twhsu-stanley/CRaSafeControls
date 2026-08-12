@@ -147,19 +147,17 @@ def run_pretraining(system, olacp, config, plot=True):
             ax.set_ylabel(state_labels[state_index])
             ax.grid(True)
         axs[-1].set_xlabel("time (s)")
-        fig.suptitle("Inverted-pendulum pretraining states")
+        fig.suptitle("Pretraining: states")
 
-        fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
+        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
         axs[0].plot(t_pre, u_hist)
         axs[0].set_ylabel("torque (N m)")
         axs[1].plot(t_pre, wind_hist[:, 1])
         axs[1].set_ylabel(r"$w_z$ (m/s)")
-        axs[2].semilogy(t_pre, np.maximum(prediction_error_hist, 1e-16))
-        axs[2].set_ylabel("squared error")
-        axs[2].set_xlabel("time (s)")
+        axs[1].set_xlabel("time (s)")
         for ax in axs:
             ax.grid(True)
-        fig.suptitle("Inverted-pendulum pretraining diagnostics")
+        fig.suptitle("Pretraining: torque and vertical wind")
 
         fig, ax = plt.subplots(1, 1, figsize=(8, 4))
         ax.plot(t_pre, true_uncertainty_hist[:, 1], label="true uncertainty")
@@ -169,6 +167,16 @@ def run_pretraining(system, olacp, config, plot=True):
         ax.grid(True)
         ax.legend()
         fig.suptitle(r"Pretraining: $Y_\Theta(x)a_k$ versus true uncertainty")
+
+        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+        ax.semilogy(t_pre, np.maximum(prediction_error_hist, 1e-16), label="pretraining")
+        ax.set_ylabel("squared prediction error")
+        ax.set_xlabel("time (s)")
+        ax.grid(True)
+        ax.legend()
+        fig.suptitle("Pretraining: uncertainty-model prediction loss")
+
+        plt.show()
 
     return olacp, history
 

@@ -206,7 +206,7 @@ def run_pretraining(system, olacp, config, plot=True):
         for ax in axs:
             ax.grid(True)
             ax.legend()
-        fig.suptitle("ACC pretraining with expert control")
+        fig.suptitle("Pretraining: expert control")
 
         components = ((1, r"$w_2=d/m$"), (2, r"$w_3=\Delta v_l$"))
         fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
@@ -225,7 +225,9 @@ def run_pretraining(system, olacp, config, plot=True):
         ax.set_xlabel("time (s)")
         ax.grid(True)
         ax.legend()
-        fig.suptitle("Uncertainty-model prediction loss during pretraining")
+        fig.suptitle("Pretraining: uncertainty-model prediction loss")
+
+        plt.show()
 
     return olacp, history
 
