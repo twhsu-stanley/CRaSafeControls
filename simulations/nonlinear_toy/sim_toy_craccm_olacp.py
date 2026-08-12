@@ -320,6 +320,7 @@ def run_craccm_simulation(
     I_length = config["I_length"]
     dt = config["dt"]
     t_full = np.arange(K * I_length, dtype=float) * dt
+    t_hist = t_full.copy()
     run_label = label or f"CP={bool(use_cp)}, adaptive={bool(use_adaptive)}"
     rho_divergence_threshold = config["rho_divergence_threshold"]
     if not np.isfinite(rho_divergence_threshold) or rho_divergence_threshold <= 0.0:
@@ -376,6 +377,7 @@ def run_craccm_simulation(
         terminal_x_d = np.asarray(
             trajectory["interp_x_d"](sample_time), dtype=float
         ).reshape(system.xdim)
+        t_hist[index] = sample_time
         x_hist[index] = terminal_x
         x_d_hist[index] = terminal_x_d
         u_hist[index] = float(held_u.item())
@@ -505,7 +507,7 @@ def run_craccm_simulation(
             online_olacp.clear_buffers()
 
     used_slice = slice(0, last_sample_index + 1)
-    t = t_full[used_slice]
+    t = t_hist[used_slice]
     x_hist = x_hist[used_slice]
     x_d_hist = x_d_hist[used_slice]
     u_hist = u_hist[used_slice]

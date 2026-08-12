@@ -256,7 +256,17 @@ def run_cracbf_simulation(
     u_max = config["u_max"]
     gamma_cbf_inv = config["Gamma_cbf_inv"]
     t_full = np.arange(K * I_length, dtype=float) * dt
+    t_hist = t_full.copy()
     run_label = label or f"CP={bool(use_cp)}, adaptive={bool(use_adaptive)}"
+    rho_divergence_threshold = config["rho_divergence_threshold"]
+    if not np.isfinite(rho_divergence_threshold) or rho_divergence_threshold <= 0.0:
+        raise ValueError("rho_divergence_threshold must be finite and positive")
+
+    def rho_divergence_event(_time, state):
+        return rho_divergence_threshold - abs(float(state[-1]))
+
+    rho_divergence_event.terminal = True
+    rho_divergence_event.direction = -1.0
 
     environment_phase = 2.0 * np.pi * np.arange(K) / K / 2.0
     decline_angle_schedule = np.zeros(K)
@@ -325,10 +335,36 @@ def run_cracbf_simulation(
     prediction_error_hist = np.full(len(t_full), np.nan)
     true_uncertainty_hist = np.full((len(t_full), system.xdim), np.nan)
     fitted_uncertainty_hist = np.full((len(t_full), system.xdim), np.nan)
+
+    def record_terminal_sample(index, sample_time, state, held_u, held_u_ref):
+        terminal_x = state[: system.xdim]
+        terminal_a_hat = state[system.xdim : system.xdim + system.adim]
+        terminal_rho = float(state[-1])
+        t_hist[index] = sample_time
+        x_hist[index] = terminal_x
+        u_hist[index] = float(held_u.item())
+        u_ref_hist[index] = float(held_u_ref.item())
+        a_hat_hist[index] = terminal_a_hat
+        schedule = schedule_index(sample_time)
+        lead_velocity_hist[index] = nominal_lead_velocity + delta_lead_schedule[schedule]
+        rho_hist[index] = terminal_rho
+        nu_hist[index] = system.nu_cbf(terminal_rho)
+        quantile_hist[index] = system.cp_quantile
+        theta_hist[index] = system.Theta_hat
+        h_hist[index] = float(system.cbf(terminal_x, terminal_a_hat))
+        physical_margin_hist[index] = terminal_x[2] - system.z_min
+        tightening = 0.5 / nu_hist[index] * system.safe_set_tightening
+        tightened_margin_hist[index] = h_hist[index] - tightening
+        return terminal_x, terminal_a_hat, terminal_rho
+
     interval_times = []
     score_hist = []
     delta_hist = []
     miscoverage_hist = []
+    status = "completed"
+    failure_reason = None
+    failure_time = None
+    failure_rho = None
     safety_violation_index = None
     last_sample_index = -1
 
@@ -351,6 +387,10 @@ def run_cracbf_simulation(
 
         if h_hist[sample_index] < 0.0:
             safety_violation_index = sample_index
+            status = "safety_violation"
+            failure_reason = "safety_violation"
+            failure_time = float(t)
+            failure_rho = rho
             estimated_lead_velocity = nominal_lead_velocity + lead_velocity_scale * a_hat[3]
             print(
                 f"{run_label}: SAFETY VIOLATION h={h_hist[sample_index]:.3e} at t={t:.3f} s, "
@@ -388,15 +428,43 @@ def run_cracbf_simulation(
                 rtol=1e-7,
                 atol=1e-9,
                 t_eval=[t_full[sample_index + 1]],
+                events=rho_divergence_event if use_adaptive else None,
             )
+            if use_adaptive and solution.t_events[0].size:
+                event_state = solution.y_events[0][-1]
+                status = "diverged"
+                failure_reason = "rho_divergence"
+                failure_time = float(solution.t_events[0][-1])
+                failure_rho = float(event_state[-1])
+                event_index = sample_index + 1
+                last_sample_index = event_index
+                x_ext = event_state
+                x, a_hat, rho = record_terminal_sample(
+                    event_index, failure_time, x_ext, u, u_ref
+                )
+                break
             if not solution.success:
                 raise RuntimeError(solution.message)
             x_ext = solution.y[:, -1]
-            if not np.all(np.isfinite(x_ext)):
-                raise RuntimeError(f"{run_label}: the extended ACC state became non-finite")
             x = x_ext[: system.xdim]
             a_hat = x_ext[system.xdim : system.xdim + system.adim]
             rho = float(x_ext[system.xdim + system.adim])
+
+        rho_diverged = not np.isfinite(rho) or abs(rho) >= rho_divergence_threshold
+        if rho_diverged:
+            status = "diverged"
+            failure_reason = "rho_divergence"
+            failure_time = float(t_full[min(sample_index + 1, len(t_full) - 1)])
+            failure_rho = rho
+            if sample_index < len(t_full) - 1:
+                terminal_index = sample_index + 1
+                last_sample_index = terminal_index
+                x, a_hat, rho = record_terminal_sample(
+                    terminal_index, failure_time, x_ext, u, u_ref
+                )
+            break
+        if not np.all(np.isfinite(x_ext)):
+            raise RuntimeError(f"{run_label}: the extended ACC state became non-finite")
 
         if (sample_index + 1) % I_length == 0:
             online_olacp.estimate_uncertainty(dt)
@@ -438,9 +506,15 @@ def run_cracbf_simulation(
                 f"delta_next={online_olacp.delta:.3f}, miscoverage={miscoverage}"
             )
 
-    if safety_violation_index is not None:
-        partial_start = safety_violation_index // I_length * I_length
-        buffered_count = safety_violation_index - partial_start
+    termination_index = safety_violation_index
+    if status == "diverged":
+        termination_index = last_sample_index
+    if termination_index is not None:
+        if status == "diverged":
+            partial_start = max(termination_index - 1, 0) // I_length * I_length
+        else:
+            partial_start = termination_index // I_length * I_length
+        buffered_count = termination_index - partial_start
         buffer_lengths = (
             len(online_olacp._x_buffer),
             len(online_olacp._xdot_buffer),
@@ -458,15 +532,15 @@ def run_cracbf_simulation(
             )
         ]
         partial_Y = [np.asarray(Y_t) for Y_t in online_olacp._Y_buffer]
-        violation_state = x_hist[safety_violation_index]
-        violation_time = t_full[safety_violation_index]
-        partial_true.append(true_uncertainty(violation_state, violation_time))
-        partial_Y.append(system.Y(violation_state))
+        termination_state = x_hist[termination_index]
+        termination_time = t_hist[termination_index]
+        partial_true.append(true_uncertainty(termination_state, termination_time))
+        partial_Y.append(system.Y(termination_state))
         partial_true = np.asarray(partial_true)
         partial_fitted_a = online_olacp.a_k.copy()
         partial_fitted = np.asarray([Y_t @ partial_fitted_a for Y_t in partial_Y])
         partial_error = np.sum((partial_fitted - partial_true) ** 2, axis=1)
-        partial_stop = safety_violation_index + 1
+        partial_stop = termination_index + 1
         partial_slice = slice(partial_start, partial_stop)
         a_k_hist[partial_slice] = partial_fitted_a
         true_uncertainty_hist[partial_slice] = partial_true
@@ -484,7 +558,7 @@ def run_cracbf_simulation(
         )
 
     sample_count = last_sample_index + 1
-    t = t_full[:sample_count]
+    t = t_hist[:sample_count]
     x_hist = x_hist[:sample_count]
     u_hist = u_hist[:sample_count]
     u_ref_hist = u_ref_hist[:sample_count]
@@ -514,7 +588,9 @@ def run_cracbf_simulation(
         expected_control_mask[-1] = False
         if h_hist[-1] >= 0.0 or np.any(h_hist[:-1] < 0.0):
             raise RuntimeError(f"{run_label}: inconsistent safety-termination index")
-    elif np.min(h_hist) < -1e-6 or np.min(physical_margin_hist) < -1e-6:
+    elif status == "completed" and (
+        np.min(h_hist) < -1e-6 or np.min(physical_margin_hist) < -1e-6
+    ):
         raise RuntimeError(f"{run_label}: safety was violated without terminating")
     if not np.array_equal(np.isfinite(u_hist), expected_control_mask):
         raise RuntimeError(f"{run_label}: invalid CRaCBF input history")
@@ -526,7 +602,12 @@ def run_cracbf_simulation(
     projection_radius = np.max(np.linalg.norm(a_hat_hist - system.a_center, axis=1))
     if projection_radius > system.a_hat_norm_max + 1e-6:
         raise RuntimeError(f"{run_label}: CRaCBF parameter projection was violated")
-    expected_intervals = safety_violation_index // I_length if safety_violated else K
+    if status == "completed":
+        expected_intervals = K
+    elif safety_violated:
+        expected_intervals = safety_violation_index // I_length
+    else:
+        expected_intervals = max(last_sample_index - 1, 0) // I_length
     if len(score_hist) != expected_intervals:
         raise RuntimeError(f"{run_label}: unexpected number of completed Algorithm 1 intervals")
     if not np.allclose(system.Theta_hat, online_olacp.Theta):
@@ -540,7 +621,7 @@ def run_cracbf_simulation(
     activation_time = float(t[activation_indices[0]]) if activation_indices.size else None
     ego_peak_index = int(np.argmax(x_hist[:, 1]))
     minimum_gap_index = int(np.argmin(x_hist[:, 2]))
-    if not safety_violated:
+    if status == "completed":
         if activation_time is None:
             raise RuntimeError(f"{run_label}: the CRaCBF never modifies the nominal input")
         if x_hist[ego_peak_index, 1] <= x_hist[0, 1] + 1.0:
@@ -553,7 +634,9 @@ def run_cracbf_simulation(
             raise RuntimeError(f"{run_label}: the tightened CRaCBF set was violated")
 
     true_a4_hist = (lead_velocity_hist - nominal_lead_velocity) / lead_velocity_scale
-    status = f"terminated at h={h_hist[-1]:.3e}" if safety_violated else "safety maintained"
+    safety_status = (
+        f"terminated at h={h_hist[-1]:.3e}" if safety_violated else "safety maintained"
+    )
     activation_text = (
         f"active at t={activation_time:.3f} s"
         if activation_time is not None
@@ -562,7 +645,7 @@ def run_cracbf_simulation(
     print(
         f"{run_label}: lead={lead_velocity_hist[0]:.3f}->{lead_velocity_hist[-1]:.3f} m/s, "
         f"CRaCBF {activation_text}, peak v={x_hist[ego_peak_index, 1]:.3f} m/s, "
-        f"minimum z={x_hist[minimum_gap_index, 2]:.3f} m, {status}"
+        f"minimum z={x_hist[minimum_gap_index, 2]:.3f} m, {safety_status}, status={status}"
     )
 
     result = {
@@ -594,6 +677,11 @@ def run_cracbf_simulation(
         "delta_hist": delta_hist,
         "miscoverage_hist": miscoverage_hist,
         "true_a4_hist": true_a4_hist,
+        "status": status,
+        "failure_reason": failure_reason,
+        "failure_time": failure_time,
+        "failure_rho": failure_rho,
+        "rho_divergence_threshold": rho_divergence_threshold,
         "safety_violated": safety_violated,
         "safety_violation_time": float(t[-1]) if safety_violated else None,
         "activation_time": activation_time,
@@ -904,6 +992,7 @@ def main():
         "pretrain_gap_reference_period": 20.0,
         "pretrain_gap_gain": 0.5,
         "pretrain_velocity_gain": 1.6,
+        "rho_divergence_threshold": 1e6,
     }
     base_acc_params = {
         "Theta_init": theta_init.copy(),
