@@ -363,9 +363,7 @@ def run_craccm_simulation(
         quantile_hist[index] = system.cp_quantile
         theta_hist[index] = system.Theta_hat
         if np.all(np.isfinite(terminal_x)):
-            true_uncertainty_hist[index] = system.true_uncertainty(
-                terminal_x, sample_time
-            )
+            true_uncertainty_hist[index] = system.true_uncertainty(terminal_x, sample_time)
         return terminal_x, terminal_a_hat, terminal_rho
 
     for sample_index, t in enumerate(t_full):
@@ -800,7 +798,7 @@ def main():
     K = 10
     B = 5
     dt = 0.01
-    interval_duration = 1.0
+    interval_duration = 2.0
     I_length = int(round(interval_duration / dt))
     if K_pre < N_cal or K_pre % B != 0:
         raise ValueError("K_pre must fill N_cal and contain complete representation blocks")
@@ -855,7 +853,6 @@ def main():
         "u_min": -20.0,
         "u_max": 20.0,
         "dt": dt,
-        "true_uncertainty": lambda x, t: np.zeros(NONLINEAR_TOY.xdim),
     }
 
     pretrain_params = dict(base_params)
