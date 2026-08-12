@@ -21,9 +21,9 @@ def noise_fcn(t):
     """Return deterministic noise in the uncertain state channels."""
     return np.array(
         [
-            0.005 * np.sin(2.0 * np.pi * 0.67 * t + 0.3),
+            0.4 * np.sin(2.0 * np.pi * 0.67 * t + 0.3),
             0.0,
-            0.008 * np.cos(2.0 * np.pi * 0.87 * t + 0.1),
+            0.2 * np.cos(2.0 * np.pi * 0.87 * t + 0.1),
         ]
     )
 
@@ -251,10 +251,10 @@ def run_craccm_simulation(
 
     interval_times = interval_duration * np.arange(K, dtype=float)
     alternating = np.cos(np.pi * interval_times / interval_duration)
-    latent_1 = -0.45 + 0.35 * np.sin(
+    latent_1 = -5.5 + 3.5 * np.sin(
         2.0 * np.pi * interval_times / (7.0 * interval_duration) + 0.2
     )
-    latent_2 = 0.45 * np.cos(
+    latent_2 = 4.5 * np.cos(
         2.0 * np.pi * interval_times / (5.0 * interval_duration) - 0.3
     )
     schedule_values = np.vstack(
@@ -474,57 +474,237 @@ def run_craccm_simulation(
 
 
 def plot_craccm_results(results, trajectory):
-    """Plot the nominal plan and the three controller configurations."""
-    fig, axs = plt.subplots(3, 1, sharex=True, figsize=(9, 8))
+    """Plot and compare one or more main CRaCCM simulation results."""
+    items = (
+        list(results.items())
+        if isinstance(results, dict)
+        else [(result["label"], result) for result in results]
+    )
+    if not items:
+        raise ValueError("At least one CRaCCM result is required")
+
+    reference = max((result for _, result in items), key=lambda result: len(result["t"]))
+    for label, result in items:
+        if result is reference:
+            continue
+        if not np.array_equal(result["x_hist"][0], reference["x_hist"][0]):
+            raise RuntimeError(f"{label}: comparison initial state does not match")
+        if not np.array_equal(
+            result["uncertainty_schedule_values"],
+            reference["uncertainty_schedule_values"],
+        ):
+            raise RuntimeError(f"{label}: comparison uncertainty schedule does not match")
+
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    color_map = {label: colors[index % len(colors)] for index, (label, _) in enumerate(items)}
+    maximum_time = max(float(result["t"][-1]) for _, result in items)
+    figures = []
+
+    state_labels = (r"$x_1$", r"$x_2$", r"$x_3$")
+    fig, axs = plt.subplots(NONLINEAR_TOY.xdim, 1, sharex=True, figsize=(8, 7))
+    figures.append(fig)
     for state_index, ax in enumerate(axs):
         ax.plot(
             trajectory["t_x"],
             trajectory["x_d"][state_index],
             "k--",
-            label="nominal" if state_index == 0 else None,
+            label="desired" if state_index == 0 else None,
         )
-        for label, result in results.items():
-            ax.plot(result["t"], result["x_hist"][:, state_index], label=label)
-        ax.set_ylabel(rf"$x_{state_index + 1}$")
-        ax.grid(True)
-    axs[0].legend()
-    axs[-1].set_xlabel("time (s)")
-    fig.suptitle("CRaCCM state tracking")
-
-    fig, axs = plt.subplots(4, 1, sharex=True, figsize=(9, 9))
-    for label, result in results.items():
-        axs[0].semilogy(result["t"], np.maximum(result["tracking_error"], 1e-12), label=label)
-        axs[1].plot(result["t"], result["u_hist"], label=label)
-        axs[2].semilogy(result["t"], np.maximum(result["energy_hist"], 1e-12), label=label)
-        axs[3].plot(result["t"], result["slack_hist"], label=label)
-    axs[0].set_ylabel(r"$\|x-x_d\|_2$")
-    axs[1].set_ylabel("input")
-    axs[2].set_ylabel("energy")
-    axs[3].set_ylabel("slack")
-    axs[3].set_xlabel("time (s)")
-    for ax in axs:
-        ax.grid(True)
-    axs[0].legend()
-    fig.suptitle("CRaCCM tracking diagnostics")
-
-    fig, axs = plt.subplots(NONLINEAR_TOY.adim + 2, 1, sharex=True, figsize=(9, 8))
-    for label, result in results.items():
-        for parameter_index in range(NONLINEAR_TOY.adim):
-            axs[parameter_index].plot(
-                result["t"], result["a_hat_hist"][:, parameter_index], label=label
+        for label, result in items:
+            ax.plot(
+                result["t"],
+                result["x_hist"][:, state_index],
+                color=color_map[label],
+                label=label,
             )
-        axs[-2].plot(result["t"], result["rho_hist"], label=label)
-        axs[-1].plot(result["t"], result["quantile_hist"], label=label)
-    for parameter_index in range(NONLINEAR_TOY.adim):
-        axs[parameter_index].set_ylabel(rf"$\hat a_{parameter_index + 1}$")
-        axs[parameter_index].grid(True)
-    axs[-2].set_ylabel(r"$\rho$")
-    axs[-1].set_ylabel(r"$Q_k$")
-    axs[-1].set_xlabel("time (s)")
-    axs[-2].grid(True)
-    axs[-1].grid(True)
+            if result["status"] != "completed":
+                ax.plot(
+                    result["t"][-1],
+                    result["x_hist"][-1, state_index],
+                    "x",
+                    color=color_map[label],
+                    markersize=9,
+                )
+        ax.set_ylabel(state_labels[state_index])
+        ax.set_xlim(0.0, maximum_time)
+        ax.grid(True)
     axs[0].legend()
-    fig.suptitle("CRaCCM adaptation and conformal quantile")
+    axs[-1].set_xlabel("time (s)")
+    fig.suptitle("Nonlinear-toy state tracking comparison")
+
+    for label, result in items:
+        color = color_map[label]
+        result_end_time = float(result["t"][-1])
+        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
+        figures.append(fig)
+        axs[0].plot(result["t"], result["u_hist"], color=color, label=r"$u$")
+        axs[0].plot(
+            result["t"],
+            result["u_d_hist"],
+            "k--",
+            label=r"$u_d$",
+        )
+        axs[1].semilogy(
+            result["t"],
+            np.maximum(result["slack_hist"], 1e-12),
+            color=color,
+            label="QP slack",
+        )
+        axs[0].set_ylabel("input")
+        axs[1].set_ylabel("QP slack")
+        axs[1].set_xlabel("time (s)")
+        for ax in axs:
+            ax.set_xlim(0.0, result_end_time)
+            ax.grid(True)
+            ax.legend()
+        fig.suptitle(f"{label}: control and QP slack")
+
+    for label, result in items:
+        color = color_map[label]
+        result_end_time = float(result["t"][-1])
+        fig, axs = plt.subplots(
+            NONLINEAR_TOY.adim + 2, 1, sharex=True, figsize=(8, 9)
+        )
+        figures.append(fig)
+        for parameter_index, ax in enumerate(axs[: NONLINEAR_TOY.adim]):
+            ax.plot(
+                result["t"],
+                result["a_hat_hist"][:, parameter_index],
+                color=color,
+                label=rf"$\hat a_{parameter_index + 1}$",
+            )
+            ax.plot(
+                result["t"],
+                result["a_k_hist"][:, parameter_index],
+                "--",
+                color=color,
+                label=rf"$a_{{k,{parameter_index + 1}}}$",
+            )
+            ax.set_ylabel(rf"$a_{parameter_index + 1}$")
+            ax.set_xlim(0.0, result_end_time)
+            ax.grid(True)
+            ax.legend()
+        axs[-2].plot(result["t"], result["rho_hist"], color=color, label=r"$\rho$")
+        axs[-1].plot(
+            result["t"], result["nu_hist"], color=color, label=r"$\nu(\rho)$"
+        )
+        axs[-2].set_ylabel(r"$\rho$")
+        axs[-1].set_ylabel(r"$\nu$")
+        for ax in axs[-2:]:
+            ax.set_xlim(0.0, result_end_time)
+            ax.grid(True)
+            ax.legend()
+        axs[-1].set_xlabel("time (s)")
+        fig.suptitle(f"{label}: CRaCCM adaptation and OLACP identification")
+
+    for label, result in items:
+        color = color_map[label]
+        result_end_time = float(result["t"][-1])
+        fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
+        figures.append(fig)
+        axs[0].step(
+            result["interval_times"],
+            result["score_hist"],
+            where="post",
+            color=color,
+            label=r"$s_k$",
+        )
+        axs[0].step(
+            result["t"],
+            result["quantile_hist"],
+            where="post",
+            color=color,
+            linestyle=":",
+            label=r"$Q_k$",
+        )
+        axs[1].step(
+            result["interval_times"],
+            result["delta_hist"],
+            where="post",
+            color=color,
+            label=r"$\delta_k$",
+        )
+        axs[2].step(
+            result["interval_times"],
+            result["miscoverage_hist"],
+            where="post",
+            color=color,
+            label="miscoverage",
+        )
+        axs[0].set_ylabel("score")
+        axs[1].set_ylabel(r"$\delta_k$")
+        axs[2].set_ylabel("miscoverage")
+        axs[2].set_xlabel("time (s)")
+        for ax in axs:
+            ax.set_xlim(0.0, result_end_time)
+            ax.grid(True)
+            ax.legend()
+        fig.suptitle(f"{label}: Algorithm 1")
+
+    coefficient_labels = (
+        r"$c_{w_1,x_1}$",
+        r"$c_{w_3,x_3}$",
+        r"$c_{w_3,x_1^2}$",
+    )
+    for label, result in items:
+        schedule_values = np.asarray(result["uncertainty_schedule_values"], dtype=float)
+        if schedule_values.ndim != 2 or schedule_values.shape[0] != 6:
+            raise ValueError(f"{label}: expected a 6-by-K uncertainty schedule")
+        number_of_intervals = schedule_values.shape[1]
+        schedule_times = np.linspace(
+            0.0, float(trajectory["t_x"][-1]), number_of_intervals + 1
+        )
+        coefficient_values = np.vstack(
+            (
+                0.8 * schedule_values[0] + 1.3 * schedule_values[1],
+                0.23 * schedule_values[2] + 0.87 * schedule_values[3],
+                0.23 * schedule_values[4] + 0.87 * schedule_values[5],
+            )
+        )
+        coefficient_values = np.column_stack(
+            (coefficient_values, coefficient_values[:, -1])
+        )
+
+        fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
+        figures.append(fig)
+        for coefficient_index, ax in enumerate(axs):
+            ax.step(
+                schedule_times,
+                coefficient_values[coefficient_index],
+                where="post",
+                color=color_map[label],
+                label=coefficient_labels[coefficient_index],
+            )
+            ax.set_ylabel(coefficient_labels[coefficient_index])
+            ax.set_xlim(0.0, float(result["t"][-1]))
+            ax.grid(True)
+            ax.legend()
+        axs[-1].set_xlabel("time (s)")
+        fig.suptitle(f"{label}: true-uncertainty coefficient schedule")
+
+    components = ((0, r"$w_1$"), (2, r"$w_3$"))
+    for label, result in items:
+        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
+        figures.append(fig)
+        for ax, (component, component_label) in zip(axs, components):
+            ax.plot(
+                result["t"],
+                result["true_uncertainty_hist"][:, component],
+                label="true uncertainty",
+            )
+            ax.plot(
+                result["t"],
+                result["fitted_uncertainty_hist"][:, component],
+                "--",
+                label=r"$Y_\Theta(x)a_k$",
+            )
+            ax.set_xlim(0.0, float(result["t"][-1]))
+            ax.set_ylabel(component_label)
+            ax.grid(True)
+            ax.legend()
+        axs[-1].set_xlabel("time (s)")
+        fig.suptitle(rf"{label}: $Y_\Theta(x)a_k$ versus true uncertainty")
+    return figures
 
 
 def main():
@@ -562,9 +742,9 @@ def main():
         "pretrain_excitation_amplitude": 0.75,
         "pretrain_excitation_frequency": 0.12,
         "pretrain_initial_state": np.array([0.5, -0.3, 0.0]),
-        "nominal_initial_state": np.array([1.0, -1.8, -1.2]),
-        "nominal_goal_state": np.array([2.5, 1.5, 0.8]),
-        "tracking_initial_offset": np.array([0.15, -0.12, 0.10]),
+        "nominal_initial_state": np.array([0.0, 5.0, 0.0]),
+        "nominal_goal_state": np.array([0.0, 0.0, 0.0]),
+        "tracking_initial_offset": np.array([1.5, -1.2, 1.0]),
         "divergence_norm": 20.0,
         "geodesic_degree": 2,
         "geodesic_nodes": 8,

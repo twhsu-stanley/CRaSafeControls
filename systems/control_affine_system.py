@@ -568,7 +568,7 @@ class ControlAffineSystem:
     @staticmethod
     def dnu_drho_clf(rho_clf):
         dnu_drho = 1/(1+(rho_clf)**2)/np.pi
-        return max(dnu_drho, 1e-20)
+        return dnu_drho
 
     @staticmethod
     def nu_cbf(rho_cbf):
@@ -578,7 +578,7 @@ class ControlAffineSystem:
     @staticmethod
     def dnu_drho_cbf(rho_cbf):
         dnu_drho = 1/(1+(rho_cbf)**2)/np.pi
-        return max(dnu_drho, 1e-20)
+        return dnu_drho
     
     @staticmethod
     def nu_ccm(rho_ccm):

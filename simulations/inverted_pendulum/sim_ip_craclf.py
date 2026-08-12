@@ -185,7 +185,17 @@ def run_craclf_simulation(
     dt = config["dt"]
     interval_duration = config["interval_duration"]
     t_full = np.arange(K * I_length, dtype=float) * dt
+    t_hist = t_full.copy()
     run_label = label or f"CP={bool(use_cp)}, adaptive={bool(use_adaptive)}"
+    rho_divergence_threshold = config["rho_divergence_threshold"]
+    if not np.isfinite(rho_divergence_threshold) or rho_divergence_threshold <= 0.0:
+        raise ValueError("rho_divergence_threshold must be finite and positive")
+
+    def rho_divergence_event(_time, state):
+        return rho_divergence_threshold - abs(float(state[-1]))
+
+    rho_divergence_event.terminal = True
+    rho_divergence_event.direction = -1.0
 
     wind_indices = np.arange(K)
     vertical_wind_schedule = -4.25
@@ -229,11 +239,34 @@ def run_craclf_simulation(
     true_uncertainty_hist = np.full((len(t_full), system.xdim), np.nan)
     fitted_uncertainty_hist = np.full((len(t_full), system.xdim), np.nan)
     wind_hist = np.zeros((len(t_full), 2))
+
+    def record_terminal_sample(index, sample_time, state, held_u, held_u_ref, held_slack):
+        terminal_x = state[: system.xdim]
+        terminal_a_hat = state[system.xdim : system.xdim + system.adim]
+        terminal_rho = float(state[-1])
+        t_hist[index] = sample_time
+        x_hist[index] = terminal_x
+        u_hist[index] = float(held_u.item())
+        u_ref_hist[index] = float(held_u_ref.item())
+        slack_hist[index] = float(held_slack)
+        a_hat_hist[index] = terminal_a_hat
+        rho_hist[index] = terminal_rho
+        nu_hist[index] = system.nu_clf(terminal_rho)
+        quantile_hist[index] = system.cp_quantile
+        theta_hist[index] = system.Theta_hat
+        wind_hist[index] = wind_velocity(sample_time)
+        if np.all(np.isfinite(terminal_x)) and np.all(np.isfinite(terminal_a_hat)):
+            V_hist[index] = float(system.clf(terminal_x, terminal_a_hat))
+        return terminal_x, terminal_a_hat, terminal_rho
+
     interval_times = []
     score_hist = []
     delta_hist = []
     miscoverage_hist = []
     status = "completed"
+    failure_reason = None
+    failure_time = None
+    failure_rho = None
     last_sample_index = -1
 
     for sample_index, t in enumerate(t_full):
@@ -265,7 +298,21 @@ def run_craclf_simulation(
                 rtol=1e-7,
                 atol=1e-9,
                 t_eval=[t_full[sample_index + 1]],
+                events=rho_divergence_event if use_adaptive else None,
             )
+            if use_adaptive and solution.t_events[0].size:
+                event_state = solution.y_events[0][-1]
+                status = "diverged"
+                failure_reason = "rho_divergence"
+                failure_time = float(solution.t_events[0][-1])
+                failure_rho = float(event_state[-1])
+                event_index = sample_index + 1
+                last_sample_index = event_index
+                x_ext = event_state
+                x, a_hat, rho = record_terminal_sample(
+                    event_index, failure_time, x_ext, u, u_ref, slack
+                )
+                break
             if not solution.success:
                 raise RuntimeError(
                     f"{run_label}: extended dynamics failed at t={t:.3f}, x={x}, "
@@ -276,8 +323,25 @@ def run_craclf_simulation(
             a_hat = x_ext[system.xdim : system.xdim + system.adim]
             rho = float(x_ext[-1])
 
-        if not np.all(np.isfinite(x_ext)) or np.linalg.norm(x) > config["divergence_norm"]:
+        rho_diverged = not np.isfinite(rho) or abs(rho) >= rho_divergence_threshold
+        state_is_finite = np.all(np.isfinite(x_ext))
+        state_norm_diverged = np.linalg.norm(x) > config["x_norm_divergence_threshold"]
+        if rho_diverged or not state_is_finite or state_norm_diverged:
             status = "diverged"
+            failure_time = float(t_full[min(sample_index + 1, len(t_full) - 1)])
+            failure_rho = rho
+            if rho_diverged:
+                failure_reason = "rho_divergence"
+            elif not state_is_finite:
+                failure_reason = "nonfinite_extended_state"
+            else:
+                failure_reason = "state_norm"
+            if sample_index < len(t_full) - 1:
+                terminal_index = sample_index + 1
+                last_sample_index = terminal_index
+                x, a_hat, rho = record_terminal_sample(
+                    terminal_index, failure_time, x_ext, u, u_ref, slack
+                )
             break
 
         if (sample_index + 1) % I_length == 0:
@@ -309,7 +373,7 @@ def run_craclf_simulation(
             online_olacp.clear_buffers()
 
     used_slice = slice(0, last_sample_index + 1)
-    t = t_full[used_slice]
+    t = t_hist[used_slice]
     x_hist = x_hist[used_slice]
     u_hist = u_hist[used_slice]
     u_ref_hist = u_ref_hist[used_slice]
@@ -332,7 +396,7 @@ def run_craclf_simulation(
     tail_start = max(int(0.8 * len(state_norm)), 0)
     tail_norm = state_norm[tail_start:]
     if len(a_hat_hist) > 1:
-        a_hat_rate = np.diff(a_hat_hist, axis=0) / dt
+        a_hat_rate = np.diff(a_hat_hist, axis=0) / np.diff(t)[:, None]
         max_a_hat_dot = float(np.max(np.linalg.norm(a_hat_rate, axis=1)))
     else:
         max_a_hat_dot = 0.0
@@ -380,12 +444,22 @@ def run_craclf_simulation(
         "miscoverage_hist": np.asarray(miscoverage_hist),
         "vertical_wind_schedule": vertical_wind_schedule,
         "status": status,
+        "failure_reason": failure_reason,
+        "failure_time": failure_time,
+        "failure_rho": failure_rho,
+        "rho_divergence_threshold": rho_divergence_threshold,
         "metrics": metrics,
         "final_theta": online_olacp.Theta.copy(),
     }
 
+    failure_summary = ""
+    if failure_reason is not None:
+        failure_summary = (
+            f", failure_reason={failure_reason}, failure_time={failure_time:.6f}, "
+            f"failure_rho={failure_rho:.3e}"
+        )
     print(
-        f"{run_label}: status={status}, t_final={t[-1]:.3f}, "
+        f"{run_label}: status={status}{failure_summary}, t_final={t[-1]:.3f}, "
         f"final_norm={metrics['final_norm']:.3e}, tail_rms={metrics['tail_rms']:.3e}, "
         f"max_norm={metrics['max_norm']:.3e}, V_final/V_initial={metrics['V_ratio']:.3e}, "
         f"max|u|={metrics['max_control']:.2f}, max_slack={metrics['max_slack']:.3e}, "
@@ -639,7 +713,8 @@ def main():
         "pretrain_excitation_frequency": 0.1,
         "pretrain_state_norm_max": 3.0,
         "main_initial_state": np.array([0.18, 0.0]),
-        "divergence_norm": 2.0,  # exit threshold for the local upright domain
+        "x_norm_divergence_threshold": 2.0,  # exit threshold for the local upright domain
+        "rho_divergence_threshold": 1e6,
     }
     base_ip_params = {
         "mass": mass,
