@@ -238,7 +238,7 @@ class OLACP:
         return s_k
 
     def append_score(self, s_k):
-        """Append the completed interval's score to the calibration window."""
+        """Append the completed interval's score to the calibration window"""
         self.S_cal.append(float(s_k))
 
     def update_representation(self, a_k=None):

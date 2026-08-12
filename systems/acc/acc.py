@@ -106,7 +106,7 @@ class ACC(ControlAffineSystem):
         super().__init__(params)
 
     def f(self, x):
-        """Return the nominal drift [v, 0, nominal_lead_velocity - v]."""
+        """Return the nominal drift [v, 0, nominal_lead_velocity - v]"""
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         v = x[1]
         return np.array([v, 0.0, self.nominal_lead_velocity - v])

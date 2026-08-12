@@ -485,7 +485,7 @@ def run_craclf_simulation(
 
 
 def plot_craclf_results(results):
-    """Plot and compare one or more main CRaCLF simulation results."""
+    """Plot and compare one or more main CRaCLF simulation results"""
     items = (
         list(results.items())
         if isinstance(results, dict)
@@ -680,7 +680,7 @@ def plot_craclf_results(results):
 
 
 def main():
-    """Build the shared experiment, run two controller settings, and compare them."""
+    """Build the shared experiment, run two controller settings, and compare them"""
     K_pre = 45
     N_cal = 30
     K = 6.0

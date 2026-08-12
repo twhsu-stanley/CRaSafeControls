@@ -53,11 +53,11 @@ class NONLINEAR_TOY(ControlAffineSystem):
         return np.array([x3, x1**2 - x2, np.tanh(x2)])
 
     def g(self, x):
-        """Return the constant control matrix."""
+        """Return the constant control matrix"""
         return np.array([[0.0], [0.0], [1.0]])
 
     def psi(self, x):
-        """Return the fixed feature matrix Psi(x)."""
+        """Return the fixed feature matrix Psi(x)"""
         x1, _, x3 = np.asarray(x, dtype=float).reshape(self.xdim)
         return np.array(
             [
@@ -68,11 +68,11 @@ class NONLINEAR_TOY(ControlAffineSystem):
         )
 
     def Y(self, x):
-        """Evaluate the currently installed uncertainty representation."""
+        """Evaluate the currently installed uncertainty representation"""
         return self.Y_Theta(x, self.Theta_hat)
 
     def Y_Theta(self, x, theta):
-        """Evaluate Y_Theta(x) = Psi(x) @ Theta."""
+        """Evaluate Y_Theta(x) = Psi(x) @ Theta"""
         theta = np.asarray(theta, dtype=float)
         if theta.shape != self.theta_shape:
             raise ValueError(f"theta must have shape {self.theta_shape}")
@@ -81,7 +81,7 @@ class NONLINEAR_TOY(ControlAffineSystem):
         return self._validate_Y_shape(self.psi(x) @ theta)
 
     def representation_loss_gradient(self, x, theta, a, w):
-        """Return grad_Theta ||Y_Theta(x) @ a - w||_2**2."""
+        """Return grad_Theta ||Y_Theta(x) @ a - w||_2**2"""
         a = np.asarray(a, dtype=float).reshape(-1)
         w = np.asarray(w, dtype=float).reshape(-1)
         if a.size != self.adim:
@@ -94,7 +94,7 @@ class NONLINEAR_TOY(ControlAffineSystem):
         return 2.0 * np.outer(Psi_x.T @ residual, a)
 
     def set_representation(self, Theta_hat):
-        """Install the representation used by the controller and CCM."""
+        """Install the representation used by the controller and CCM"""
         Theta_hat = np.asarray(Theta_hat, dtype=float)
         if Theta_hat.shape != self.theta_shape:
             raise ValueError(f"Theta_hat must have shape {self.theta_shape}")
@@ -103,7 +103,7 @@ class NONLINEAR_TOY(ControlAffineSystem):
         self.Theta_hat = Theta_hat.copy()
 
     def true_uncertainty(self, x, t=0.0):
-        """Return the physical uncertainty w(x, t), which is zero by default."""
+        """Return the physical uncertainty w(x, t), which is zero by default"""
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         if self.true_uncertainty_fcn is None:
             uncertainty = np.zeros(self.xdim)
@@ -140,28 +140,28 @@ class NONLINEAR_TOY(ControlAffineSystem):
         return dxdt_ext
 
     def _metric_parameter(self, a):
-        """Return a1 = Theta[0, :] @ a used by the explicit dual CCM."""
+        """Return b1 = Theta[0, :] @ a used by the explicit dual CCM"""
         a = np.asarray(a, dtype=float).reshape(self.adim)
         return float(self.Theta_hat[0] @ a)
 
     def W_fcn(self, x, a):
-        """Return the explicit dual CCM W(x, a) = M(x, a)^-1."""
+        """Return the explicit dual CCM W(x, a) = M(x, a)^-1"""
         x1 = float(np.asarray(x, dtype=float).reshape(self.xdim)[0])
-        a1 = self._metric_parameter(a)
+        b1 = self._metric_parameter(a)
         return np.array(
             [
-                [1.42, 0.0, 1.42 * (a1 - 1.0)],
+                [1.42, 0.0, 1.42 * (b1 - 1.0)],
                 [0.0, 6.21, -2.85 * x1],
                 [
-                    1.42 * (a1 - 1.0),
+                    1.42 * (b1 - 1.0),
                     -2.85 * x1,
-                    1.42 * a1**2 - 2.84 * a1 + 1.30 * x1**2 + 5.79,
+                    1.42 * b1**2 - 2.84 * b1 + 1.30 * x1**2 + 5.79,
                 ],
             ]
         )
 
     def dW_dxi_fcn(self, i, x, a):
-        """Return the partial derivative of W with respect to x[i]."""
+        """Return the partial derivative of W with respect to x[i]"""
         if i < 0 or i >= self.xdim:
             raise IndexError(f"state index must lie in [0, {self.xdim})")
         if i != 0:
@@ -176,15 +176,15 @@ class NONLINEAR_TOY(ControlAffineSystem):
         )
 
     def dW_dai_fcn(self, i, x, a):
-        """Return the partial derivative of W with respect to a[i]."""
+        """Return the partial derivative of W with respect to a[i]"""
         if i < 0 or i >= self.adim:
             raise IndexError(f"parameter index must lie in [0, {self.adim})")
-        a1 = self._metric_parameter(a)
-        da1_dai = float(self.Theta_hat[0, i])
+        b1 = self._metric_parameter(a)
+        db1_dai = float(self.Theta_hat[0, i])
         return np.array(
             [
-                [0.0, 0.0, 1.42 * da1_dai],
+                [0.0, 0.0, 1.42 * db1_dai],
                 [0.0, 0.0, 0.0],
-                [1.42 * da1_dai, 0.0, (2.84 * a1 - 2.84) * da1_dai],
+                [1.42 * db1_dai, 0.0, (2.84 * b1 - 2.84) * db1_dai],
             ]
         )

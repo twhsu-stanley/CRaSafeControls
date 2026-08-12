@@ -32,5 +32,5 @@ def sindy_prediction_symbolic(x, u, feature_names, coefficients, feature_indices
     return f
 
 def wrapToPi(angle):
-    """Wrap angle to (-pi, pi]."""
+    """Wrap angle to (-pi, pi]"""
     return (angle + np.pi) % (2 * np.pi) - np.pi

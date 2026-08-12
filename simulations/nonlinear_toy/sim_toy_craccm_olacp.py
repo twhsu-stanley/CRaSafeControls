@@ -583,7 +583,7 @@ def run_craccm_simulation(
 
 
 def plot_craccm_results(results, trajectory):
-    """Plot and compare one or more main CRaCCM simulation results."""
+    """Plot and compare one or more main CRaCCM simulation results"""
     items = (
         list(results.items())
         if isinstance(results, dict)
@@ -817,7 +817,7 @@ def plot_craccm_results(results, trajectory):
 
 
 def main():
-    """Pretrain Algorithm 1, plan once, and compare three controller settings."""
+    """Pretrain Algorithm 1, plan once, and compare three controller settings"""
     K_pre = 100
     N_cal = 80
     K = 10

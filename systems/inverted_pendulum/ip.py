@@ -84,7 +84,7 @@ class IP(ControlAffineSystem):
         self._invalidate_riccati_cache()
 
     def f(self, x):
-        """Return the nominal drift for x = [phi, phi_dot]."""
+        """Return the nominal drift for x = [phi, phi_dot]"""
         phi, phi_dot = np.asarray(x, dtype=float).reshape(self.xdim)
         angular_acceleration = (
             -self.damping * phi_dot
@@ -93,13 +93,13 @@ class IP(ControlAffineSystem):
         return np.array([phi_dot, angular_acceleration])
 
     def g(self, x):
-        """Return the direct-torque input matrix."""
+        """Return the direct-torque input matrix"""
         np.asarray(x, dtype=float).reshape(self.xdim)
         return np.array([[0.0], [1.0 / self.inertia]])
 
     @staticmethod
     def psi(x):
-        """Return the coarse four-feature acceleration-level matrix Psi(x)."""
+        """Return the coarse four-feature acceleration-level matrix Psi(x)"""
         phi, phi_dot = np.asarray(x, dtype=float).reshape(2)
         return np.array(
             [
@@ -110,11 +110,11 @@ class IP(ControlAffineSystem):
         )
 
     def Y(self, x):
-        """Evaluate the currently installed uncertainty representation."""
+        """Evaluate the currently installed uncertainty representation"""
         return self.Y_Theta(x, self.Theta_hat)
 
     def Y_Theta(self, x, theta):
-        """Evaluate Y_Theta(x) = Psi(x) Theta."""
+        """Evaluate Y_Theta(x) = Psi(x) Theta"""
         theta = np.asarray(theta, dtype=float)
         if theta.shape != self.theta_shape:
             raise ValueError(f"theta must have shape {self.theta_shape}")
@@ -123,7 +123,7 @@ class IP(ControlAffineSystem):
         return self._validate_Y_shape(self.psi(x) @ theta)
 
     def representation_loss_gradient(self, x, theta, a, w):
-        """Return grad_Theta ||Y_Theta(x) a - w||_2**2."""
+        """Return grad_Theta ||Y_Theta(x) a - w||_2**2"""
         a = np.asarray(a, dtype=float).reshape(-1)
         w = np.asarray(w, dtype=float).reshape(-1)
         if a.size != self.adim:
@@ -136,7 +136,7 @@ class IP(ControlAffineSystem):
         return 2.0 * np.outer(Psi_x.T @ residual, a)
 
     def set_representation(self, Theta_hat):
-        """Install a representation and invalidate its Riccati certificate."""
+        """Install a representation and invalidate its Riccati certificate"""
         Theta_hat = np.asarray(Theta_hat, dtype=float)
         if Theta_hat.shape != self.theta_shape:
             raise ValueError(f"Theta_hat must have shape {self.theta_shape}")
@@ -146,7 +146,7 @@ class IP(ControlAffineSystem):
         self._invalidate_riccati_cache()
 
     def wind_torque(self, x, t=0.0):
-        """Return the wind torque about the pivot."""
+        """Return the wind torque about the pivot"""
         phi, phi_dot = np.asarray(x, dtype=float).reshape(self.xdim)
         wind_velocity = np.asarray(self.wind_velocity_fcn(t), dtype=float).reshape(2)
         if not np.all(np.isfinite(wind_velocity)):
@@ -165,11 +165,11 @@ class IP(ControlAffineSystem):
         return self.length * (np.cos(phi) * wind_force[0] - np.sin(phi) * wind_force[1])
 
     def true_trim_input(self, t=0.0):
-        """Return the physical input that trims the upright state."""
+        """Return the physical input that trims the upright state"""
         return -float(self.wind_torque(np.zeros(self.xdim), t))
 
     def true_uncertainty(self, x, t=0.0):
-        """Return the damping, gravity, and wind acceleration mismatch."""
+        """Return the damping, gravity, and wind acceleration mismatch"""
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         if self.true_uncertainty_fcn is not None:
             uncertainty = np.asarray(self.true_uncertainty_fcn(x, t), dtype=float)
@@ -212,17 +212,17 @@ class IP(ControlAffineSystem):
 
     @staticmethod
     def _representation_linear_terms(beta):
-        """Return position and velocity terms in the upright linearization."""
+        """Return position and velocity terms in the upright linearization"""
         beta = np.asarray(beta, dtype=float).reshape(4)
         return float(beta[1]), float(beta[3])
 
     def estimated_trim_input(self, a_hat):
-        """Return the torque that centers the estimated upright drift."""
+        """Return the torque that centers the estimated upright drift"""
         a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
         return -self.inertia * float((self.Theta_hat @ a_hat)[0])
 
     def certainty_equivalent_F(self, x, a_hat):
-        """Return the equilibrium-centered certainty-equivalent drift."""
+        """Return the equilibrium-centered certainty-equivalent drift"""
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
         return (
@@ -232,7 +232,7 @@ class IP(ControlAffineSystem):
         )
 
     def linearized_certainty_equivalent_F(self, a_hat):
-        """Return the upright Jacobian A(a_hat) of the centered drift."""
+        """Return the upright Jacobian A(a_hat) of the centered drift"""
         a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
         position_term, velocity_term = self._representation_linear_terms(self.Theta_hat @ a_hat)
         nominal_position = 0.5 * self.mass * self.grav * self.length / self.inertia
@@ -242,7 +242,7 @@ class IP(ControlAffineSystem):
         )
 
     def _linearization_parameter_derivatives(self):
-        """Return the exact derivatives dA/da_i for fixed Theta."""
+        """Return the exact derivatives dA/da_i for fixed Theta"""
         derivatives = np.zeros((self.adim, self.xdim, self.xdim))
         for index in range(self.adim):
             position_term, velocity_term = self._representation_linear_terms(
@@ -298,7 +298,7 @@ class IP(ControlAffineSystem):
         return sensitivities
 
     def clf_matrix(self, a_hat):
-        """Return the stabilizing CARE matrix P(a_hat)."""
+        """Return the stabilizing CARE matrix P(a_hat)"""
         return self._riccati_solution(a_hat).copy()
 
     def clf(self, x, a_hat):
@@ -318,19 +318,19 @@ class IP(ControlAffineSystem):
         return gradient.reshape(self.adim, 1)
 
     def lqr_gain(self, a_hat):
-        """Return the local certainty-equivalent LQR gain."""
+        """Return the local certainty-equivalent LQR gain"""
         P = self._riccati_solution(a_hat)
         B = self.g(np.zeros(self.xdim))
         return B.T @ P / self.lqr_R
 
     def local_lqr_control(self, x, a_hat):
-        """Return estimated trim torque plus local LQR feedback."""
+        """Return estimated trim torque plus local LQR feedback"""
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         feedback = float((self.lqr_gain(a_hat) @ x).item())
         return np.array([self.estimated_trim_input(a_hat) - feedback])
 
     def local_decay_rate(self, a_hat):
-        """Return the linear LQR decay rate certified by P(a_hat)."""
+        """Return the linear LQR decay rate certified by P(a_hat)"""
         P = self._riccati_solution(a_hat)
         gain = self.lqr_gain(a_hat)
         dissipation = self.lqr_Q + self.lqr_R * gain.T @ gain
