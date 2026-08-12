@@ -16,7 +16,7 @@ from systems.inverted_pendulum.ip import IP
 
 
 def run_pretraining(system, olacp, config, plot=True):
-    """Pretrain one OLACP instance and optionally create diagnostic figures."""
+    """Pre-train the shared representation and fill the calibration dataset using OLACP"""
     K_pre = config["K_pre"]
     I_length = config["I_length"]
     dt = config["dt"]
@@ -176,7 +176,7 @@ def run_pretraining(system, olacp, config, plot=True):
 def run_craclf_simulation(
     system, online_olacp, config, use_cp, use_adaptive, plot=False, label=None
 ):
-    """Run one main CRaCLF experiment from an independent pretrained snapshot."""
+    """Run one main CRaCLF experiment"""
     if bool(system.use_cp) != bool(use_cp) or bool(system.use_adaptive) != bool(use_adaptive):
         raise ValueError("The pendulum must be constructed with the requested controller flags")
 

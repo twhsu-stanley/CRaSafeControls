@@ -15,7 +15,7 @@ from systems.acc.acc import ACC
 
 
 def run_pretraining(system, olacp, config, plot=True):
-    """Pretrain one OLACP instance and optionally create diagnostic figures."""
+    """Pre-train the shared representation and fill the calibration dataset using OLACP"""
     K_pre = config["K_pre"]
     I_length = config["I_length"]
     dt = config["dt"]
@@ -233,7 +233,7 @@ def run_pretraining(system, olacp, config, plot=True):
 def run_cracbf_simulation(
     system, online_olacp, config, use_cp, use_adaptive, plot=False, label=None
 ):
-    """Run one main CRaCBF experiment from an independent pretrained OLACP snapshot."""
+    """Run one main CRaCBF experiment"""
     if bool(system.use_cp) != bool(use_cp) or bool(system.use_adaptive) != bool(use_adaptive):
         raise ValueError(
             "The ACC object must be constructed with the requested CP and adaptation flags"

@@ -1,4 +1,4 @@
-"""Algorithm 1 and CRaCCM for the nonlinear toy system."""
+"""Algorithm 1 and CRaCCM for the nonlinear toy system"""
 
 import copy
 import os
@@ -43,7 +43,7 @@ def true_uncertainty_fcn(x, t, schedule):
 
 
 def pretraining_control(x, t, config):
-    """Return a bounded stabilizing and persistently exciting nominal input."""
+    """A stabilizing + persistently exciting controller for pretraining"""
     x = np.asarray(x, dtype=float).reshape(3)
     amplitude = config["pretrain_excitation_amplitude"]
     omega = 2.0 * np.pi * config["pretrain_excitation_frequency"]
@@ -64,7 +64,7 @@ def pretraining_control(x, t, config):
 
 
 def run_pretraining(system, olacp, config, plot=True):
-    """Fill the calibration window and train the shared representation."""
+    """Pre-train the shared representation and fill the calibration dataset using OLACP"""
     K_pre = config["K_pre"]
     I_length = config["I_length"]
     dt = config["dt"]
@@ -197,7 +197,7 @@ def run_pretraining(system, olacp, config, plot=True):
 
 
 def plan_nominal_trajectory(system, config):
-    """Plan a nominal trajectory satisfying the uncertainty-free dynamics."""
+    """Plan a nominal trajectory"""
     horizon_steps = config["K"] * config["I_length"]
     planner = MotionPlanner(
         system=system,
@@ -253,7 +253,7 @@ def run_craccm_simulation(
     use_adaptive,
     label=None,
 ):
-    """Run one CRaCCM experiment from an independent pretrained snapshot."""
+    """Run one CRaCCM experiment"""
     if bool(system.use_cp) != bool(use_cp) or bool(system.use_adaptive) != bool(use_adaptive):
         raise ValueError("The toy system must be constructed with the requested controller flags")
 
