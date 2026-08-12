@@ -58,11 +58,6 @@ class ControlAffineSystem:
         if not np.isfinite(self.a_hat_norm_max) or self.a_hat_norm_max <= 0.0:
             raise ValueError("a_hat_norm_max must be finite and positive")
 
-        #TODO: include different projection options
-        #self.projection_geometry = self.params.get("projection_geometry", "ball")
-        #if self.projection_geometry not in {"ball", "box"}:
-        #    raise ValueError("projection_geometry must be either 'ball' or 'box'")
-
         if self.use_adaptive:
             # For projection-based adaptive controls
             a_err_norm_max = self.a_hat_norm_max + 0.5 * np.linalg.norm(self.a_ub - self.a_lb, ord=2)
@@ -544,35 +539,36 @@ class ControlAffineSystem:
     # Scaling functions for unmatched adaptive controls
     @staticmethod
     def nu_clf(rho_clf):
-        # Smooth, strictly increasing, and bounded in (1, 2), as required by
-        # Definition 1 of the paper.
-        nu = np.arctan(rho_clf)/np.pi + 1.5
-        return nu
+        """Scaling function for the CRaCLF adaptation law"""
+        denominator = np.hypot(1.0, rho_clf)
+        return 1.5 + 0.5 * rho_clf / denominator
     
     @staticmethod
     def dnu_drho_clf(rho_clf):
-        dnu_drho = 1/(1+(rho_clf)**2)/np.pi
-        return dnu_drho
+        denominator = np.hypot(1.0, rho_clf)
+        return 0.5 / denominator**3
 
     @staticmethod
     def nu_cbf(rho_cbf):
-        nu = np.arctan(rho_cbf)/np.pi + 1.5
-        return nu
+        """Scaling function for the CRaCBF adaptation law"""
+        denominator = np.hypot(1.0, rho_cbf)
+        return 1.5 + 0.5 * rho_cbf / denominator
     
     @staticmethod
     def dnu_drho_cbf(rho_cbf):
-        dnu_drho = 1/(1+(rho_cbf)**2)/np.pi
-        return dnu_drho
-    
+        denominator = np.hypot(1.0, rho_cbf)
+        return 0.5 / denominator**3
+
     @staticmethod
     def nu_ccm(rho_ccm):
-        nu = np.arctan(rho_ccm)/np.pi + 1.5
-        return nu
+        """Scaling function for the CRaCCM adaptation law"""
+        denominator = np.hypot(1.0, rho_ccm)
+        return 1.5 + 0.5 * rho_ccm / denominator
     
     @staticmethod
     def dnu_drho_ccm(rho_ccm):
-        dnu_drho = 1/(1+(rho_ccm)**2)/np.pi
-        return dnu_drho
+        denominator = np.hypot(1.0, rho_ccm)
+        return 0.5 / denominator**3
     
     # Functions for projection-based adaptive controls
     @staticmethod
@@ -590,27 +586,6 @@ class ControlAffineSystem:
         denominator = 2 * epsilon * a_hat_norm_max - epsilon**2
         return (2 * (a_hat - a_center)).reshape(-1,1) / denominator
 
-    @staticmethod
-    def box_projection_operator(a_hat, y, a_lb, a_ub, epsilon):
-        """Smoothly suppress components of y directed out of a box"""
-        #TODO: to be verified
-        a_hat = np.asarray(a_hat, dtype=float).reshape(-1)
-        update = np.asarray(y, dtype=float).reshape(-1).copy()
-        a_lb = np.asarray(a_lb, dtype=float).reshape(-1)
-        a_ub = np.asarray(a_ub, dtype=float).reshape(-1)
-        if not (a_hat.shape == update.shape == a_lb.shape == a_ub.shape):
-            raise ValueError(
-                "a_hat, y, a_lb, and a_ub must have matching shapes"
-            )
-        epsilon = float(epsilon)
-        if not np.isfinite(epsilon) or epsilon <= 0.0:
-            raise ValueError("epsilon must be finite and strictly positive")
-
-        lower_scale = np.clip((a_hat - a_lb) / epsilon, 0.0, 1.0)
-        upper_scale = np.clip((a_ub - a_hat) / epsilon, 0.0, 1.0)
-        update = np.where(update < 0.0, update * lower_scale, update)
-        update = np.where(update > 0.0, update * upper_scale, update)
-        return update.reshape(-1, 1)
 
     @staticmethod
     def projection_operator(a_hat, y, a_center, a_hat_norm_max, epsilon, Gamma=None):
