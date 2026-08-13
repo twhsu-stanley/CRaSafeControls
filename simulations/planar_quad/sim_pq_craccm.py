@@ -215,6 +215,16 @@ def run_pretraining(system, olacp, config, plot=True):
         np.atleast_1d(axs)[-1].set_xlabel("time (s)")
         fig.suptitle("Pretraining: control inputs")
 
+        fig, axs = plt.subplots(system.theta_shape[0], system.theta_shape[1], sharex=True, figsize=(10, 8))
+        for i in range(system.theta_shape[0]):
+            for j in range(system.theta_shape[1]):
+                ax = axs[i, j]
+                ax.plot(np.arange(K_pre + 1) * interval_duration, theta_hist[:, i, j])
+                ax.set_ylabel(rf"$\Theta_{{{i + 1},{j + 1}}}$")
+                ax.grid(True)
+        axs[-1, 0].set_xlabel("time (s)")
+        fig.suptitle("Pretraining: representation parameters (Theta)")
+
         fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 6))
         for ax, component in zip(axs, (3, 4)):
             ax.plot(t_pre, true_uncertainty_hist[:, component], label="true uncertainty")
@@ -236,7 +246,7 @@ def run_pretraining(system, olacp, config, plot=True):
     return olacp, history
 
 
-def plan_nominal_trajectory(system, config):
+def plan_nominal_trajectory(system, config, plot=True):
     """Plan a nominal trajectory"""
     horizon_steps = config["K"] * config["I_length"]
     planner = MotionPlanner(
@@ -273,6 +283,18 @@ def plan_nominal_trajectory(system, config):
     )
     maximum_regressor_norm = float(np.max(regressor_norm))
     print(f"Nominal plan complete: max ||Y_Theta(x_d)||_F={maximum_regressor_norm:.3e}")
+
+    if plot:
+        fig, axs = plt.subplots(3, 2, sharex=True, figsize=(10, 8))
+        for state_index, ax in enumerate(axs.flat):
+            ax.plot(t_x, x_d[state_index])
+            ax.set_ylabel(rf"$x_{state_index + 1}$")
+            ax.grid(True)
+        axs[-1, 0].set_xlabel("time (s)")
+        axs[-1, 1].set_xlabel("time (s)")
+        fig.suptitle("Nominal trajectory")
+        plt.show()
+
     return {
         "t_x": t_x,
         "t_u": t_u,
@@ -285,8 +307,8 @@ def plan_nominal_trajectory(system, config):
 
 def _online_schedule(number_of_intervals):
     indices = np.arange(number_of_intervals, dtype=float)
-    wind_disturbance = 0.45 + 0.20 * np.sin(2.0 * np.pi * indices / 7.0 + 0.2)
-    drag_coefficient = 0.30 + 0.15 * np.cos(2.0 * np.pi * indices / 5.0 - 0.3)
+    wind_disturbance = 0.0 + 1.0 * np.sin(2.0 * np.pi * indices / 7.0 + 0.2)
+    drag_coefficient = 0.08 + 0.04 * np.cos(2.0 * np.pi * indices / 5.0 - 0.3)
     return np.vstack((wind_disturbance, drag_coefficient))
 
 
@@ -734,16 +756,16 @@ def main():
         "pretrain_altitude": 1.0,
         "pretrain_initial_state": np.array([0.0, 1.0, 0.0, 0.0, 0.0, 0.0]),
         "nominal_initial_state": np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-        "nominal_goal_state": np.array([0.0, 10.0, 0.0, 0.0, 0.0, 0.0]),
-        "motion_planner_Q": np.diag([1.0, 1.0, 100.0, 100.0, 1.0, 1.0]),
+        "nominal_goal_state": np.array([2.0, 8.0, 0.0, 0.0, 0.0, 0.0]),
+        "motion_planner_Q": np.diag([1.0, 1.0, 1.0, 10.0, 10.0, 10.0]),
         "motion_planner_R": 10.0 * np.eye(PLANAR_QUAD.udim),
         "motion_planner_Q_f": np.diag([1000.0, 1000.0, 500.0, 100.0, 100.0, 100.0]),
-        "tracking_initial_offset": np.array([-0.5, 0.0, 0.0, -0.5, -0.2, 0.0]),
-        "x_norm_divergence_threshold": 50.0,
-        "rho_divergence_threshold": 1e10,
+        "tracking_initial_offset": np.array([-0.5, 0.1, 0.0, 0.0, 0.0, 0.0]),
+        "x_norm_divergence_threshold": 10.0,
+        "rho_divergence_threshold": 1e6,
         "geodesic_degree": 2,
         "geodesic_nodes": 8,
-        "use_qpsolvers": False,
+        "use_qpsolvers": True,
         "verify_geodesic": False,
         "length": length,
         "mass": mass,
@@ -761,9 +783,9 @@ def main():
         "a_lb": a_lb,
         "a_hat_norm_max": a_hat_norm_max,
         "epsilon": projection_epsilon,
-        "eta_ccm": 5.0,
-        "ccm_rate": 0.8,
-        "weight_slack": 1e3,
+        "eta_ccm": 10.0,
+        "ccm_rate": 0.2,
+        "weight_slack": 1e5,
         "u_min": np.zeros(PLANAR_QUAD.udim),
         "u_max": 6.0 * np.ones(PLANAR_QUAD.udim),
         "dt": dt,
@@ -774,7 +796,7 @@ def main():
     pretrain_system = PLANAR_QUAD(pretrain_params)
 
     def representation_rate(update_index):
-        return 1e-4 / np.sqrt(update_index)
+        return 1e-3 / np.sqrt(update_index)
 
     olacp = OLACP(
         [],
@@ -795,6 +817,7 @@ def main():
     trained_olacp, pretraining_history = run_pretraining(
         pretrain_system, olacp, config, plot=show_plots
     )
+    
     trajectory = plan_nominal_trajectory(pretrain_system, config)
 
     canonical_theta = trained_olacp.Theta.copy()
