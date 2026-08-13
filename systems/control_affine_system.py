@@ -563,7 +563,7 @@ class ControlAffineSystem:
     def nu_ccm(rho_ccm):
         """Scaling function for the CRaCCM adaptation law"""
         denominator = np.hypot(1.0, rho_ccm)
-        return 1.5 + 0.5 * rho_ccm / denominator
+        return 1.0 + 0.5 * rho_ccm / denominator
     
     @staticmethod
     def dnu_drho_ccm(rho_ccm):
