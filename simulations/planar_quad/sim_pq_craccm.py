@@ -88,13 +88,6 @@ def pretraining_control(x, t, config):
     return 0.5 * np.array([thrust + thrust_difference, thrust - thrust_difference])
 
 
-def _pretraining_schedule(number_of_intervals):
-    indices = np.arange(number_of_intervals, dtype=float)
-    wind_disturbance = -0.45 + 0.25 * np.sin(2.0 * np.pi * indices / 9.0)
-    drag_coefficient = 0.40 + 0.20 * np.cos(2.0 * np.pi * indices / 7.0)
-    return np.vstack((wind_disturbance, drag_coefficient))
-
-
 def run_pretraining(system, olacp, config, plot=True):
     """Pretrain the representation and fill the OLACP calibration window"""
     K_pre = config["K_pre"]
@@ -102,7 +95,11 @@ def run_pretraining(system, olacp, config, plot=True):
     dt = config["dt"]
     interval_duration = config["interval_duration"]
     t_pre = np.arange(K_pre * I_length, dtype=float) * dt
-    schedule_values = _pretraining_schedule(K_pre)
+
+    indices = np.arange(K_pre, dtype=float)
+    wind_disturbance = -0.45 + 0.25 * np.sin(2.0 * np.pi * indices / 9.0)
+    drag_coefficient = 0.40 + 0.20 * np.cos(2.0 * np.pi * indices / 7.0)
+    schedule_values = np.vstack((wind_disturbance, drag_coefficient))
 
     def schedule_index(t):
         return min(int(np.floor(max(float(t), 0.0) / interval_duration)), K_pre - 1)
@@ -305,12 +302,6 @@ def plan_nominal_trajectory(system, config, plot=True):
     }
 
 
-def _online_schedule(number_of_intervals):
-    indices = np.arange(number_of_intervals, dtype=float)
-    wind_disturbance = 0.0 + 1.0 * np.sin(2.0 * np.pi * indices / 7.0 + 0.2)
-    drag_coefficient = 0.08 + 0.04 * np.cos(2.0 * np.pi * indices / 5.0 - 0.3)
-    return np.vstack((wind_disturbance, drag_coefficient))
-
 
 def run_craccm_simulation(
     system,
@@ -327,7 +318,11 @@ def run_craccm_simulation(
 
     K = config["K"]
     interval_duration = config["interval_duration"]
-    schedule_values = _online_schedule(K)
+
+    indices = np.arange(K, dtype=float)
+    wind_disturbance = 0.0 + 0.2 * np.sin(2.0 * np.pi * indices / 7.0 + 0.2)
+    drag_coefficient = 0.1 + 0.02 * np.cos(2.0 * np.pi * indices / 5.0 - 0.3)
+    schedule_values = np.vstack((wind_disturbance, drag_coefficient))
 
     def schedule_index(t):
         return min(int(np.floor(max(float(t), 0.0) / interval_duration)), K - 1)
@@ -756,11 +751,11 @@ def main():
         "pretrain_altitude": 1.0,
         "pretrain_initial_state": np.array([0.0, 1.0, 0.0, 0.0, 0.0, 0.0]),
         "nominal_initial_state": np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-        "nominal_goal_state": np.array([2.0, 8.0, 0.0, 0.0, 0.0, 0.0]),
-        "motion_planner_Q": np.diag([1.0, 1.0, 1.0, 10.0, 10.0, 10.0]),
+        "nominal_goal_state": np.array([8.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        "motion_planner_Q": np.diag([0.1, 10.0, 25.0, 1.0, 1.0, 2.0]),
         "motion_planner_R": 10.0 * np.eye(PLANAR_QUAD.udim),
         "motion_planner_Q_f": np.diag([1000.0, 1000.0, 500.0, 100.0, 100.0, 100.0]),
-        "tracking_initial_offset": np.array([-0.5, 0.1, 0.0, 0.0, 0.0, 0.0]),
+        "tracking_initial_offset": np.array([-0.5, 0.0, 0.05, -1.5, 0.0, 0.0]),
         "x_norm_divergence_threshold": 10.0,
         "rho_divergence_threshold": 1e6,
         "geodesic_degree": 2,
@@ -783,8 +778,8 @@ def main():
         "a_lb": a_lb,
         "a_hat_norm_max": a_hat_norm_max,
         "epsilon": projection_epsilon,
-        "eta_ccm": 10.0,
-        "ccm_rate": 0.2,
+        "eta_ccm": 5.0,
+        "ccm_rate": 0.8,
         "weight_slack": 1e5,
         "u_min": np.zeros(PLANAR_QUAD.udim),
         "u_max": 6.0 * np.ones(PLANAR_QUAD.udim),
@@ -825,7 +820,7 @@ def main():
     canonical_scores = np.asarray(trained_olacp.S_cal).copy()
     canonical_delta = float(trained_olacp.delta)
     settings = (
-        ("CP + adaptive", True, True),
+        #("CP + adaptive", True, True),
         ("No CP + adaptive", False, True),
         ("No CP + nonadaptive", False, False),
     )
