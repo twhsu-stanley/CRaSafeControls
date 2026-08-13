@@ -32,19 +32,23 @@ def noise_fcn(t):
 
 
 def true_uncertainty_fcn(x, t, schedule):
-    """Return the scheduled force and drag uncertainty plus bounded noise"""
+    """Return scheduled horizontal wind and drag uncertainty plus bounded noise"""
     _, _, phi, vx, _, _ = np.asarray(x, dtype=float).reshape(PLANAR_QUAD.xdim)
-    schedule = np.asarray(schedule, dtype=float).reshape(4)
+    schedule = np.asarray(schedule, dtype=float).reshape(2)
     noise = noise_fcn(t)
     if not np.all(np.isfinite(schedule)) or not np.all(np.isfinite(noise)):
         raise ValueError("uncertainty schedules and noise must be finite")
-
-    force_coefficient = 0.65 * schedule[0] + 0.35 * schedule[1]
-    drag_coefficient = 0.30 * schedule[2] + 0.70 * schedule[3]
-    uncertainty = noise.copy()
-    uncertainty[3] += force_coefficient * np.cos(phi) - drag_coefficient * vx
-    uncertainty[4] -= force_coefficient * np.sin(phi)
-    return uncertainty
+    wind_disturbance, drag_coefficient = schedule
+    return np.array(
+        [
+            0.0,
+            0.0,
+            0.0,
+            np.cos(phi) * wind_disturbance - vx * drag_coefficient + noise[3],
+            -np.sin(phi) * wind_disturbance + noise[4],
+            0.0,
+        ]
+    )
 
 
 def pretraining_control(x, t, config):
@@ -86,16 +90,9 @@ def pretraining_control(x, t, config):
 
 def _pretraining_schedule(number_of_intervals):
     indices = np.arange(number_of_intervals, dtype=float)
-    latent_1 = -0.45 + 0.25 * np.sin(2.0 * np.pi * indices / 9.0)
-    latent_2 = 0.40 * np.cos(2.0 * np.pi * indices / 7.0)
-    return np.vstack(
-        (
-            latent_1,
-            latent_2,
-            latent_1 + 0.08 * np.sin(2.0 * np.pi * indices / 5.0 + 0.3),
-            latent_2 + 0.07 * np.cos(2.0 * np.pi * indices / 6.0 - 0.2),
-        )
-    )
+    wind_disturbance = -0.45 + 0.25 * np.sin(2.0 * np.pi * indices / 9.0)
+    drag_coefficient = 0.40 + 0.20 * np.cos(2.0 * np.pi * indices / 7.0)
+    return np.vstack((wind_disturbance, drag_coefficient))
 
 
 def run_pretraining(system, olacp, config, plot=True):
@@ -288,17 +285,9 @@ def plan_nominal_trajectory(system, config):
 
 def _online_schedule(number_of_intervals):
     indices = np.arange(number_of_intervals, dtype=float)
-    alternating = np.cos(np.pi * indices)
-    latent_1 = 0.45 + 0.20 * np.sin(2.0 * np.pi * indices / 7.0 + 0.2)
-    latent_2 = 0.25 * np.cos(2.0 * np.pi * indices / 5.0 - 0.3)
-    return np.vstack(
-        (
-            latent_1 + 0.05 * alternating,
-            latent_2 + 0.02 * np.sin(np.pi * indices + 0.4),
-            latent_1 + 0.03 * np.sin(0.4 * indices + 0.3),
-            latent_2 - 0.05 * alternating,
-        )
-    )
+    wind_disturbance = 0.45 + 0.20 * np.sin(2.0 * np.pi * indices / 7.0 + 0.2)
+    drag_coefficient = 0.30 + 0.15 * np.cos(2.0 * np.pi * indices / 5.0 - 0.3)
+    return np.vstack((wind_disturbance, drag_coefficient))
 
 
 def run_craccm_simulation(
@@ -705,9 +694,9 @@ def plot_craccm_results(results, trajectory):
 
 def main():
     """Pretrain Algorithm 1, plan once, and compare three controllers"""
-    K_pre = 60
-    N_cal = 50
-    K = 10
+    K_pre = 100
+    N_cal = 80
+    K = 5
     B = 5
     dt = 0.01
     interval_duration = 2.0
@@ -720,11 +709,13 @@ def main():
     theta_lb = -1.0 * np.ones(PLANAR_QUAD.theta_shape)
     theta_ub = 1.0 * np.ones(PLANAR_QUAD.theta_shape)
     theta_rng = np.random.default_rng(42)
-    theta_init = theta_rng.uniform(-0.75, 0.75, size=PLANAR_QUAD.theta_shape)
+    theta_init = theta_rng.uniform(theta_lb, theta_ub)
+
     a_lb = -1.0 * np.ones(PLANAR_QUAD.adim)
     a_ub = 1.0 * np.ones(PLANAR_QUAD.adim)
     projection_epsilon = 0.01
     a_hat_norm_max = 0.5 * np.linalg.norm(a_ub - a_lb) + projection_epsilon
+
     length = 0.25
     mass = 0.486
     grav = 9.81
@@ -742,9 +733,9 @@ def main():
         "pretrain_excitation_frequency": 0.12,
         "pretrain_altitude": 1.0,
         "pretrain_initial_state": np.array([0.0, 1.0, 0.0, 0.0, 0.0, 0.0]),
-        "nominal_initial_state": np.zeros(PLANAR_QUAD.xdim),
-        "nominal_goal_state": np.array([8.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-        "motion_planner_Q": np.diag([0.1, 10.0, 25.0, 1.0, 1.0, 2.0]),
+        "nominal_initial_state": np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        "nominal_goal_state": np.array([0.0, 10.0, 0.0, 0.0, 0.0, 0.0]),
+        "motion_planner_Q": np.diag([1.0, 1.0, 100.0, 100.0, 1.0, 1.0]),
         "motion_planner_R": 10.0 * np.eye(PLANAR_QUAD.udim),
         "motion_planner_Q_f": np.diag([1000.0, 1000.0, 500.0, 100.0, 100.0, 100.0]),
         "tracking_initial_offset": np.array([-0.5, 0.0, 0.0, -0.5, -0.2, 0.0]),
