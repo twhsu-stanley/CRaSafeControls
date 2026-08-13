@@ -320,7 +320,7 @@ def run_craccm_simulation(
     interval_duration = config["interval_duration"]
 
     indices = np.arange(K, dtype=float)
-    wind_disturbance = 0.0 + 0.2 * np.sin(2.0 * np.pi * indices / 7.0 + 0.2)
+    wind_disturbance = 0.2 + 0.2 * np.sin(2.0 * np.pi * indices / 7.0 + 0.2)
     drag_coefficient = 0.1 + 0.02 * np.cos(2.0 * np.pi * indices / 5.0 - 0.3)
     schedule_values = np.vstack((wind_disturbance, drag_coefficient))
 
@@ -750,8 +750,8 @@ def main():
         "pretrain_excitation_frequency": 0.12,
         "pretrain_altitude": 1.0,
         "pretrain_initial_state": np.array([0.0, 1.0, 0.0, 0.0, 0.0, 0.0]),
-        "nominal_initial_state": np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-        "nominal_goal_state": np.array([8.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        "nominal_initial_state": np.array([0.0, 5.0, 0.0, 0.0, 0.0, 0.0]),
+        "nominal_goal_state": np.array([8.0, 5.0, 0.0, 0.0, 0.0, 0.0]),
         "motion_planner_Q": np.diag([0.1, 10.0, 25.0, 1.0, 1.0, 2.0]),
         "motion_planner_R": 10.0 * np.eye(PLANAR_QUAD.udim),
         "motion_planner_Q_f": np.diag([1000.0, 1000.0, 500.0, 100.0, 100.0, 100.0]),
@@ -820,7 +820,7 @@ def main():
     canonical_scores = np.asarray(trained_olacp.S_cal).copy()
     canonical_delta = float(trained_olacp.delta)
     settings = (
-        #("CP + adaptive", True, True),
+        ("CP + adaptive", True, True),
         ("No CP + adaptive", False, True),
         ("No CP + nonadaptive", False, False),
     )
