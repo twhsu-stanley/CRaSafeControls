@@ -1,71 +1,171 @@
-import sympy as sp
 import numpy as np
+
 from systems.control_affine_system import ControlAffineSystem
 
+
 class PLANAR_QUAD(ControlAffineSystem):
+    """Six-state planar quadrotor with a learned uncertainty model."""
+
+    theta_shape = (2, 2)
+    xdim = 6
+    udim = 2
+    adim = 2
+
     def __init__(self, params=None):
+        if params is None:
+            params = {}
+        elif not isinstance(params, dict):
+            raise TypeError("Parameters must be a dictionary.")
+
+        self.Theta_hat = np.asarray(
+            params.get("Theta_init", np.eye(self.adim)), dtype=float
+        ).reshape(self.theta_shape)
+        if not np.all(np.isfinite(self.Theta_hat)):
+            raise ValueError("Theta_init must be finite")
+
+        self.length = float(params.get("l", 0.25))
+        self.mass = float(params.get("m", 0.486))
+        self.grav = float(params.get("g", 9.81))
+        self.inertia = float(params.get("J", 0.00383))
+        physical_parameters = {
+            "l": self.length,
+            "m": self.mass,
+            "g": self.grav,
+            "J": self.inertia,
+        }
+        for name, value in physical_parameters.items():
+            if not np.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and strictly positive")
+
+        self.true_uncertainty_fcn = params.get("true_uncertainty")
+        if self.true_uncertainty_fcn is not None and not callable(self.true_uncertainty_fcn):
+            raise TypeError("true_uncertainty must be callable as w(x, t)")
+
         super().__init__(params)
-    
-    def define_system_symbolic(self):
-        # Symbolic states
-        px, pz, phi, vx, vz, phi_dot = sp.symbols('px pz phi vx vz phi_dot')
-        x = sp.Matrix([px, pz, phi, vx, vz, phi_dot])
-        
-        l = self.params['l'] # (m) half-width of quadrotor
-        m = self.params['m'] # (kg) mass of the quadrotor
-        grav = self.params['g'] # (m/s^2) gravity
-        J = self.params['J'] # (kgm^2), moment of inertia
 
-        f = sp.Matrix([
-            x[3] * sp.cos(x[2]) - x[4] * sp.sin(x[2]),   # px_dot
-            x[3] * sp.sin(x[2]) + x[4] * sp.cos(x[2]),   # pz_dot
-            x[5],                                        # phi_dot
-            x[5] * x[4] - grav * sp.sin(x[2]),           # vx_dot
-            -x[5] * x[3] - grav * sp.cos(x[2]),          # vz_dot
-            sp.Integer(0)                                # phi_ddot
-        ])
+    def f(self, x):
+        """Return the nominal body-frame quadrotor drift."""
+        _, _, phi, vx, vz, phi_dot = x
+        return np.array(
+            [
+                vx * np.cos(phi) - vz * np.sin(phi),
+                vx * np.sin(phi) + vz * np.cos(phi),
+                phi_dot,
+                phi_dot * vz - self.grav * np.sin(phi),
+                -phi_dot * vx - self.grav * np.cos(phi),
+                0.0,
+            ]
+        )
 
-        g = sp.Matrix([
-            [0,              0],
-            [0,              0],
-            [0,              0],
-            [0,              0],
-            [1/m,            1/m],
-            [l/J,           -l/J]
-        ])
+    def g(self, x):
+        """Return the two-rotor input matrix."""
+        rows = (
+            np.array([[0.0, 0.0]]),
+            np.array([[0.0, 0.0]]),
+            np.array([[0.0, 0.0]]),
+            np.array([[0.0, 0.0]]),
+            np.array([[1.0 / self.mass, 1.0 / self.mass]]),
+            np.array([[self.length / self.inertia, -self.length / self.inertia]]),
+        )
+        is_symbolic = type(x[0]).__module__.startswith("casadi")
+        if is_symbolic:
+            output = np.empty(self.xdim, dtype=object)
+            output[:] = rows
+            return output
+        return np.vstack(rows)
 
-        # Define the symbolic uncertainty term Y(x)
-        Y = sp.Matrix([[0, 0], 
-                       [0, 0],
-                       [0, 0],
-                       [sp.cos(x[2]), -x[3]],
-                       [-sp.sin(x[2]), 0],
-                       [0, 0]])
-        
-        # Define symbolic uncertainty parameters
-        a0, a1 = sp.symbols('a0, a1')
-        a = sp.Matrix([a0, a1])
+    @staticmethod
+    def psi(x):
+        """Return the fixed feature matrix for force and drag uncertainty."""
+        _, _, phi, vx, _, _ = np.asarray(x, dtype=float).reshape(6)
+        return np.array(
+            [
+                [0.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+                [np.cos(phi), -vx],
+                [-np.sin(phi), 0.0],
+                [0.0, 0.0],
+            ]
+        )
 
-        return x, f, g, Y, a
-    
-    def dynamics_extended(self, x_ext, x_d, u, geodesic_solver):
-        x = x_ext[0:self.xdim]
-        a_hat = x_ext[self.xdim:(self.xdim+self.adim)]
-        rho = x_ext[(self.xdim+self.adim)]
+    def Y(self, x):
+        """Evaluate the currently installed uncertainty representation."""
+        return self.Y_Theta(x, self.Theta_hat)
 
-        dxdt_ext = np.zeros((self.xdim+self.adim+1,))
+    def Y_Theta(self, x, theta):
+        """Evaluate Y_Theta(x) = Psi(x) @ Theta."""
+        theta = np.asarray(theta, dtype=float)
+        if theta.shape != self.theta_shape:
+            raise ValueError(f"theta must have shape {self.theta_shape}")
+        if not np.all(np.isfinite(theta)):
+            raise ValueError("theta must be finite")
+        return self._validate_Y_shape(self.psi(x) @ theta)
 
-        dxdt_ext[0:self.xdim] = self.dynamics(x, u)
+    def representation_loss_gradient(self, x, theta, a, w):
+        """Return grad_Theta ||Y_Theta(x) @ a - w||_2**2."""
+        a = np.asarray(a, dtype=float).reshape(-1)
+        w = np.asarray(w, dtype=float).reshape(-1)
+        if a.size != self.adim:
+            raise ValueError(f"a must have length {self.adim}")
+        if w.size != self.xdim:
+            raise ValueError(f"w must have length {self.xdim}")
+        Psi_x = self.psi(x)
+        residual = self.Y_Theta(x, theta) @ a - w
+        return 2.0 * np.outer(Psi_x.T @ residual, a)
 
+    def set_representation(self, Theta_hat):
+        """Install the representation used by the controller and CCM."""
+        Theta_hat = np.asarray(Theta_hat, dtype=float)
+        if Theta_hat.shape != self.theta_shape:
+            raise ValueError(f"Theta_hat must have shape {self.theta_shape}")
+        if not np.all(np.isfinite(Theta_hat)):
+            raise ValueError("Theta_hat must be finite")
+        self.Theta_hat = Theta_hat.copy()
+
+    def true_uncertainty(self, x, t=0.0):
+        """Return the physical uncertainty, which is zero by default."""
+        x = np.asarray(x, dtype=float).reshape(self.xdim)
+        if self.true_uncertainty_fcn is None:
+            uncertainty = np.zeros(self.xdim)
+        else:
+            uncertainty = np.asarray(self.true_uncertainty_fcn(x, t), dtype=float)
+        if uncertainty.shape != (self.xdim,):
+            raise ValueError(f"true_uncertainty(x, t) must return shape ({self.xdim},)")
+        if not np.all(np.isfinite(uncertainty)):
+            raise ValueError("true_uncertainty(x, t) must be finite")
+        return uncertainty
+
+    def dynamics(self, x, u, t=0.0):
+        x = np.asarray(x, dtype=float).reshape(self.xdim)
+        u = np.asarray(u, dtype=float).reshape(self.udim)
+        return self.f(x) + self.g(x) @ u + self.true_uncertainty(x, t)
+
+    def dynamics_extended(self, x_ext, x_d, u, geodesic_solver, t=0.0):
+        x_ext = np.asarray(x_ext, dtype=float).reshape(self.xdim + self.adim + 1)
+        x = x_ext[: self.xdim]
+        a_hat = x_ext[self.xdim : self.xdim + self.adim]
+        rho = x_ext[-1]
+
+        dxdt_ext = np.zeros(self.xdim + self.adim + 1)
+        dxdt_ext[: self.xdim] = self.dynamics(x, u, t)
         if self.use_adaptive:
             a_hat_dot, rho_dot = self.adaptation_craccm(x, x_d, a_hat, rho, geodesic_solver)
         else:
-            a_hat_dot= np.zeros(self.adim)
+            a_hat_dot = np.zeros(self.adim)
             rho_dot = 0.0
-        dxdt_ext[self.xdim:(self.xdim+self.adim)] = a_hat_dot
-        dxdt_ext[(self.xdim+self.adim)] = rho_dot
-
+        dxdt_ext[self.xdim : self.xdim + self.adim] = a_hat_dot
+        dxdt_ext[-1] = rho_dot
         return dxdt_ext
+
+    def _metric_parameter(self, a):
+        """Map the learned interval parameter to the certified metric coordinates."""
+        a = np.asarray(a, dtype=float).reshape(self.adim)
+        return self.Theta_hat @ a
+
+    def W_fcn(self, x, a):
+        """Return the explicit dual CCM at the installed representation."""
+        return self._W_base_fcn(x, self._metric_parameter(a))
 
     # CCM functions generated by SOS in MATLAB
     # Converting MATLAB functions to Python functions: 
@@ -82,7 +182,7 @@ class PLANAR_QUAD(ControlAffineSystem):
 
         #    This function was generated by the Symbolic Math Toolbox version 24.2.
         #    11-Mar-2026 01:06:49
-    def define_ccm_symbolic(self, x, a):
+    def _W_base_fcn(self, x, a):
         """Symbolic dual CCM metric W(x,a)"""
 
         a1 = a[0]
@@ -526,13 +626,12 @@ class PLANAR_QUAD(ControlAffineSystem):
         et22 = t8 * (-4.05272502534e-3)-a2 * t2 * 6.89247406076e-3+a2 * t6 * 2.97563423168e-2-a2 * t8 * 7.91114284844e-3+a1 * x3 * 1.20886159644e-2
         et23 = a1 * x4 * 1.40319327086e-3+x3 * x4 * 1.60516926482e-2-a1 * a2 * x3 * 1.51972904824e-3+a1 * a2 * x4 * 5.10159670214e-3-a2 * x3 * x4 * 2.93433284078e-2
         et24 = 1.49025510532
-        W_fcn = sp.Matrix([et1+et2+et3+et4,t412,t405,t400,t410,t402,t412,et5+et6+et7+et8,t414,t408,t403,t409,t405,t414,et9+et10+et11+et12,t406,t413,t404,t400,t408,t406,et13+et14+et15+et16,t411,t401,t410,t403,t413,t411,et17+et18+et19+et20,t407,t402,t409,t404,t401,t407,et21+et22+et23+et24])
+        W_fcn = np.array([et1+et2+et3+et4,t412,t405,t400,t410,t402,t412,et5+et6+et7+et8,t414,t408,t403,t409,t405,t414,et9+et10+et11+et12,t406,t413,t404,t400,t408,t406,et13+et14+et15+et16,t411,t401,t410,t403,t413,t411,et17+et18+et19+et20,t407,t402,t409,t404,t401,t407,et21+et22+et23+et24])
         W_fcn = W_fcn.reshape(6,6)
 
         return W_fcn
 
-"""
-    def dW_dphi_fcn(self, x, a):
+    def _dW_dphi_base_fcn(self, x, a):
         #dW_dphi
         #    dW_dphi = dW_dphi(IN1,IN2)
 
@@ -736,7 +835,7 @@ class PLANAR_QUAD(ControlAffineSystem):
         dW_dphi = np.reshape([et1+et2,t176,t170,t165,t175,t167,t176,et3+et4,t178,t172,t168,t174,t170,t178,et5+et6,t171,t177,t169,t165,t172,t171,et7+et8,t179,t166,t175,t168,t177,t179,et9+et10,t173,t167,t174,t169,t166,t173,et11+et12],(6,6))
         return dW_dphi
     
-    def dW_dvx_fcn(self, x, a):
+    def _dW_dvx_base_fcn(self, x, a):
         #dW_dvx
         #    dW_dvx = dW_dvx(IN1,IN2)
 
@@ -941,16 +1040,16 @@ class PLANAR_QUAD(ControlAffineSystem):
         return dW_dvx
     
     def dW_dxi_fcn(self, i, x, a):
+        if i < 0 or i >= self.xdim:
+            raise IndexError(f"state index must lie in [0, {self.xdim})")
+        metric_parameter = self._metric_parameter(a)
         if i == 2:
-            return self.dW_dphi_fcn(x, a)
+            return self._dW_dphi_base_fcn(x, metric_parameter)
         elif i == 3:
-            return self.dW_dvx_fcn(x, a)
-        elif i < self.xdim:
-            return np.zeros((6, 6))
-        else:
-            raise ValueError(f"dW_dxi_fcn index i = {i} exceeds self.xdim = {self.xdim}")
+            return self._dW_dvx_base_fcn(x, metric_parameter)
+        return np.zeros((6, 6))
 
-    def dW_da0_fcn(self, x, a):
+    def _dW_db0_fcn(self, x, a):
         #dW_da1
         #    dW_da1 = dW_da1(IN1,IN2)
 
@@ -1161,7 +1260,7 @@ class PLANAR_QUAD(ControlAffineSystem):
         dW_da1 = np.reshape([et1+et2,t183,t178,t173,t182,t175,t183,et3+et4,t186,t180,t176,t181,t178,t186,et5+et6,t177,t185,t174,t173,t180,t177,et7+et8,t184,t172,t182,t176,t185,t184,et9+et10,t179,t175,t181,t174,t172,t179,et11+et12],(6,6))
         return dW_da1
 
-    def dW_da1_fcn(self, x, a):
+    def _dW_db1_fcn(self, x, a):
         #dW_da2
         #    dW_da2 = dW_da2(IN1,IN2)
 
@@ -1367,13 +1466,9 @@ class PLANAR_QUAD(ControlAffineSystem):
         return dW_da2
 
     def dW_dai_fcn(self, i, x, a):
-        if i == 0:
-            return self.dW_da0_fcn(x, a)
-        elif i == 1:
-            return self.dW_da1_fcn(x, a)
-        elif i < self.adim:
-            return np.zeros((6, 6))
-        else:
-            raise ValueError(f"dW_dai_fcn index i = {i} exceeds self.adim = {self.adim}")
-        
-"""
+        if i < 0 or i >= self.adim:
+            raise IndexError(f"parameter index must lie in [0, {self.adim})")
+        metric_parameter = self._metric_parameter(a)
+        dW_db0 = self._dW_db0_fcn(x, metric_parameter)
+        dW_db1 = self._dW_db1_fcn(x, metric_parameter)
+        return self.Theta_hat[0, i] * dW_db0 + self.Theta_hat[1, i] * dW_db1
