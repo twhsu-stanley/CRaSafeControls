@@ -123,7 +123,7 @@ class PLANAR_QUAD(ControlAffineSystem):
         self.Theta_hat = Theta_hat.copy()
 
     def true_uncertainty(self, x, t=0.0):
-        """Return the physical uncertainty, which is zero by default"""
+        """Return the true uncertainty. Set to zero by default"""
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         if self.true_uncertainty_fcn is None:
             uncertainty = np.zeros(self.xdim)
