@@ -741,8 +741,8 @@ def main():
     if I_length < 10 or not np.isclose(I_length * dt, interval_duration):
         raise ValueError("interval_duration must be an integer multiple of dt")
 
-    theta_lb = -1.0 * np.ones(PLANAR_QUAD.theta_shape)
-    theta_ub = 1.0 * np.ones(PLANAR_QUAD.theta_shape)
+    theta_lb = np.eye(PLANAR_QUAD.theta_shape[0], PLANAR_QUAD.theta_shape[1]) - 0.2 * np.ones(PLANAR_QUAD.theta_shape)
+    theta_ub = np.eye(PLANAR_QUAD.theta_shape[0], PLANAR_QUAD.theta_shape[1]) + 0.2 * np.ones(PLANAR_QUAD.theta_shape)
     theta_rng = np.random.default_rng(42)
     theta_init = theta_rng.uniform(theta_lb, theta_ub)
 
@@ -809,7 +809,7 @@ def main():
     pretrain_system = PLANAR_QUAD(pretrain_params)
 
     def representation_rate(update_index):
-        return 1e-3 / np.sqrt(update_index)
+        return 1e-2 / np.sqrt(update_index)
 
     olacp = OLACP(
         [],
