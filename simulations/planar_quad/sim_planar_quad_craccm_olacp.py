@@ -32,20 +32,20 @@ def noise_fcn(t):
 
 
 def true_uncertainty_fcn(x, t, schedule):
-    """Return scheduled horizontal wind and drag uncertainty plus bounded noise"""
-    _, _, phi, vx, _, _ = np.asarray(x, dtype=float).reshape(PLANAR_QUAD.xdim)
-    schedule = np.asarray(schedule, dtype=float).reshape(2)
+    """Return scheduled wind and drag uncertainty plus + noise"""
+    _, _, phi, vx, vz, _ = np.asarray(x, dtype=float).reshape(PLANAR_QUAD.xdim)
+    schedule = np.asarray(schedule, dtype=float).reshape(4)
     noise = noise_fcn(t)
     if not np.all(np.isfinite(schedule)) or not np.all(np.isfinite(noise)):
         raise ValueError("uncertainty schedules and noise must be finite")
-    wind_disturbance, drag_coefficient = schedule
+    wind_disturbance_x, wind_disturbance_z, drag_coefficient_x, drag_coefficient_z = schedule
     return np.array(
         [
             0.0,
             0.0,
             0.0,
-            np.cos(phi) * wind_disturbance - vx * drag_coefficient + noise[3],
-            -np.sin(phi) * wind_disturbance + noise[4],
+            np.cos(phi) * wind_disturbance_x  + np.sin(phi) * wind_disturbance_z - vx * drag_coefficient_x + noise[3],
+            -np.sin(phi) * wind_disturbance_x + np.cos(phi) * wind_disturbance_z - vz * drag_coefficient_z + noise[4],
             0.0,
         ]
     )
@@ -97,9 +97,18 @@ def run_pretraining(system, olacp, config, plot=True):
     t_pre = np.arange(K_pre * I_length, dtype=float) * dt
 
     indices = np.arange(K_pre, dtype=float)
-    wind_disturbance = -0.45 + 0.25 * np.sin(2.0 * np.pi * indices / 9.0)
-    drag_coefficient = 0.40 + 0.20 * np.cos(2.0 * np.pi * indices / 7.0)
-    schedule_values = np.vstack((wind_disturbance, drag_coefficient))
+    wind_disturbance_x = -0.45 + 0.25 * np.sin(2.0 * np.pi * indices / 9.0)
+    wind_disturbance_z = 0.20 * np.cos(2.0 * np.pi * indices / 8.0)
+    drag_coefficient_x = 0.40 + 0.20 * np.cos(2.0 * np.pi * indices / 7.0)
+    drag_coefficient_z = 0.30 + 0.15 * np.sin(2.0 * np.pi * indices / 6.0)
+    schedule_values = np.vstack(
+        (
+            wind_disturbance_x, 
+            wind_disturbance_z, 
+            drag_coefficient_x, 
+            drag_coefficient_z
+         )
+    )
 
     def schedule_index(t):
         return min(int(np.floor(max(float(t), 0.0) / interval_duration)), K_pre - 1)
@@ -320,9 +329,18 @@ def run_craccm_simulation(
     interval_duration = config["interval_duration"]
 
     indices = np.arange(K, dtype=float)
-    wind_disturbance = 0.2 + 0.2 * np.sin(2.0 * np.pi * indices / 7.0 + 0.2)
-    drag_coefficient = 0.1 + 0.02 * np.cos(2.0 * np.pi * indices / 5.0 - 0.3)
-    schedule_values = np.vstack((wind_disturbance, drag_coefficient))
+    wind_disturbance_x = 0.2 + 0.2 * np.sin(2.0 * np.pi * indices / 7.0 + 0.2)
+    wind_disturbance_z = 0.1 + 0.1 * np.cos(2.0 * np.pi * indices / 6.0 - 0.1)
+    drag_coefficient_x = 0.1 + 0.02 * np.cos(2.0 * np.pi * indices / 5.0 - 0.3)
+    drag_coefficient_z = 0.05 + 0.01 * np.sin(2.0 * np.pi * indices / 4.0 + 0.1)
+    schedule_values = np.vstack(
+            (
+                wind_disturbance_x, 
+                wind_disturbance_z, 
+                drag_coefficient_x, 
+                drag_coefficient_z
+             )
+        )
 
     def schedule_index(t):
         return min(int(np.floor(max(float(t), 0.0) / interval_duration)), K - 1)
