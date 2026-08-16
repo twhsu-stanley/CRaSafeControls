@@ -773,7 +773,7 @@ def main():
         "m": config["mass"],
         "g": config["grav"],
         "J": config["inertia"],
-        "Gamma_ccm": np.diag([1.0 / 15.0, 1.0 / 15.0]),
+        "Gamma_ccm": np.diag([1.0 / 15.0, 1.0 / 15.0, 1.0 / 15.0, 1.0 / 15.0]),
         "a_ub": a_ub,
         "a_lb": a_lb,
         "a_hat_norm_max": a_hat_norm_max,
