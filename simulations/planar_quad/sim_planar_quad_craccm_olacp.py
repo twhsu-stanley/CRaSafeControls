@@ -276,11 +276,26 @@ def plan_nominal_trajectory(system, config, plot=True):
         u_min=np.asarray(system.params["u_min"], dtype=float).reshape(system.udim),
         u_max=np.asarray(system.params["u_max"], dtype=float).reshape(system.udim),
     )
-    alpha = np.linspace(0.0, 1.0, horizon_steps + 1)
-    x_guess = waypoints[0, :, None]
-    x_guess = x_guess + (waypoints[-1] - waypoints[0])[:, None] * alpha
+    
+    # x_guess should be straight-line segments connecting the waypoints
+    for waypoint_index in range(interval_count):
+        x_guess_segment = waypoints[waypoint_index, :, None] + (
+            waypoints[waypoint_index + 1, :, None] - waypoints[waypoint_index, :, None]
+        ) * np.linspace(0.0, 1.0, interval_steps + 1)[:, None].T
+
+        if waypoint_index < interval_count - 1:
+            x_guess_segment = x_guess_segment[:, :-1]  # exclude the last point to avoid duplication
+        else:
+            x_guess_segment = x_guess_segment  # include the last point for the final segment
+
+        if waypoint_index == 0:
+            x_guess = x_guess_segment
+        else:
+            x_guess = np.hstack((x_guess, x_guess_segment))
+
     hover_input = 0.5 * system.mass * system.grav * np.ones(system.udim)
     u_guess = np.repeat(hover_input[:, None], horizon_steps, axis=1)
+
     x_d, u_d = planner.plan_through_waypoints(
         waypoints,
         interval_steps,
@@ -288,6 +303,7 @@ def plan_nominal_trajectory(system, config, plot=True):
         u_guess,
         hover_input,
     )
+    
     t_x = config["dt"] * np.arange(horizon_steps + 1)
     t_u = t_x[:-1]
     waypoint_indices = interval_steps * np.arange(interval_count + 1)
@@ -747,7 +763,7 @@ def plot_craccm_results(results, trajectory):
 
 
 def main():
-    """Pretrain Algorithm 1, plan once, and compare three controllers"""
+    """Pretrain Algorithm 1, plan the desired trajectory, and compare three controllers"""
     K_pre = 100
     N_cal = 80
     K = 5
@@ -790,46 +806,11 @@ def main():
         "nominal_waypoints": np.array(
             [
                 [0.0, 5.0, 0.0, 0.0, 0.0, 0.0],
-                [
-                    2.30270163143510,
-                    5.48849986746337,
-                    0.06996438953384,
-                    1.19458809895698,
-                    -0.00510873953633,
-                    -0.00122989383931,
-                ],
-                [
-                    3.61739621888836,
-                    5.50360901230216,
-                    0.02239403508243,
-                    0.29123839062217,
-                    -0.01366224204982,
-                    -0.01647269268676,
-                ],
-                [
-                    3.91727129464569,
-                    5.49967009142546,
-                    0.00493135532281,
-                    0.06374211718845,
-                    -0.00002726933479,
-                    -0.00379455164293,
-                ],
-                [
-                    3.98340232037974,
-                    5.50000643338995,
-                    0.00101381742652,
-                    0.01474621270865,
-                    0.00000466359276,
-                    -0.00082456351090,
-                ],
-                [
-                    4.0,
-                    5.5,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                ],
+                [2.3, 5.5, 0.07, 1.19, -0.005, -0.001],
+                [3.6, 5.5, 0.02, 0.29, -0.013, -0.01],
+                [3.9, 5.5, 0.005, 0.06, 0.0, 0.0],
+                [3.98, 5.5, 0.001, 0.014, 0.0, 0.0],
+                [4.0, 5.5, 0.0, 0.0, 0.0, 0.0],
             ]
         ),
         "motion_planner_Q": np.diag([0.5, 10.0, 25.0, 1.0, 1.0, 2.0]),

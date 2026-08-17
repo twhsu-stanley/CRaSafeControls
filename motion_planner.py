@@ -76,13 +76,7 @@ class MotionPlanner:
         u_guess,
         u_reference=None,
     ):
-        """Plan a bounded-input nominal trajectory toward ``x_goal``.
-
-        The running cost penalizes state error and deviation from
-        ``u_reference``. The latter permits nonzero-input equilibria to have
-        zero running cost while retaining the original zero reference by
-        default. Dynamics constraints use the nominal RK4 map.
-        """
+        """Plan a nominal trajectory towards x_goal"""
 
         horizon_steps = int(horizon_steps)
         if horizon_steps < 1:
@@ -152,7 +146,8 @@ class MotionPlanner:
         u_guess,
         u_reference=None,
     ):
-        """Solve one nominal trajectory optimization with fixed interval waypoints."""
+        """Plan a nominal trajectory that follows fixed interval waypoints"""
+
         interval_count = waypoints.shape[0] - 1
         horizon_steps = interval_count * interval_steps
         opti = ca.Opti()
@@ -183,6 +178,12 @@ class MotionPlanner:
             input_error = u_step - u_reference_ca
             objective += ca.mtimes([state_error.T, Q, state_error])
             objective += ca.mtimes([input_error.T, R, input_error])
+
+            # Apply Q_f cost at the end of each interval to encourage reaching the waypoints
+            if (step_index + 1) % interval_steps == 0:
+                waypoint_index = (step_index + 1) // interval_steps
+                waypoint_error = X[:, step_index + 1] - ca.DM(waypoints[waypoint_index])
+                objective += ca.mtimes([waypoint_error.T, Q_f, waypoint_error])
 
             if self.u_min is not None and self.u_max is not None:
                 lower_bound = ca.DM(self.u_min)
