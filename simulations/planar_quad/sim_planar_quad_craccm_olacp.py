@@ -253,8 +253,20 @@ def run_pretraining(system, olacp, config, plot=True):
 
 
 def plan_nominal_trajectory(system, config, plot=True):
-    """Plan a nominal trajectory"""
-    horizon_steps = config["K"] * config["I_length"]
+    """Plan one nominal trajectory through the configured interval waypoints."""
+    interval_count = int(config["K"])
+    interval_steps = int(config["I_length"])
+    if interval_count < 1 or interval_steps < 1:
+        raise ValueError("K and I_length must be positive")
+
+    waypoints = np.asarray(config["nominal_waypoints"], dtype=float)
+    expected_shape = (interval_count + 1, system.xdim)
+    if waypoints.shape != expected_shape:
+        raise ValueError(f"nominal_waypoints must have shape {expected_shape}")
+    if not np.all(np.isfinite(waypoints)):
+        raise ValueError("nominal_waypoints must be finite")
+
+    horizon_steps = interval_count * interval_steps
     planner = MotionPlanner(
         system=system,
         dt=config["dt"],
@@ -265,22 +277,22 @@ def plan_nominal_trajectory(system, config, plot=True):
         u_max=np.asarray(system.params["u_max"], dtype=float).reshape(system.udim),
     )
     alpha = np.linspace(0.0, 1.0, horizon_steps + 1)
-    x_guess = config["nominal_initial_state"][:, None]
-    x_guess = x_guess + (
-        config["nominal_goal_state"] - config["nominal_initial_state"]
-    )[:, None] * alpha
+    x_guess = waypoints[0, :, None]
+    x_guess = x_guess + (waypoints[-1] - waypoints[0])[:, None] * alpha
     hover_input = 0.5 * system.mass * system.grav * np.ones(system.udim)
     u_guess = np.repeat(hover_input[:, None], horizon_steps, axis=1)
-    x_d, u_d = planner.plan(
-        config["nominal_initial_state"],
-        config["nominal_goal_state"],
-        horizon_steps,
+    x_d, u_d = planner.plan_through_waypoints(
+        waypoints,
+        interval_steps,
         x_guess,
         u_guess,
-        u_reference=hover_input,
+        hover_input,
     )
     t_x = config["dt"] * np.arange(horizon_steps + 1)
     t_u = t_x[:-1]
+    waypoint_indices = interval_steps * np.arange(interval_count + 1)
+    waypoint_error = x_d[:, waypoint_indices].T - waypoints
+    maximum_waypoint_error = float(np.max(np.abs(waypoint_error)))
     regressor_norm = np.asarray(
         [
             np.linalg.norm(system.Y(x_d[:, index]), ord="fro")
@@ -288,12 +300,17 @@ def plan_nominal_trajectory(system, config, plot=True):
         ]
     )
     maximum_regressor_norm = float(np.max(regressor_norm))
-    print(f"Nominal plan complete: max ||Y_Theta(x_d)||_F={maximum_regressor_norm:.3e}")
+    print(
+        f"Nominal plan complete: max waypoint error={maximum_waypoint_error:.3e}, "
+        f"max ||Y_Theta(x_d)||_F={maximum_regressor_norm:.3e}"
+    )
 
     if plot:
         fig, axs = plt.subplots(3, 2, sharex=True, figsize=(10, 8))
+        waypoint_times = config["interval_duration"] * np.arange(interval_count + 1)
         for state_index, ax in enumerate(axs.flat):
             ax.plot(t_x, x_d[state_index])
+            ax.plot(waypoint_times, waypoints[:, state_index], "o")
             ax.set_ylabel(rf"$x_{state_index + 1}$")
             ax.grid(True)
         axs[-1, 0].set_xlabel("time (s)")
@@ -306,6 +323,8 @@ def plan_nominal_trajectory(system, config, plot=True):
         "t_u": t_u,
         "x_d": x_d,
         "u_d": u_d,
+        "waypoints": waypoints.copy(),
+        "waypoint_indices": waypoint_indices,
         "interp_x_d": interp1d(t_x, x_d, axis=1, bounds_error=False, fill_value="extrapolate"),
         "interp_u_d": interp1d(t_u, u_d, axis=1, bounds_error=False, fill_value="extrapolate"),
     }
@@ -768,8 +787,51 @@ def main():
         "pretrain_excitation_frequency": 0.12,
         "pretrain_altitude": 1.0,
         "pretrain_initial_state": np.array([0.0, 1.0, 0.0, 0.0, 0.0, 0.0]),
-        "nominal_initial_state": np.array([0.0, 5.0, 0.0, 0.0, 0.0, 0.0]),
-        "nominal_goal_state": np.array([4.0, 5.5, 0.0, 0.0, 0.0, 0.0]),
+        "nominal_waypoints": np.array(
+            [
+                [0.0, 5.0, 0.0, 0.0, 0.0, 0.0],
+                [
+                    2.30270163143510,
+                    5.48849986746337,
+                    0.06996438953384,
+                    1.19458809895698,
+                    -0.00510873953633,
+                    -0.00122989383931,
+                ],
+                [
+                    3.61739621888836,
+                    5.50360901230216,
+                    0.02239403508243,
+                    0.29123839062217,
+                    -0.01366224204982,
+                    -0.01647269268676,
+                ],
+                [
+                    3.91727129464569,
+                    5.49967009142546,
+                    0.00493135532281,
+                    0.06374211718845,
+                    -0.00002726933479,
+                    -0.00379455164293,
+                ],
+                [
+                    3.98340232037974,
+                    5.50000643338995,
+                    0.00101381742652,
+                    0.01474621270865,
+                    0.00000466359276,
+                    -0.00082456351090,
+                ],
+                [
+                    4.0,
+                    5.5,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
+            ]
+        ),
         "motion_planner_Q": np.diag([0.5, 10.0, 25.0, 1.0, 1.0, 2.0]),
         "motion_planner_R": 10.0 * np.eye(PLANAR_QUAD.udim),
         "motion_planner_Q_f": np.diag([1000.0, 1000.0, 500.0, 100.0, 100.0, 100.0]),

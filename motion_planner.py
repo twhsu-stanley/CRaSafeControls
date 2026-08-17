@@ -142,3 +142,66 @@ class MotionPlanner:
         u_d = np.asarray(solution.value(U), dtype=float).reshape(self.udim, horizon_steps)
         
         return x_d, u_d
+
+
+    def plan_through_waypoints(
+        self,
+        waypoints,
+        interval_steps,
+        x_guess,
+        u_guess,
+        u_reference=None,
+    ):
+        """Solve one nominal trajectory optimization with fixed interval waypoints."""
+        interval_count = waypoints.shape[0] - 1
+        horizon_steps = interval_count * interval_steps
+        opti = ca.Opti()
+        X = opti.variable(self.xdim, horizon_steps + 1)
+        U = opti.variable(self.udim, horizon_steps)
+
+        opti.subject_to(X[:, 0] == ca.DM(waypoints[0]))
+        #for waypoint_index in range(1, interval_count + 1):
+            #boundary_step = waypoint_index * interval_steps
+            #opti.subject_to(X[:, boundary_step] == ca.DM(waypoints[waypoint_index]))
+
+        if u_reference is None:
+            u_reference = np.zeros(self.udim)
+            u_reference = np.asarray(u_reference, dtype=float).reshape(self.udim)
+        
+        Q = ca.DM(self.Q)
+        R = ca.DM(self.R)
+        Q_f = ca.DM(self.Q_f)
+        u_reference_ca = ca.DM(u_reference)
+        objective = 0
+        for step_index in range(horizon_steps):
+            x_step = X[:, step_index]
+            u_step = U[:, step_index]
+            x_next = self._rk4_step_symbolic(x_step, u_step)
+            opti.subject_to(X[:, step_index + 1] == x_next)
+
+            state_error = x_step - ca.DM(waypoints[step_index // interval_steps + 1])
+            input_error = u_step - u_reference_ca
+            objective += ca.mtimes([state_error.T, Q, state_error])
+            objective += ca.mtimes([input_error.T, R, input_error])
+
+            if self.u_min is not None and self.u_max is not None:
+                lower_bound = ca.DM(self.u_min)
+                upper_bound = ca.DM(self.u_max)
+                opti.subject_to(opti.bounded(lower_bound, u_step, upper_bound))
+            elif self.u_min is not None:
+                opti.subject_to(ca.DM(self.u_min) <= u_step)
+            elif self.u_max is not None:
+                opti.subject_to(u_step <= ca.DM(self.u_max))
+
+        terminal_error = X[:, horizon_steps] - ca.DM(waypoints[-1])
+        objective += ca.mtimes([terminal_error.T, Q_f, terminal_error])
+        opti.minimize(objective)
+        opti.set_initial(X, x_guess)
+        opti.set_initial(U, u_guess)
+        opti.solver("ipopt", {"expand": False, **self.ipopt_options})
+
+        solution = opti.solve()
+        x_d = np.asarray(solution.value(X), dtype=float).reshape(self.xdim, horizon_steps + 1)
+        u_d = np.asarray(solution.value(U), dtype=float).reshape(self.udim, horizon_steps)
+
+        return x_d, u_d
