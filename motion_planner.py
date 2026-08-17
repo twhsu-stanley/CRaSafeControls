@@ -45,17 +45,17 @@ class MotionPlanner:
         xdot_ca = f + g @ u_ca
         return ca.Function("nominal_dynamics", [x_ca, u_ca], [xdot_ca])
 
-    def _rk4_step_symbolic(self, xk, uk):
+    def _rk4_step_symbolic(self, x_k, u_k):
         dt = self.dt
-        k1 = self._nominal_dynamics(xk, uk)
-        k2 = self._nominal_dynamics(xk + 0.5 * dt * k1, uk)
-        k3 = self._nominal_dynamics(xk + 0.5 * dt * k2, uk)
-        k4 = self._nominal_dynamics(xk + dt * k3, uk)
-        return xk + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+        k1 = self._nominal_dynamics(x_k, u_k)
+        k2 = self._nominal_dynamics(x_k + 0.5 * dt * k1, u_k)
+        k3 = self._nominal_dynamics(x_k + 0.5 * dt * k2, u_k)
+        k4 = self._nominal_dynamics(x_k + dt * k3, u_k)
+        return x_k + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
-    def _rk4_step_numpy(self, xk: np.ndarray, uk: np.ndarray) -> np.ndarray:
-        x_vec = np.asarray(xk, dtype=float).reshape(self.xdim)
-        u_vec = np.asarray(uk, dtype=float).reshape(self.udim)
+    def _rk4_step_numpy(self, x_k: np.ndarray, u_k: np.ndarray) -> np.ndarray:
+        x_vec = np.asarray(x_k, dtype=float).reshape(self.xdim)
+        u_vec = np.asarray(u_k, dtype=float).reshape(self.udim)
 
         def f_eval(x_eval: np.ndarray) -> np.ndarray:
             return np.array(self._nominal_dynamics(x_eval, u_vec), dtype=float).reshape(self.xdim)
@@ -103,22 +103,22 @@ class MotionPlanner:
 
         objective = 0
         for k in range(horizon_steps):
-            xk = X[:, k]
-            uk = U[:, k]
-            x_next = self._rk4_step_symbolic(xk, uk)
+            x_k = X[:, k]
+            u_k = U[:, k]
+            x_next = self._rk4_step_symbolic(x_k, u_k)
             opti.subject_to(X[:, k + 1] == x_next)
 
-            dx = xk - x_goal
-            du = uk - u_reference
+            dx = x_k - x_goal
+            du = u_k - u_reference
             objective += ca.mtimes([dx.T, Q, dx]) + ca.mtimes([du.T, R, du])
 
             if self.u_min is not None and self.u_max is not None:
-                opti.subject_to(opti.bounded(ca.DM(self.u_min), uk, ca.DM(self.u_max)))
+                opti.subject_to(opti.bounded(ca.DM(self.u_min), u_k, ca.DM(self.u_max)))
             else:
                 if self.u_min is not None:
-                    opti.subject_to(ca.DM(self.u_min) <= uk)
+                    opti.subject_to(ca.DM(self.u_min) <= u_k)
                 if self.u_max is not None:
-                    opti.subject_to(uk <= ca.DM(self.u_max))
+                    opti.subject_to(u_k <= ca.DM(self.u_max))
 
         dx_terminal = X[:, horizon_steps] - x_goal
         objective += ca.mtimes([dx_terminal.T, Q_f, dx_terminal])
@@ -148,6 +148,10 @@ class MotionPlanner:
     ):
         """Plan a nominal trajectory that follows fixed interval waypoints"""
 
+        if u_reference is None:
+            u_reference = np.zeros(self.udim)
+            u_reference = np.asarray(u_reference, dtype=float).reshape(self.udim)
+
         interval_count = waypoints.shape[0] - 1
         horizon_steps = interval_count * interval_steps
         opti = ca.Opti()
@@ -158,41 +162,36 @@ class MotionPlanner:
         #for waypoint_index in range(1, interval_count + 1):
             #boundary_step = waypoint_index * interval_steps
             #opti.subject_to(X[:, boundary_step] == ca.DM(waypoints[waypoint_index]))
-
-        if u_reference is None:
-            u_reference = np.zeros(self.udim)
-            u_reference = np.asarray(u_reference, dtype=float).reshape(self.udim)
         
         Q = ca.DM(self.Q)
         R = ca.DM(self.R)
         Q_f = ca.DM(self.Q_f)
         u_reference_ca = ca.DM(u_reference)
         objective = 0
-        for step_index in range(horizon_steps):
-            x_step = X[:, step_index]
-            u_step = U[:, step_index]
-            x_next = self._rk4_step_symbolic(x_step, u_step)
-            opti.subject_to(X[:, step_index + 1] == x_next)
+        for k in range(horizon_steps):
+            x_k = X[:, k]
+            u_k = U[:, k]
+            x_next = self._rk4_step_symbolic(x_k, u_k)
+            opti.subject_to(X[:, k + 1] == x_next)
 
-            state_error = x_step - ca.DM(waypoints[step_index // interval_steps + 1])
-            input_error = u_step - u_reference_ca
+            state_error = x_k - ca.DM(waypoints[k // interval_steps + 1])
+            input_error = u_k - u_reference_ca
             objective += ca.mtimes([state_error.T, Q, state_error])
             objective += ca.mtimes([input_error.T, R, input_error])
 
             # Apply Q_f cost at the end of each interval to encourage reaching the waypoints
-            if (step_index + 1) % interval_steps == 0:
-                waypoint_index = (step_index + 1) // interval_steps
-                waypoint_error = X[:, step_index + 1] - ca.DM(waypoints[waypoint_index])
+            if (k + 1) % interval_steps == 0:
+                waypoint_index = (k + 1) // interval_steps
+                waypoint_error = X[:, k + 1] - ca.DM(waypoints[waypoint_index])
                 objective += ca.mtimes([waypoint_error.T, Q_f, waypoint_error])
 
             if self.u_min is not None and self.u_max is not None:
-                lower_bound = ca.DM(self.u_min)
-                upper_bound = ca.DM(self.u_max)
-                opti.subject_to(opti.bounded(lower_bound, u_step, upper_bound))
-            elif self.u_min is not None:
-                opti.subject_to(ca.DM(self.u_min) <= u_step)
-            elif self.u_max is not None:
-                opti.subject_to(u_step <= ca.DM(self.u_max))
+                opti.subject_to(opti.bounded(ca.DM(self.u_min), u_k, ca.DM(self.u_max)))
+            else:
+                if self.u_min is not None:
+                    opti.subject_to(ca.DM(self.u_min) <= u_k)
+                if self.u_max is not None:
+                    opti.subject_to(u_k <= ca.DM(self.u_max))
 
         terminal_error = X[:, horizon_steps] - ca.DM(waypoints[-1])
         objective += ca.mtimes([terminal_error.T, Q_f, terminal_error])
