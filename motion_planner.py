@@ -84,6 +84,7 @@ class MotionPlanner:
 
         x_init = np.asarray(x_init, dtype=float).reshape(self.xdim)
         x_goal = np.asarray(x_goal, dtype=float).reshape(self.xdim)
+
         if u_reference is None:
             u_reference = np.zeros(self.udim)
         u_reference = np.asarray(u_reference, dtype=float).reshape(self.udim)
@@ -146,11 +147,13 @@ class MotionPlanner:
         u_guess,
         u_reference=None,
     ):
-        """Plan a nominal trajectory that follows fixed interval waypoints"""
+        """Plan a nominal trajectory that follows waypoints"""
 
         if u_reference is None:
             u_reference = np.zeros(self.udim)
-            u_reference = np.asarray(u_reference, dtype=float).reshape(self.udim)
+        u_reference = np.asarray(u_reference, dtype=float).reshape(self.udim)
+        if not np.all(np.isfinite(u_reference)):
+            raise ValueError("u_reference must be finite")
 
         interval_count = waypoints.shape[0] - 1
         horizon_steps = interval_count * interval_steps
@@ -193,8 +196,8 @@ class MotionPlanner:
                 if self.u_max is not None:
                     opti.subject_to(u_k <= ca.DM(self.u_max))
 
-        terminal_error = X[:, horizon_steps] - ca.DM(waypoints[-1])
-        objective += ca.mtimes([terminal_error.T, Q_f, terminal_error])
+        #terminal_error = X[:, horizon_steps] - ca.DM(waypoints[-1])
+        #objective += ca.mtimes([terminal_error.T, Q_f, terminal_error])
         opti.minimize(objective)
         opti.set_initial(X, x_guess)
         opti.set_initial(U, u_guess)
