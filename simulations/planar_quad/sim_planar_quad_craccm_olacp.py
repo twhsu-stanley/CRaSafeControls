@@ -24,8 +24,8 @@ def noise_fcn(t):
             0.0,
             0.0,
             0.0,
-            0.04 * np.sin(2.0 * np.pi * 0.67 * t + 0.3),
-            0.03 * np.cos(2.0 * np.pi * 0.41 * t + 0.1),
+            0.12 * np.sin(2.0 * np.pi * 0.67 * t + 0.3),
+            0.09 * np.cos(2.0 * np.pi * 0.41 * t + 0.1),
             0.0,
         ]
     )
@@ -329,10 +329,10 @@ def run_craccm_simulation(
     interval_duration = config["interval_duration"]
 
     indices = np.arange(K, dtype=float)
-    wind_disturbance_x = 0.2 + 0.2 * np.sin(2.0 * np.pi * indices / 7.0 + 0.2)
-    wind_disturbance_z = 0.1 + 0.1 * np.cos(2.0 * np.pi * indices / 6.0 - 0.1)
-    drag_coefficient_x = 0.1 + 0.02 * np.cos(2.0 * np.pi * indices / 5.0 - 0.3)
-    drag_coefficient_z = 0.05 + 0.01 * np.sin(2.0 * np.pi * indices / 4.0 + 0.1)
+    wind_disturbance_x = -0.60 + 0.05 * np.sin(2.0 * np.pi * indices / 12.0 + 0.2)
+    wind_disturbance_z = 0.22 + 0.04 * np.cos(2.0 * np.pi * indices / 10.0 - 0.1)
+    drag_coefficient_x = 0.30 + 0.04 * np.cos(2.0 * np.pi * indices / 12.0 - 0.3)
+    drag_coefficient_z = 0.20 + 0.03 * np.sin(2.0 * np.pi * indices / 10.0 + 0.1)
     schedule_values = np.vstack(
             (
                 wind_disturbance_x, 
@@ -769,11 +769,11 @@ def main():
         "pretrain_altitude": 1.0,
         "pretrain_initial_state": np.array([0.0, 1.0, 0.0, 0.0, 0.0, 0.0]),
         "nominal_initial_state": np.array([0.0, 5.0, 0.0, 0.0, 0.0, 0.0]),
-        "nominal_goal_state": np.array([8.0, 5.0, 0.0, 0.0, 0.0, 0.0]),
-        "motion_planner_Q": np.diag([0.1, 10.0, 25.0, 1.0, 1.0, 2.0]),
+        "nominal_goal_state": np.array([4.0, 5.5, 0.0, 0.0, 0.0, 0.0]),
+        "motion_planner_Q": np.diag([0.5, 10.0, 25.0, 1.0, 1.0, 2.0]),
         "motion_planner_R": 10.0 * np.eye(PLANAR_QUAD.udim),
         "motion_planner_Q_f": np.diag([1000.0, 1000.0, 500.0, 100.0, 100.0, 100.0]),
-        "tracking_initial_offset": np.array([-0.5, 0.0, 0.05, -1.5, 0.0, 0.0]),
+        "tracking_initial_offset": np.zeros(PLANAR_QUAD.xdim),
         "x_norm_divergence_threshold": 10.0,
         "rho_divergence_threshold": 1e6,
         "geodesic_degree": 2,
@@ -791,13 +791,13 @@ def main():
         "m": config["mass"],
         "g": config["grav"],
         "J": config["inertia"],
-        "Gamma_ccm": np.diag([1.0 / 15.0, 1.0 / 15.0, 1.0 / 15.0, 1.0 / 15.0]),
+        "Gamma_ccm": 0.03 * np.eye(PLANAR_QUAD.adim),
         "a_ub": a_ub,
         "a_lb": a_lb,
         "a_hat_norm_max": a_hat_norm_max,
         "epsilon": projection_epsilon,
-        "eta_ccm": 5.0,
-        "ccm_rate": 0.8,
+        "eta_ccm": 250.0,
+        "ccm_rate": 0.4,
         "weight_slack": 1e5,
         "u_min": np.zeros(PLANAR_QUAD.udim),
         "u_max": 6.0 * np.ones(PLANAR_QUAD.udim),
