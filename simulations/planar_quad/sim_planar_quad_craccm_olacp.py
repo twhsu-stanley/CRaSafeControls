@@ -791,6 +791,17 @@ def main():
     grav = 9.81
     inertia = 0.00383
 
+    nominal_waypoints = np.array(
+        [
+            [0.0, 5.0, 0.0, 0.0, 0.0, 0.0],
+            [2.3, 5.4, 0.07, 1.2, 0.0, 0.0],
+            [3.6, 5.5, 0.02, 0.3, 0.0, 0.0],
+            [3.9, 5.5, 0.01, 0.06, 0.0, 0.0],
+            [4.0, 5.5, 0.0, 0.01, 0.0, 0.0],
+            [4.0, 5.5, 0.0, 0.0, 0.0, 0.0],
+        ]
+    )
+
     config = {
         "K_pre": K_pre,
         "N_cal": N_cal,
@@ -803,16 +814,7 @@ def main():
         "pretrain_excitation_frequency": 0.12,
         "pretrain_altitude": 1.0,
         "pretrain_initial_state": np.array([0.0, 1.0, 0.0, 0.0, 0.0, 0.0]),
-        "nominal_waypoints": np.array(
-            [
-                [0.0, 5.0, 0.0, 0.0, 0.0, 0.0],
-                [2.3, 5.5, 0.07, 1.19, -0.005, -0.001],
-                [3.6, 5.5, 0.02, 0.29, -0.013, -0.01],
-                [3.9, 5.5, 0.005, 0.06, 0.0, 0.0],
-                [3.98, 5.5, 0.001, 0.014, 0.0, 0.0],
-                [4.0, 5.5, 0.0, 0.0, 0.0, 0.0],
-            ]
-        ),
+        "nominal_waypoints": nominal_waypoints,
         "motion_planner_Q": np.diag([0.5, 10.0, 25.0, 1.0, 1.0, 2.0]),
         "motion_planner_R": 10.0 * np.eye(PLANAR_QUAD.udim),
         "motion_planner_Q_f": np.diag([1000.0, 1000.0, 500.0, 100.0, 100.0, 100.0]),
