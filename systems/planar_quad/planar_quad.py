@@ -6,10 +6,10 @@ from systems.control_affine_system import ControlAffineSystem
 class PLANAR_QUAD(ControlAffineSystem):
     """Six-state planar quadrotor with a learned uncertainty model"""
 
-    theta_shape = (4, 4)
+    theta_shape = (4, 2)
     xdim = 6
     udim = 2
-    adim = 4
+    adim = 2
 
     def __init__(self, params=None):
         if params is None:
@@ -17,9 +17,7 @@ class PLANAR_QUAD(ControlAffineSystem):
         elif not isinstance(params, dict):
             raise TypeError("Parameters must be a dictionary.")
 
-        self.Theta_hat = np.asarray(
-            params.get("Theta_init", np.eye(self.adim)), dtype=float
-        ).reshape(self.theta_shape)
+        self.Theta_hat = np.asarray(params.get("Theta_init"), dtype=float).reshape(self.theta_shape)
         if not np.all(np.isfinite(self.Theta_hat)):
             raise ValueError("Theta_init must be finite")
 

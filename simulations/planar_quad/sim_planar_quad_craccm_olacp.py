@@ -16,6 +16,10 @@ from motion_planner import MotionPlanner
 from olacp import OLACP
 from systems.planar_quad.planar_quad import PLANAR_QUAD
 
+length = 0.25
+mass = 0.486
+grav = 9.81
+inertia = 0.00383
 
 def noise_fcn(t):
     """Return the nonparametric part of the physical uncertainty"""
@@ -24,8 +28,8 @@ def noise_fcn(t):
             0.0,
             0.0,
             0.0,
-            0.12 * np.sin(2.0 * np.pi * 0.67 * t + 0.3),
-            0.09 * np.cos(2.0 * np.pi * 0.41 * t + 0.1),
+            0.02 * np.sin(2.0 * np.pi * 0.67 * t + 0.3),
+            0.02 * np.cos(2.0 * np.pi * 0.41 * t + 0.1),
             0.0,
         ]
     )
@@ -53,8 +57,8 @@ def true_uncertainty_fcn(x, t, schedule):
             0.0,
             0.0,
             0.0,
-            force_w_x + noise[3],
-            force_w_z + noise[4],
+            force_w_x / mass + noise[3],
+            force_w_z / mass + noise[4],
             0.0,
         ]
     )
@@ -106,7 +110,7 @@ def run_pretraining(system, olacp, config, plot=True):
     t_pre = np.arange(K_pre * I_length, dtype=float) * dt
 
     indices = np.arange(K_pre, dtype=float)
-    wind_x = -0.45 + 0.25 * np.sin(2.0 * np.pi * indices / 9.0)
+    wind_x = -0.45 + 2.0 * np.sin(2.0 * np.pi * indices / 9.0)
     wind_z = 0.20 * np.cos(2.0 * np.pi * indices / 8.0)
     schedule_values = np.vstack((wind_x, wind_z))
 
@@ -771,15 +775,10 @@ def main():
     theta_rng = np.random.default_rng(42)
     theta_init = theta_rng.uniform(theta_lb, theta_ub)
 
-    a_lb = -1.0 * np.ones(PLANAR_QUAD.adim)
-    a_ub = 1.0 * np.ones(PLANAR_QUAD.adim)
+    a_lb = -4.0 * np.ones(PLANAR_QUAD.adim)
+    a_ub = 4.0 * np.ones(PLANAR_QUAD.adim)
     projection_epsilon = 0.01
     a_hat_norm_max = 0.5 * np.linalg.norm(a_ub - a_lb) + projection_epsilon
-
-    length = 0.25
-    mass = 0.486
-    grav = 9.81
-    inertia = 0.00383
 
     nominal_waypoints = np.array(
         [
