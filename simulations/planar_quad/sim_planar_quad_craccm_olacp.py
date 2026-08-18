@@ -338,6 +338,16 @@ def plan_nominal_trajectory(system, config, plot=True):
         axs[-1, 0].set_xlabel("time (s)")
         axs[-1, 1].set_xlabel("time (s)")
         fig.suptitle("Nominal trajectory")
+
+        fig, ax = plt.subplots(1, 1, sharex=True, figsize=(8, 6))
+        waypoint_times = config["interval_duration"] * np.arange(interval_count + 1)
+        ax.plot(x_d[0], x_d[1])
+        ax.plot(waypoints[:, 0], waypoints[:, 1], "o")
+        ax.set_xlabel("x (m)")
+        ax.set_ylabel("z (m)")
+        ax.grid(True)
+        fig.suptitle("Nominal x-z trajectory")
+
         plt.show()
 
     return {
