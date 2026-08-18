@@ -526,10 +526,9 @@ def run_craccm_simulation(
     fitted_uncertainty_hist = fitted_uncertainty_hist[used_slice]
 
     tracking_error = np.linalg.norm(x_hist - x_d_hist, axis=1)
-    tail_start = max(int(0.8 * len(tracking_error)), 0)
     metrics = {
         "final_error": float(tracking_error[-1]),
-        "tail_rms": float(np.sqrt(np.mean(tracking_error[tail_start:] ** 2))),
+        "rms_error": float(np.sqrt(np.mean(tracking_error ** 2))),
         "max_error": float(np.max(tracking_error)),
         "max_control": float(np.nanmax(np.abs(u_hist))),
         "max_slack": float(np.nanmax(slack_hist)),
@@ -580,7 +579,7 @@ def run_craccm_simulation(
     print(
         f"{run_label}: status={status}{failure_summary}, "
         f"final_error={metrics['final_error']:.3e}, "
-        f"tail_rms={metrics['tail_rms']:.3e}, max_error={metrics['max_error']:.3e}, "
+        f"rms_error={metrics['rms_error']:.3e}, max_error={metrics['max_error']:.3e}, "
         f"max|u|={metrics['max_control']:.3e}, max_slack={metrics['max_slack']:.3e}"
     )
     return result
@@ -861,11 +860,10 @@ def main():
         "pretrain_initial_state": np.array([0.5, -0.3, 0.0]),
         "nominal_initial_state": np.array([0.01, 5.0, -0.05]),
         "nominal_goal_state": np.array([-0.05, 0.0, 0.01]),
-        #"nominal_input_reference": np.array([-np.tanh(0.75**2)]),
         "motion_planner_Q": np.diag([100.0, 1.0, 100.0]),
         "motion_planner_R": 1e-3 * np.eye(NONLINEAR_TOY.udim),
         "motion_planner_Q_f": np.diag([1000.0, 10.0, 1000.0]),
-        "tracking_initial_offset": np.array([0.3, -0.2, 0.4]),
+        "tracking_initial_offset": np.array([0.3, -0.2, 0.4]) * 0.0,
         "x_norm_divergence_threshold": 10.0,
         "rho_divergence_threshold": 1e10,
         "geodesic_degree": 2,

@@ -587,10 +587,9 @@ def run_craccm_simulation(
     fitted_uncertainty_hist = fitted_uncertainty_hist[used_slice]
 
     tracking_error = np.linalg.norm(x_hist - x_d_hist, axis=1)
-    tail_start = max(int(0.8 * len(tracking_error)), 0)
     metrics = {
         "final_error": float(tracking_error[-1]),
-        "tail_rms": float(np.sqrt(np.mean(tracking_error[tail_start:] ** 2))),
+        "rms_error": float(np.sqrt(np.mean(tracking_error ** 2))),
         "max_error": float(np.max(tracking_error)),
         "max_control": float(np.nanmax(np.linalg.norm(u_hist, axis=1))),
         "max_slack": float(np.nanmax(slack_hist)),
@@ -639,7 +638,7 @@ def run_craccm_simulation(
         )
     print(
         f"{run_label}: status={status}{failure_summary}, "
-        f"final_error={metrics['final_error']:.3e}, tail_rms={metrics['tail_rms']:.3e}, "
+        f"final_error={metrics['final_error']:.3e}, rms_error={metrics['rms_error']:.3e}, "
         f"max_error={metrics['max_error']:.3e}, max|u|={metrics['max_control']:.3e}, "
         f"max_slack={metrics['max_slack']:.3e}"
     )
