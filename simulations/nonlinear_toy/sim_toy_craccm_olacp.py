@@ -904,15 +904,15 @@ def main():
         Y_Theta=pretrain_system.Y_Theta,
         representation_loss_gradient=pretrain_system.representation_loss_gradient,
     )
-    trained_olacp, pretraining_history = run_pretraining(
+    pretrained_olacp, pretraining_history = run_pretraining(
         pretrain_system, olacp, config, plot=True
     )
     trajectory = plan_nominal_trajectory(pretrain_system, config)
 
-    canonical_theta = trained_olacp.Theta.copy()
-    canonical_a_k = trained_olacp.a_k.copy()
-    canonical_scores = np.asarray(trained_olacp.S_cal).copy()
-    canonical_delta = float(trained_olacp.delta)
+    pretrained_theta = pretrained_olacp.Theta.copy()
+    pretrained_a_k = pretrained_olacp.a_k.copy()
+    pretrained_scores = np.asarray(pretrained_olacp.S_cal).copy()
+    pretrained_delta = float(pretrained_olacp.delta)
 
     settings = (
         ("CP + adaptive", True, True),
@@ -922,11 +922,11 @@ def main():
     results = {}
     for label, use_cp, use_adaptive in settings:
         run_params = dict(base_params)
-        run_params["Theta_init"] = canonical_theta.copy()
+        run_params["Theta_init"] = pretrained_theta.copy()
         run_params["use_cp"] = use_cp
         run_params["use_adaptive"] = use_adaptive
         run_system = NONLINEAR_TOY(run_params)
-        run_olacp = copy.deepcopy(trained_olacp)
+        run_olacp = copy.deepcopy(pretrained_olacp)
         results[label] = run_craccm_simulation(
             run_system,
             run_olacp,
@@ -937,14 +937,14 @@ def main():
             label=label,
         )
 
-    if not np.array_equal(trained_olacp.Theta, canonical_theta):
-        raise RuntimeError("A main simulation mutated the canonical pretrained Theta")
-    if not np.array_equal(trained_olacp.a_k, canonical_a_k):
-        raise RuntimeError("A main simulation mutated the canonical pretrained a_k")
-    if not np.array_equal(np.asarray(trained_olacp.S_cal), canonical_scores):
-        raise RuntimeError("A main simulation mutated the canonical calibration set")
-    if trained_olacp.delta != canonical_delta:
-        raise RuntimeError("A main simulation mutated the canonical adaptive delta")
+    if not np.array_equal(pretrained_olacp.Theta, pretrained_theta):
+        raise RuntimeError("A main simulation mutated the pretrained Theta")
+    if not np.array_equal(pretrained_olacp.a_k, pretrained_a_k):
+        raise RuntimeError("A main simulation mutated the pretrained a_k")
+    if not np.array_equal(np.asarray(pretrained_olacp.S_cal), pretrained_scores):
+        raise RuntimeError("A main simulation mutated the pretrained calibration set")
+    if pretrained_olacp.delta != pretrained_delta:
+        raise RuntimeError("A main simulation mutated the pretrained adaptive delta")
 
     plot_craccm_results(results, trajectory)
     plt.tight_layout()
