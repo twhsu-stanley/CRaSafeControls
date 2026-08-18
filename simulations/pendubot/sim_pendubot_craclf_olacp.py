@@ -676,6 +676,10 @@ def plot_craclf_results(results):
             ax.legend()
         axs[-1].set_xlabel("time (s)")
         fig.suptitle(rf"{label}: $Y_\Theta(x)a_k$ versus true uncertainty")
+
+    plt.tight_layout()
+    plt.show()
+    
     return figures
 
 
@@ -856,11 +860,7 @@ def main():
         warnings.warn("The nonadaptive run unexpectedly changed its CRaCLF adaptive states")
 
     plot_craclf_results(results)
-    plt.tight_layout()
-    if os.environ.get("CRASAFE_NO_PLOTS", "0") == "1":
-        plt.close("all")
-    else:
-        plt.show()
+
     return pretraining_history, results
 
 

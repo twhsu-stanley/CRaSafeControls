@@ -2,7 +2,9 @@
 
 import copy
 import os
+import pickle
 import sys
+import time
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -272,7 +274,7 @@ def plan_nominal_trajectory(system, config):
 def run_craccm_simulation(
     system,
     online_olacp,
-    trajectory,
+    desired_trajectory,
     config,
     use_cp,
     use_adaptive,
@@ -332,7 +334,7 @@ def run_craccm_simulation(
     rho_divergence_event.terminal = True
     rho_divergence_event.direction = -1.0
 
-    x = trajectory["x_d"][:, 0] + config["tracking_initial_offset"]
+    x = desired_trajectory["x_d"][:, 0] + config["tracking_initial_offset"]
     a_hat = system.a_center.copy()
     rho = 0.0
     x_ext = np.hstack((x, a_hat, rho))
@@ -375,7 +377,7 @@ def run_craccm_simulation(
         terminal_a_hat = state[system.xdim : system.xdim + system.adim]
         terminal_rho = float(state[-1])
         terminal_x_d = np.asarray(
-            trajectory["interp_x_d"](sample_time), dtype=float
+            desired_trajectory["interp_x_d"](sample_time), dtype=float
         ).reshape(system.xdim)
         t_hist[index] = sample_time
         x_hist[index] = terminal_x
@@ -395,8 +397,8 @@ def run_craccm_simulation(
 
     for sample_index, t in enumerate(t_full):
         last_sample_index = sample_index
-        x_d = np.asarray(trajectory["interp_x_d"](t), dtype=float).reshape(system.xdim)
-        u_d = np.asarray(trajectory["interp_u_d"](t), dtype=float).reshape(system.udim)
+        x_d = np.asarray(desired_trajectory["interp_x_d"](t), dtype=float).reshape(system.xdim)
+        u_d = np.asarray(desired_trajectory["interp_u_d"](t), dtype=float).reshape(system.udim)
 
         x_hist[sample_index] = x
         x_d_hist[sample_index] = x_d
@@ -584,7 +586,7 @@ def run_craccm_simulation(
     return result
 
 
-def plot_craccm_results(results, trajectory):
+def plot_craccm_results(results, desired_trajectory):
     """Plot and compare one or more main CRaCCM simulation results"""
     items = (
         list(results.items())
@@ -616,8 +618,8 @@ def plot_craccm_results(results, trajectory):
     figures.append(fig)
     for state_index, ax in enumerate(axs):
         ax.plot(
-            trajectory["t_x"],
-            trajectory["x_d"][state_index],
+            desired_trajectory["t_x"],
+            desired_trajectory["x_d"][state_index],
             "k--",
             label="desired" if state_index == 0 else None,
         )
@@ -763,7 +765,7 @@ def plot_craccm_results(results, trajectory):
             raise ValueError(f"{label}: expected a 6-by-K uncertainty schedule")
         number_of_intervals = schedule_values.shape[1]
         schedule_times = np.linspace(
-            0.0, float(trajectory["t_x"][-1]), number_of_intervals + 1
+            0.0, float(desired_trajectory["t_x"][-1]), number_of_intervals + 1
         )
         coefficient_values = np.vstack(
             (
@@ -815,6 +817,10 @@ def plot_craccm_results(results, trajectory):
             ax.legend()
         axs[-1].set_xlabel("time (s)")
         fig.suptitle(rf"{label}: $Y_\Theta(x)a_k$ versus true uncertainty")
+
+    plt.tight_layout()
+    plt.show()
+    
     return figures
 
 
@@ -907,7 +913,7 @@ def main():
     pretrained_olacp, pretraining_history = run_pretraining(
         pretrain_system, olacp, config, plot=True
     )
-    trajectory = plan_nominal_trajectory(pretrain_system, config)
+    desired_trajectory = plan_nominal_trajectory(pretrain_system, config)
 
     pretrained_theta = pretrained_olacp.Theta.copy()
     pretrained_a_k = pretrained_olacp.a_k.copy()
@@ -930,7 +936,7 @@ def main():
         results[label] = run_craccm_simulation(
             run_system,
             run_olacp,
-            trajectory,
+            desired_trajectory,
             config,
             use_cp,
             use_adaptive,
@@ -946,13 +952,23 @@ def main():
     if pretrained_olacp.delta != pretrained_delta:
         raise RuntimeError("A main simulation mutated the pretrained adaptive delta")
 
-    plot_craccm_results(results, trajectory)
-    plt.tight_layout()
-    if os.environ.get("CRASAFE_NO_PLOTS", "0") == "1":
-        plt.close("all")
-    else:
-        plt.show()
-    return pretraining_history, trajectory, results
+    # Save results to a file
+    timestamp = time.strftime("%Y_%m%d_%H%M")
+    results_filename = f"./simulations/nonlinear_toy/sim_toy_craccm_results_{timestamp}.pkl"
+    with open(results_filename, "wb") as f:
+        pickle.dump(
+            {
+                "config": config,
+                "base_params": base_params,
+                "desired_trajectory": desired_trajectory,
+                "results": results,
+            },
+            f,
+        )
+
+    plot_craccm_results(results, desired_trajectory)
+
+    return pretraining_history, desired_trajectory, results
 
 
 if __name__ == "__main__":

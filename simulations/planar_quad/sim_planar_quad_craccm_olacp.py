@@ -2,7 +2,9 @@
 
 import copy
 import os
+import pickle
 import sys
+import time
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -208,7 +210,7 @@ def run_pretraining(system, olacp, config, plot=True):
     )
 
     if plot:
-        fig, axs = plt.subplots(3, 2, sharex=True, figsize=(10, 8))
+        fig, axs = plt.subplots(3, 2, sharex=True, figsize=(8, 6))
         for state_index, ax in enumerate(axs.flat):
             ax.plot(t_pre, x_hist[:, state_index])
             ax.set_ylabel(rf"$x_{state_index + 1}$")
@@ -225,7 +227,7 @@ def run_pretraining(system, olacp, config, plot=True):
         np.atleast_1d(axs)[-1].set_xlabel("time (s)")
         fig.suptitle("Pretraining: control inputs")
 
-        fig, axs = plt.subplots(system.theta_shape[0], system.theta_shape[1], sharex=True, figsize=(10, 8))
+        fig, axs = plt.subplots(system.theta_shape[0], system.theta_shape[1], sharex=True, figsize=(8, 6))
         for i in range(system.theta_shape[0]):
             for j in range(system.theta_shape[1]):
                 ax = axs[i, j]
@@ -326,7 +328,7 @@ def plan_nominal_trajectory(system, config, plot=True):
     )
 
     if plot:
-        fig, axs = plt.subplots(3, 2, sharex=True, figsize=(10, 8))
+        fig, axs = plt.subplots(3, 2, sharex=True, figsize=(8, 6))
         waypoint_times = config["interval_duration"] * np.arange(interval_count + 1)
         for state_index, ax in enumerate(axs.flat):
             ax.plot(t_x, x_d[state_index])
@@ -354,7 +356,7 @@ def plan_nominal_trajectory(system, config, plot=True):
 def run_craccm_simulation(
     system,
     online_olacp,
-    trajectory,
+    desired_trajectory,
     config,
     use_cp,
     use_adaptive,
@@ -403,7 +405,7 @@ def run_craccm_simulation(
     rho_divergence_event.terminal = True
     rho_divergence_event.direction = -1.0
 
-    x = trajectory["x_d"][:, 0] + config["tracking_initial_offset"]
+    x = desired_trajectory["x_d"][:, 0] + config["tracking_initial_offset"]
     a_hat = system.a_center.copy()
     rho = 0.0
     x_ext = np.hstack((x, a_hat, rho))
@@ -445,7 +447,7 @@ def run_craccm_simulation(
         terminal_x = state[: system.xdim]
         terminal_a_hat = state[system.xdim : system.xdim + system.adim]
         terminal_rho = float(state[-1])
-        terminal_x_d = np.asarray(trajectory["interp_x_d"](sample_time), dtype=float)
+        terminal_x_d = np.asarray(desired_trajectory["interp_x_d"](sample_time), dtype=float)
         t_hist[index] = sample_time
         x_hist[index] = terminal_x
         x_d_hist[index] = terminal_x_d.reshape(system.xdim)
@@ -464,8 +466,8 @@ def run_craccm_simulation(
 
     for sample_index, t in enumerate(t_full):
         last_sample_index = sample_index
-        x_d = np.asarray(trajectory["interp_x_d"](t), dtype=float).reshape(system.xdim)
-        u_d = np.asarray(trajectory["interp_u_d"](t), dtype=float).reshape(system.udim)
+        x_d = np.asarray(desired_trajectory["interp_x_d"](t), dtype=float).reshape(system.xdim)
+        u_d = np.asarray(desired_trajectory["interp_u_d"](t), dtype=float).reshape(system.udim)
         x_hist[sample_index] = x
         x_d_hist[sample_index] = x_d
         a_hat_hist[sample_index] = a_hat
@@ -644,7 +646,7 @@ def run_craccm_simulation(
     return result
 
 
-def plot_craccm_results(results, trajectory):
+def plot_craccm_results(results, desired_trajectory):
     """Plot and compare one or more planar-quadrotor simulations"""
     items = (
         list(results.items())
@@ -670,12 +672,12 @@ def plot_craccm_results(results, trajectory):
     figures = []
     state_labels = ("x (m)", "z (m)", r"$\phi$ (rad)", r"$v_x$", r"$v_z$", r"$\dot\phi$")
 
-    fig, axs = plt.subplots(3, 2, sharex=True, figsize=(10, 8))
+    fig, axs = plt.subplots(3, 2, sharex=True, figsize=(8, 6))
     figures.append(fig)
     for state_index, ax in enumerate(axs.flat):
         ax.plot(
-            trajectory["t_x"],
-            trajectory["x_d"][state_index],
+            desired_trajectory["t_x"],
+            desired_trajectory["x_d"][state_index],
             "k--",
             label="desired" if state_index == 0 else None,
         )
@@ -690,6 +692,19 @@ def plot_craccm_results(results, trajectory):
     axs[-1, 0].set_xlabel("time (s)")
     axs[-1, 1].set_xlabel("time (s)")
     fig.suptitle("Planar-quadrotor state tracking comparison")
+
+    fig, ax = plt.subplots(1, 1, sharex=True, figsize=(8, 6))
+    figures.append(fig)
+    ax.plot(desired_trajectory["x_d"][0], desired_trajectory["x_d"][1], "k--", label="desired")
+    for label, result in items:
+        ax.plot(result["x_hist"][:, 0], result["x_hist"][:, 1], label=label)
+        if result["status"] != "completed":
+                ax.plot(result["x_hist"][-1, 0], result["x_hist"][-1, 1], "x", markersize=9)
+    ax.set_xlabel(state_labels[0])
+    ax.set_ylabel(state_labels[1])
+    ax.grid(True)
+    ax.legend()
+    fig.suptitle("Planar-quadrotor x-z position tracking comparison")
 
     for label, result in items:
         color = color_map[label]
@@ -753,6 +768,10 @@ def plot_craccm_results(results, trajectory):
             ax.legend()
         axs[-1].set_xlabel("time (s)")
         fig.suptitle(rf"{label}: $Y_\Theta(x)a_k$ versus true uncertainty")
+
+    plt.tight_layout()
+    plt.show()
+
     return figures
 
 
@@ -875,12 +894,12 @@ def main():
         Y_Theta=pretrain_system.Y_Theta,
         representation_loss_gradient=pretrain_system.representation_loss_gradient,
     )
-    show_plots = os.environ.get("CRASAFE_NO_PLOTS", "0") != "1"
+
     pretrained_olacp, pretraining_history = run_pretraining(
-        pretrain_system, olacp, config, plot=show_plots
+        pretrain_system, olacp, config, plot=True
     )
     
-    trajectory = plan_nominal_trajectory(pretrain_system, config)
+    desired_trajectory = plan_nominal_trajectory(pretrain_system, config)
 
     pretrained_theta = pretrained_olacp.Theta.copy()
     pretrained_a_k = pretrained_olacp.a_k.copy()
@@ -906,7 +925,7 @@ def main():
         results[label] = run_craccm_simulation(
             run_system,
             run_olacp,
-            trajectory,
+            desired_trajectory,
             config,
             use_cp,
             use_adaptive,
@@ -923,13 +942,24 @@ def main():
     if pretrained_olacp.delta != pretrained_delta:
         raise RuntimeError("A main simulation mutated the pretrained adaptive delta")
 
-    plot_craccm_results(results, trajectory)
-    plt.tight_layout()
-    if show_plots:
-        plt.show()
-    else:
-        plt.close("all")
-    return pretraining_history, trajectory, results
+    # Save results to a file
+    timestamp = time.strftime("%Y_%m%d_%H%M")
+    results_filename = f"./simulations/planar_quad/sim_planar_quad_craccm_results_{timestamp}.pkl"
+    with open(results_filename, "wb") as f:
+        pickle.dump(
+            {
+                "config": config,
+                "base_params": base_params,
+                "desired_trajectory": desired_trajectory,
+                "results": results,
+            },
+            f,
+        )
+
+    # Plot the results
+    plot_craccm_results(results, desired_trajectory)
+
+    return pretraining_history, desired_trajectory, results
 
 
 if __name__ == "__main__":
