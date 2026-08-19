@@ -202,11 +202,7 @@ def run_pretraining(system, olacp, config, plot=True):
         "quantile": quantile,
     }
     print(
-        f"Pretraining complete: Q_0={quantile:.3e}, a_last={olacp.a_k}, "
-        f"score_first={score_hist[0]:.3e}, score_last={score_hist[-1]:.3e}, "
-        f"theta_change={np.linalg.norm(theta_hist[-1] - theta_hist[0]):.3e}, "
-        f"max_state_norm={np.max(np.linalg.norm(x_hist, axis=1)):.3e}, "
-        f"max|u|={np.max(np.abs(u_hist)):.3e}"
+        f"Pretraining complete: quantile Q_k={quantile:.3e}; final fitted a_k={olacp.a_k}"
     )
 
     if plot:
@@ -873,7 +869,7 @@ def main():
         "m": config["mass"],
         "g": config["grav"],
         "J": config["inertia"],
-        "Gamma_ccm": 0.08 * np.eye(PLANAR_QUAD.adim),
+        "Gamma_ccm": 0.20 * np.eye(PLANAR_QUAD.adim),
         "a_ub": a_ub,
         "a_lb": a_lb,
         "a_hat_norm_max": a_hat_norm_max,
