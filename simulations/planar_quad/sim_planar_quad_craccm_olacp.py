@@ -112,7 +112,7 @@ def run_pretraining(system, olacp, config, plot=True):
     t_pre = np.arange(K_pre * I_length, dtype=float) * dt
 
     indices = np.arange(K_pre, dtype=float)
-    wind_x = -0.45 + 2.0 * np.sin(2.0 * np.pi * indices / 9.0)
+    wind_x = 3.5 * np.sin(2.0 * np.pi * indices / 9.0)
     wind_z = 1.0 * np.cos(2.0 * np.pi * indices / 8.0)
     schedule_values = np.vstack((wind_x, wind_z))
 
@@ -379,8 +379,8 @@ def run_craccm_simulation(
     K = config["K"]
     interval_duration = config["interval_duration"]
 
-    wind_x = np.repeat(np.array([-3.00, -3.25, -3.05, -2.85, -3.05]), 4)
-    wind_z = np.repeat(np.array([0.95, 0.65, 0.70, 0.85, 1.00]), 4)
+    wind_x = np.tile(np.array([-3.00, -3.25, -3.05, -2.85, -3.05]), 4)
+    wind_z = np.tile(np.array([0.95, 0.65, 0.70, 0.85, 1.00]), 4)
     schedule_values = np.vstack((wind_x, wind_z))
 
     def schedule_index(t):
@@ -798,13 +798,18 @@ def main():
     if I_length < 10 or not np.isclose(I_length * dt, interval_duration):
         raise ValueError("interval_duration must be an integer multiple of dt")
 
-    theta_lb = np.eye(PLANAR_QUAD.theta_shape[0], PLANAR_QUAD.theta_shape[1]) - 0.2 * np.ones(PLANAR_QUAD.theta_shape)
-    theta_ub = np.eye(PLANAR_QUAD.theta_shape[0], PLANAR_QUAD.theta_shape[1]) + 0.2 * np.ones(PLANAR_QUAD.theta_shape)
+    theta_lb = np.array([
+        [-0.5, -0.5],
+        [-0.1, -0.1],
+        [-0.2, -0.2],
+        [-0.1, -0.1]
+    ]).reshape(PLANAR_QUAD.theta_shape)
+    theta_ub = -theta_lb
     theta_rng = np.random.default_rng(42)
     theta_init = theta_rng.uniform(theta_lb, theta_ub)
 
-    a_lb = -4.0 * np.ones(PLANAR_QUAD.adim)
-    a_ub = 4.0 * np.ones(PLANAR_QUAD.adim)
+    a_lb = -1.0 * np.ones(PLANAR_QUAD.adim)
+    a_ub = 1.0 * np.ones(PLANAR_QUAD.adim)
     projection_epsilon = 0.01
     a_hat_norm_max = 0.5 * np.linalg.norm(a_ub - a_lb) + projection_epsilon
 
@@ -868,7 +873,7 @@ def main():
         "m": config["mass"],
         "g": config["grav"],
         "J": config["inertia"],
-        "Gamma_ccm": 0.04 * np.eye(PLANAR_QUAD.adim),
+        "Gamma_ccm": 0.08 * np.eye(PLANAR_QUAD.adim),
         "a_ub": a_ub,
         "a_lb": a_lb,
         "a_hat_norm_max": a_hat_norm_max,
@@ -886,7 +891,7 @@ def main():
     pretrain_system = PLANAR_QUAD(pretrain_params)
 
     def representation_rate(update_index):
-        return 1e-2 / np.sqrt(update_index)
+        return 5e-3 / np.sqrt(update_index)
 
     olacp = OLACP(
         [],
