@@ -379,7 +379,7 @@ def run_craccm_simulation(
     K = config["K"]
     interval_duration = config["interval_duration"]
 
-    wind_x = np.repeat(np.array([-3.00, -3.25, -3.05, 3.35, 3.05]), 4)
+    wind_x = np.repeat(np.array([-3.00, -3.25, -3.05, -2.85, -3.05]), 4)
     wind_z = np.repeat(np.array([0.95, 0.65, 0.70, 0.85, 1.00]), 4)
     schedule_values = np.vstack((wind_x, wind_z))
 
@@ -868,12 +868,12 @@ def main():
         "m": config["mass"],
         "g": config["grav"],
         "J": config["inertia"],
-        "Gamma_ccm": 0.055 * np.eye(PLANAR_QUAD.adim),
+        "Gamma_ccm": 0.04 * np.eye(PLANAR_QUAD.adim),
         "a_ub": a_ub,
         "a_lb": a_lb,
         "a_hat_norm_max": a_hat_norm_max,
         "epsilon": projection_epsilon,
-        "eta_ccm": 100.0,
+        "eta_ccm": 500.0,
         "ccm_rate": 0.2,
         "weight_slack": 1e5,
         "u_min": np.zeros(PLANAR_QUAD.udim),
