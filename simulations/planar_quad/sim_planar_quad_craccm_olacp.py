@@ -375,7 +375,7 @@ def run_craccm_simulation(
     K = config["K"]
     interval_duration = config["interval_duration"]
 
-    wind_x = np.tile(np.array([-3.00, -3.25, -3.05, -2.85, -3.05]), 4)
+    wind_x = np.tile(np.array([-3.00, -3.25, -3.05, -3.35, -3.25]), 4)
     wind_z = np.tile(np.array([0.95, 0.65, 0.70, 0.85, 1.00]), 4)
     schedule_values = np.vstack((wind_x, wind_z))
 
@@ -687,7 +687,7 @@ def plot_craccm_results(results, desired_trajectory):
             label="desired" if state_index == 0 else None,
         )
         for label, result in items:
-            ax.plot(result["t"], result["x_hist"][:, state_index], label=label)
+            ax.plot(result["t"], result["x_hist"][:, state_index], color=color_map[label], label=label)
             if result["status"] != "completed":
                 ax.plot(result["t"][-1], result["x_hist"][-1, state_index], "x", markersize=9)
         ax.set_ylabel(state_labels[state_index])
@@ -702,7 +702,7 @@ def plot_craccm_results(results, desired_trajectory):
     figures.append(fig)
     ax.plot(desired_trajectory["x_d"][0], desired_trajectory["x_d"][1], "k--", label="desired")
     for label, result in items:
-        ax.plot(result["x_hist"][:, 0], result["x_hist"][:, 1], label=label)
+        ax.plot(result["x_hist"][:, 0], result["x_hist"][:, 1], color=color_map[label], label=label)
         if result["status"] != "completed":
                 ax.plot(result["x_hist"][-1, 0], result["x_hist"][-1, 1], "x", markersize=9)
     ax.set_xlabel(state_labels[0])
@@ -869,7 +869,7 @@ def main():
         "m": config["mass"],
         "g": config["grav"],
         "J": config["inertia"],
-        "Gamma_ccm": 0.20 * np.eye(PLANAR_QUAD.adim),
+        "Gamma_ccm": 0.25 * np.eye(PLANAR_QUAD.adim),
         "a_ub": a_ub,
         "a_lb": a_lb,
         "a_hat_norm_max": a_hat_norm_max,
