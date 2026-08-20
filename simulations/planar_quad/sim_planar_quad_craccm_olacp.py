@@ -82,9 +82,9 @@ def pretraining_control(x, t, config):
         0.75 * np.sin(phase_1) + 1.8515 * np.sin(phase_2)
     )
     altitude = config["pretrain_altitude"]
-    pz_reference = altitude + 0.25 * amplitude * np.sin(0.7 * phase_1 + 0.2)
-    pz_reference_dot = 0.175 * amplitude * omega * np.cos(0.7 * phase_1 + 0.2)
-    pz_reference_ddot = -0.1225 * amplitude * omega**2 * np.sin(0.7 * phase_1 + 0.2)
+    pz_reference = altitude + amplitude * np.sin(0.7 * phase_1 + 0.2)
+    pz_reference_dot = 0.7 * amplitude * omega * np.cos(0.7 * phase_1 + 0.2)
+    pz_reference_ddot = -0.49 * amplitude * omega**2 * np.sin(0.7 * phase_1 + 0.2)
 
     inertial_vx = vx * np.cos(phi) - vz * np.sin(phi)
     inertial_vz = vx * np.sin(phi) + vz * np.cos(phi)
@@ -106,14 +106,15 @@ def pretraining_control(x, t, config):
 def run_pretraining(system, olacp, config, plot=True):
     """Pretrain the representation and fill the OLACP calibration window"""
     K_pre = config["K_pre"]
+    B = config["B"]
     I_length = config["I_length"]
     dt = config["dt"]
     interval_duration = config["interval_duration"]
     t_pre = np.arange(K_pre * I_length, dtype=float) * dt
 
     indices = np.arange(K_pre, dtype=float)
-    wind_x = 3.5 * np.sin(2.0 * np.pi * indices / 9.0)
-    wind_z = 1.0 * np.cos(2.0 * np.pi * indices / 8.0)
+    wind_x = 3.0 * np.sin(2.0 * np.pi * indices / B)
+    wind_z = 0.8 * np.cos(2.0 * np.pi * indices / B)
     schedule_values = np.vstack((wind_x, wind_z))
 
     def schedule_index(t):
@@ -232,6 +233,14 @@ def run_pretraining(system, olacp, config, plot=True):
                 ax.grid(True)
         axs[-1, 0].set_xlabel("time (s)")
         fig.suptitle("Pretraining: representation parameters (Theta)")
+
+        fig, axs = plt.subplots(system.adim, 1, sharex=True, figsize=(8, 6))
+        for i, ax in enumerate(np.atleast_1d(axs)):
+            ax.plot(t_pre, a_k_hist[:, i])
+            ax.set_ylabel(rf"$a_{{k,{i + 1}}}$")
+            ax.grid(True)
+        np.atleast_1d(axs)[-1].set_xlabel("time (s)")
+        fig.suptitle("Pretraining: fitted parameters (a_k)")
 
         fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 6))
         for ax, component in zip(axs, (3, 4)):
@@ -375,7 +384,7 @@ def run_craccm_simulation(
     K = config["K"]
     interval_duration = config["interval_duration"]
 
-    wind_x = np.tile(np.array([-3.00, -3.25, -3.05, -3.35, -3.25]), 4)
+    wind_x = np.tile(np.array([-3.00, -3.25, -3.05, -2.85, -3.05]), 4)
     wind_z = np.tile(np.array([0.95, 0.65, 0.70, 0.85, 1.00]), 4)
     schedule_values = np.vstack((wind_x, wind_z))
 
@@ -782,10 +791,10 @@ def plot_craccm_results(results, desired_trajectory):
 
 def main():
     """Pretrain Algorithm 1, plan the desired trajectory, and compare three controllers"""
-    K_pre = 100
+    K_pre = 200
     N_cal = 80
     K = 20
-    B = 4
+    B = 5
     dt = 0.01
     interval_duration = 2.0
     I_length = int(round(interval_duration / dt))
@@ -795,10 +804,10 @@ def main():
         raise ValueError("interval_duration must be an integer multiple of dt")
 
     theta_lb = np.array([
+        [-1.0, -1.0],
         [-0.5, -0.5],
-        [-0.1, -0.1],
-        [-0.2, -0.2],
-        [-0.1, -0.1]
+        [-0.5, -0.5],
+        [-0.5, -0.5]
     ]).reshape(PLANAR_QUAD.theta_shape)
     theta_ub = -theta_lb
     theta_rng = np.random.default_rng(42)
@@ -843,10 +852,10 @@ def main():
         "dt": dt,
         "interval_duration": interval_duration,
         "I_length": I_length,
-        "pretrain_excitation_amplitude": 0.8,
+        "pretrain_excitation_amplitude": 2.0,
         "pretrain_excitation_frequency": 0.12,
-        "pretrain_altitude": 1.0,
-        "pretrain_initial_state": np.array([0.0, 1.0, 0.0, 0.0, 0.0, 0.0]),
+        "pretrain_altitude": 5.0,
+        "pretrain_initial_state": np.array([0.0, 5.0, 0.0, 0.0, 0.0, 0.0]),
         "nominal_waypoints": nominal_waypoints,
         "motion_planner_Q": np.diag([1.0, 10.0, 1.0, 1.0, 1.0, 100.0]),
         "motion_planner_R": 10.0 * np.eye(PLANAR_QUAD.udim),
@@ -887,7 +896,7 @@ def main():
     pretrain_system = PLANAR_QUAD(pretrain_params)
 
     def representation_rate(update_index):
-        return 5e-3 / np.sqrt(update_index)
+        return 1e-3 * np.exp(-0.02 * update_index)
 
     olacp = OLACP(
         [],
