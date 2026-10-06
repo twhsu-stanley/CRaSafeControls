@@ -9,7 +9,7 @@ import time
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.integrate import solve_ivp
-from scipy.interpolate import interp1d
+from scipy.interpolate import CubicHermiteSpline, interp1d
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
@@ -368,6 +368,39 @@ def plan_nominal_trajectory(system, config, plot=True):
 
 
 
+def build_waypoint_cost_guide(waypoints, interval_duration):
+    """Build a smooth cost guide, not a replacement for the certainty-equivalent dynamics.
+
+    Position tangents use the specified body velocities rotated to the inertial
+    frame. Angle tangents use phi_dot. Guide velocities are derived from these
+    curves so the kinematic state components are consistent with each other.
+    """
+    waypoints = np.asarray(waypoints, dtype=float)
+    if waypoints.ndim != 2 or waypoints.shape[1] != 6 or len(waypoints) < 2:
+        raise ValueError("waypoints must have shape (K + 1, 6), with K >= 1")
+    if not np.all(np.isfinite(waypoints)):
+        raise ValueError("waypoints must be finite")
+    if not np.isfinite(interval_duration) or interval_duration <= 0.0:
+        raise ValueError("interval_duration must be finite and positive")
+    waypoint_times = interval_duration * np.arange(len(waypoints))
+    phi, vx, vz = waypoints[:, 2], waypoints[:, 3], waypoints[:, 4]
+    inertial_velocity = np.column_stack((
+        vx * np.cos(phi) - vz * np.sin(phi), vx * np.sin(phi) + vz * np.cos(phi)
+    ))
+    position_curve = CubicHermiteSpline(waypoint_times, waypoints[:, :2], inertial_velocity)
+    angle_curve = CubicHermiteSpline(waypoint_times, phi, waypoints[:, 5])
+
+    def state_reference(times):
+        times = np.clip(np.atleast_1d(times), waypoint_times[0], waypoint_times[-1])
+        position, velocity = position_curve(times), position_curve(times, 1)
+        angle, angular_velocity = angle_curve(times), angle_curve(times, 1)
+        body_vx = velocity[:, 0] * np.cos(angle) + velocity[:, 1] * np.sin(angle)
+        body_vz = -velocity[:, 0] * np.sin(angle) + velocity[:, 1] * np.cos(angle)
+        return np.vstack((position.T, angle, body_vx, body_vz, angular_velocity))
+
+    return state_reference
+
+
 def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, label=None):
     """Run one planar-quadrotor CRaCCM experiment"""
     if bool(system.use_cp) != bool(use_cp) or bool(system.use_adaptive) != bool(use_adaptive):
@@ -407,6 +440,22 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
         raise ValueError(f"nominal_waypoints must be finite with shape {(K + 1, system.xdim)}")
     if K < 1 or I_length < 1 or not np.isclose(I_length * dt, interval_duration):
         raise ValueError("K and I_length must be positive and match interval_duration / dt")
+    horizon_duration = float(config.get("mpc_horizon_duration", 4.0))
+    prediction_dt = float(config.get("mpc_prediction_dt", 0.05))
+    replan_interval = float(config.get("mpc_replan_interval", 0.2))
+    if not np.isfinite(replan_interval) or not 0.1 <= replan_interval <= 0.5:
+        raise ValueError("mpc_replan_interval must lie between 0.1 and 0.5 seconds")
+    if not np.isfinite(prediction_dt) or prediction_dt < dt:
+        raise ValueError("mpc_prediction_dt must be finite and at least the simulation dt")
+    if not np.isfinite(horizon_duration) or horizon_duration < replan_interval:
+        raise ValueError("mpc_horizon_duration must cover at least one replan interval")
+    prediction_stride = int(round(prediction_dt / dt))
+    replan_steps = int(round(replan_interval / dt))
+    if not np.isclose(prediction_stride * dt, prediction_dt):
+        raise ValueError("mpc_prediction_dt must be an integer multiple of simulation dt")
+    if not np.isclose(replan_steps * dt, replan_interval) or replan_steps % prediction_stride:
+        raise ValueError("mpc_replan_interval must be an integer multiple of prediction dt")
+    waypoint_cost_guide = build_waypoint_cost_guide(waypoints, interval_duration)
     planner = MotionPlanner(
         system=system,
         dt=dt,
@@ -459,7 +508,8 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
     theta_hist = np.zeros((sample_count,) + online_olacp.Theta.shape)
     true_uncertainty_hist = np.full((sample_count, system.xdim), np.nan)
     fitted_uncertainty_hist = np.full((sample_count, system.xdim), np.nan)
-    mpc_solve_time_hist = np.full(sample_count, np.nan)
+    mpc_solve_time_hist = np.zeros(sample_count)
+    mpc_replan_hist = np.zeros(sample_count, dtype=bool)
     mpc_iterations_hist = np.full(sample_count, np.nan)
     mpc_horizon_steps_hist = np.full(sample_count, np.nan)
     reference_times = [0.0]
@@ -507,20 +557,28 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
         )
         return np.hstack((adaptive_derivative, desired_derivative))
 
+    predicted_inputs = None
+    plan_start_step = 0
     for sample_index, t in enumerate(t_full):
         last_sample_index = sample_index
         model_a_hat = a_hat if use_adaptive else np.zeros(system.adim)
-        planning_start = time.perf_counter()
-        try:
-            _, predicted_inputs = planner.plan_certainty_equivalent_through_waypoints(
-                x_d, waypoints, I_length, sample_index, system.Theta_hat, model_a_hat, hover_input
-            )
-        except RuntimeError as error:
-            raise RuntimeError(f"{run_label}: waypoint MPC failed at t={t:.3f}") from error
-        mpc_solve_time_hist[sample_index] = time.perf_counter() - planning_start
-        mpc_iterations_hist[sample_index] = planner.last_mpc_stats["iterations"]
+        if sample_index % replan_steps == 0:
+            planning_start = time.perf_counter()
+            try:
+                _, predicted_inputs = planner.plan_certainty_equivalent_through_waypoints(
+                    x_d, waypoints, I_length, sample_index, system.Theta_hat, model_a_hat,
+                    hover_input, horizon_duration=horizon_duration, prediction_dt=prediction_dt,
+                    state_reference=waypoint_cost_guide,
+                )
+            except RuntimeError as error:
+                raise RuntimeError(f"{run_label}: waypoint MPC failed at t={t:.3f}") from error
+            plan_start_step = sample_index
+            mpc_solve_time_hist[sample_index] = time.perf_counter() - planning_start
+            mpc_iterations_hist[sample_index] = planner.last_mpc_stats["iterations"]
+            mpc_replan_hist[sample_index] = True
         mpc_horizon_steps_hist[sample_index] = planner.last_mpc_stats["horizon_steps"]
-        u_d = predicted_inputs[:, 0].copy()
+        input_index = (sample_index - plan_start_step) // prediction_stride
+        u_d = predicted_inputs[:, input_index].copy()
         reference_inputs.append(u_d.copy())
         x_hist[sample_index] = x
         x_d_hist[sample_index] = x_d
@@ -643,6 +701,7 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
     true_uncertainty_hist = true_uncertainty_hist[used_slice]
     fitted_uncertainty_hist = fitted_uncertainty_hist[used_slice]
     mpc_solve_time_hist = mpc_solve_time_hist[used_slice]
+    mpc_replan_hist = mpc_replan_hist[used_slice]
     mpc_iterations_hist = mpc_iterations_hist[used_slice]
     mpc_horizon_steps_hist = mpc_horizon_steps_hist[used_slice]
 
@@ -666,6 +725,9 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
         "waypoints": waypoints.copy(),
         "waypoint_times": waypoint_times,
         "waypoint_errors": waypoint_errors,
+        "mpc_horizon_duration": horizon_duration,
+        "mpc_prediction_dt": prediction_dt,
+        "mpc_replan_interval": replan_interval,
     }
 
     tracking_error = np.linalg.norm(x_hist - x_d_hist, axis=1)
@@ -678,7 +740,12 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
         "a_hat_change": float(np.linalg.norm(a_hat_hist[-1] - a_hat_hist[0])),
         "rho_range": float(np.ptp(rho_hist)),
         "max_waypoint_error": float(np.nanmax(np.linalg.norm(waypoint_errors, axis=1))),
+        "max_position_waypoint_error": float(
+            np.nanmax(np.linalg.norm(waypoint_errors[:, :2], axis=1))
+        ),
         "total_mpc_solve_time": float(np.nansum(mpc_solve_time_hist)),
+        "mpc_replan_count": int(np.count_nonzero(mpc_replan_hist)),
+        "mean_mpc_solve_time": float(np.mean(mpc_solve_time_hist[mpc_replan_hist])),
     }
     result = {
         "label": run_label,
@@ -689,6 +756,7 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
         "x_d_hist": x_d_hist,
         "desired_trajectory": desired_trajectory,
         "mpc_solve_time_hist": mpc_solve_time_hist,
+        "mpc_replan_hist": mpc_replan_hist,
         "mpc_iterations_hist": mpc_iterations_hist,
         "mpc_horizon_steps_hist": mpc_horizon_steps_hist,
         "tracking_error": tracking_error,
@@ -728,7 +796,10 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
         f"{run_label}: status={status}{failure_summary}, "
         f"final_error={metrics['final_error']:.3e}, rms_error={metrics['rms_error']:.3e}, "
         f"max_error={metrics['max_error']:.3e}, max|u|={metrics['max_control']:.3e}, "
-        f"max_slack={metrics['max_slack']:.3e}"
+        f"max_slack={metrics['max_slack']:.3e}, "
+        f"max_position_waypoint_error={metrics['max_position_waypoint_error']:.3e}, "
+        f"mpc_solves={metrics['mpc_replan_count']}, "
+        f"mpc_time={metrics['total_mpc_solve_time']:.2f}s"
     )
     return result
 
@@ -963,6 +1034,9 @@ def main():
         "motion_planner_Q": np.diag([1.0, 10.0, 1.0, 1.0, 1.0, 100.0]),
         "motion_planner_R": 10.0 * np.eye(PLANAR_QUAD.udim),
         "motion_planner_Q_f": np.diag([1500.0, 2500.0, 750.0, 250.0, 250.0, 1500.0]),
+        "mpc_horizon_duration": 4.0,
+        "mpc_prediction_dt": 0.05,
+        "mpc_replan_interval": 0.2,
         "tracking_initial_offset": np.zeros(PLANAR_QUAD.xdim),
         "x_norm_divergence_threshold": 10.0,
         "rho_divergence_threshold": 1e6,

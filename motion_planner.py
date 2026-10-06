@@ -38,6 +38,7 @@ class MotionPlanner:
         self._nominal_rk4 = self._build_rk4_function("nominal_rk4", self._nominal_dynamics)
         self._certainty_equivalent_dynamics = None
         self._certainty_equivalent_rk4 = None
+        self._mpc_problem = None
         self._mpc_warm_start = None
         self.last_mpc_stats = None
 
@@ -78,25 +79,85 @@ class MotionPlanner:
         xdot = self._nominal_dynamics(x, u) + Y_theta @ a_hat
         return ca.Function("certainty_equivalent_dynamics", [x, u, theta, a_hat], [xdot])
 
-    def _build_rk4_function(self, name, dynamics):
+    def _build_rk4_function(self, name, dynamics, dt=None):
         """Build an RK4 state-transition map with inputs and parameters held constant."""
         x, u = dynamics.mx_in(0), dynamics.mx_in(1)
         parameters = [dynamics.mx_in(i) for i in range(2, dynamics.n_in())]
-        dt = self.dt
+        dt = self.dt if dt is None else dt
         k1 = dynamics(x, u, *parameters)
         k2 = dynamics(x + 0.5 * dt * k1, u, *parameters)
         k3 = dynamics(x + 0.5 * dt * k2, u, *parameters)
         k4 = dynamics(x + dt * k3, u, *parameters)
         x_next = x + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
-        return ca.Function(name, [x, u, *parameters], [x_next])
+        return ca.Function(name, [x, u, *parameters], [x_next]).expand()
+
+    def _build_certainty_equivalent_mpc_problem(self, horizon_steps, prediction_dt):
+        """Build a reusable fixed-size problem with model and reference parameters."""
+        if self._certainty_equivalent_dynamics is None:
+            self._certainty_equivalent_dynamics = (
+                self._build_certainty_equivalent_dynamics_function()
+            )
+        self._certainty_equivalent_rk4 = self._build_rk4_function(
+            "certainty_equivalent_rk4", self._certainty_equivalent_dynamics, prediction_dt
+        )
+        opti = ca.Opti()
+        X = opti.variable(self.xdim, horizon_steps + 1)
+        U = opti.variable(self.udim, horizon_steps)
+        parameters = {
+            "x_init": opti.parameter(self.xdim),
+            "theta": opti.parameter(*self.system.theta_shape),
+            "a_hat": opti.parameter(self.system.adim),
+            "u_reference": opti.parameter(self.udim),
+            "state_reference": opti.parameter(self.xdim, horizon_steps + 1),
+            "waypoint_reference": opti.parameter(self.xdim, horizon_steps),
+            "waypoint_mask": opti.parameter(1, horizon_steps),
+            "waypoint_fraction": opti.parameter(1, horizon_steps),
+        }
+        opti.subject_to(X[:, 0] == parameters["x_init"])
+        predicted_next = self._certainty_equivalent_rk4.map(horizon_steps)(
+            X[:, :-1], U, ca.repmat(parameters["theta"], 1, horizon_steps),
+            ca.repmat(parameters["a_hat"], 1, horizon_steps),
+        )
+        opti.subject_to(X[:, 1:] == predicted_next)
+        state_error = X[:, :-1] - parameters["state_reference"][:, :-1]
+        input_error = U - ca.repmat(parameters["u_reference"], 1, horizon_steps)
+        # Preserve the running/waypoint-cost balance on a coarser prediction grid.
+        objective = prediction_dt / self.dt * (
+            ca.dot(state_error, ca.DM(self.Q) @ state_error)
+            + ca.dot(input_error, ca.DM(self.R) @ input_error)
+        )
+        fraction = ca.repmat(parameters["waypoint_fraction"], self.xdim, 1)
+        waypoint_states = X[:, :-1] + fraction * (X[:, 1:] - X[:, :-1])
+        waypoint_error = waypoint_states - parameters["waypoint_reference"]
+        waypoint_cost = ca.sum1(waypoint_error * (ca.DM(self.Q_f) @ waypoint_error))
+        objective += ca.dot(parameters["waypoint_mask"], waypoint_cost)
+        terminal_error = X[:, -1] - parameters["state_reference"][:, -1]
+        objective += ca.mtimes([terminal_error.T, ca.DM(self.Q), terminal_error])
+        opti.minimize(objective)
+        if self.u_min is not None:
+            lower = ca.repmat(ca.DM(self.u_min), 1, horizon_steps)
+            opti.subject_to(ca.vec(lower) <= ca.vec(U))
+        if self.u_max is not None:
+            upper = ca.repmat(ca.DM(self.u_max), 1, horizon_steps)
+            opti.subject_to(ca.vec(U) <= ca.vec(upper))
+        opti.solver("ipopt", {"expand": False, **self.ipopt_options})
+        return {
+            "opti": opti, "X": X, "U": U, "parameters": parameters,
+            "horizon_steps": horizon_steps, "prediction_dt": prediction_dt,
+        }
 
     def plan_certainty_equivalent_through_waypoints(
-        self, x_init, waypoints, interval_steps, start_step, theta, a_hat, u_reference=None
+        self, x_init, waypoints, interval_steps, start_step, theta, a_hat, u_reference=None,
+        *, horizon_duration=4.0, prediction_dt=None, state_reference=None,
     ):
-        """Replan certainty-equivalent dynamics from the current desired state.
+        """Replan a fixed-length certainty-equivalent horizon from the desired state.
 
-        Waypoint deadlines use absolute step indices. Theta and a_hat are held
-        constant during prediction and refreshed at the next control sample.
+        Waypoint times stay on the mission clock. Every future waypoint within
+        the horizon receives Q_f at its scheduled time, interpolating adjacent
+        prediction states for off-grid times. The running reference is only a
+        cost guide, not the dynamically generated desired state. Beyond the
+        mission end the guide is padded with the final waypoint. Theta and
+        a_hat are frozen during prediction and refreshed at each replan.
         """
         interval_steps_int, start_step_int = int(interval_steps), int(start_step)
         if interval_steps_int != interval_steps or interval_steps_int < 1:
@@ -107,9 +168,18 @@ class MotionPlanner:
         waypoints = np.asarray(waypoints, dtype=float)
         if waypoints.ndim != 2 or waypoints.shape[1] != self.xdim or len(waypoints) < 2:
             raise ValueError("waypoints must have shape (K + 1, xdim), with K >= 1")
-        horizon_steps = (len(waypoints) - 1) * interval_steps - start_step
-        if horizon_steps < 1:
+        if start_step >= (len(waypoints) - 1) * interval_steps:
             raise ValueError("start_step must precede the last waypoint deadline")
+        prediction_dt = self.dt if prediction_dt is None else float(prediction_dt)
+        horizon_duration = float(horizon_duration)
+        interval_duration = interval_steps * self.dt
+        if not np.isfinite(prediction_dt) or not 0.0 < prediction_dt <= interval_duration:
+            raise ValueError("prediction_dt must be positive and no longer than an interval")
+        if not np.isfinite(horizon_duration) or horizon_duration < prediction_dt:
+            raise ValueError("horizon_duration must be finite and at least prediction_dt")
+        horizon_steps = int(round(horizon_duration / prediction_dt))
+        if not np.isclose(horizon_steps * prediction_dt, horizon_duration):
+            raise ValueError("horizon_duration must be an integer multiple of prediction_dt")
         x_init = np.asarray(x_init, dtype=float).reshape(self.xdim)
         theta = np.asarray(theta, dtype=float)
         if theta.shape != self.system.theta_shape:
@@ -122,81 +192,83 @@ class MotionPlanner:
         if any(not np.all(np.isfinite(array)) for array in arrays):
             raise ValueError("MPC states, parameters, and references must be finite")
 
-        if self._certainty_equivalent_rk4 is None:
-            self._certainty_equivalent_dynamics = self._build_certainty_equivalent_dynamics_function()
-            self._certainty_equivalent_rk4 = self._build_rk4_function(
-                "certainty_equivalent_rk4", self._certainty_equivalent_dynamics
+        start_time = start_step * self.dt
+        prediction_times = start_time + prediction_dt * np.arange(horizon_steps + 1)
+        waypoint_times = interval_duration * np.arange(len(waypoints))
+        if state_reference is None:
+            guide = np.array(
+                [np.interp(prediction_times, waypoint_times, row) for row in waypoints.T]
             )
-        global_steps = start_step + np.arange(horizon_steps)
-        reference_indices = global_steps // interval_steps + 1
-        endpoint_offsets = np.flatnonzero((global_steps + 1) % interval_steps == 0) + 1
-        endpoint_indices = (start_step + endpoint_offsets) // interval_steps
+        else:
+            guide = np.asarray(state_reference(prediction_times), dtype=float)
+        if guide.shape != (self.xdim, horizon_steps + 1) or not np.all(np.isfinite(guide)):
+            raise ValueError("state_reference must return a finite (xdim, horizon_steps + 1) array")
+        waypoint_reference = np.zeros((self.xdim, horizon_steps))
+        waypoint_mask = np.zeros((1, horizon_steps))
+        waypoint_fraction = np.zeros((1, horizon_steps))
+        included_waypoints = []
+        for index, waypoint_time in enumerate(waypoint_times[1:], start=1):
+            if not start_time + 1e-9 < waypoint_time <= prediction_times[-1] + 1e-9:
+                continue
+            offset = (waypoint_time - start_time) / prediction_dt
+            stage = min(horizon_steps - 1, max(0, int(np.ceil(offset - 1e-9)) - 1))
+            waypoint_reference[:, stage] = waypoints[index]
+            waypoint_mask[0, stage] = 1.0
+            waypoint_fraction[0, stage] = np.clip(offset - stage, 0.0, 1.0)
+            included_waypoints.append(index)
 
-        opti = ca.Opti()
-        X = opti.variable(self.xdim, horizon_steps + 1)
-        U = opti.variable(self.udim, horizon_steps)
-        x_init_parameter = opti.parameter(self.xdim)
-        theta_parameter = opti.parameter(*self.system.theta_shape)
-        a_hat_parameter = opti.parameter(self.system.adim)
-        opti.set_value(x_init_parameter, x_init)
-        opti.set_value(theta_parameter, theta)
-        opti.set_value(a_hat_parameter, a_hat)
-        opti.subject_to(X[:, 0] == x_init_parameter)
-
-        # Map the cached RK4 function instead of rebuilding its expression at every knot.
-        predicted_next = self._certainty_equivalent_rk4.map(horizon_steps)(
-            X[:, :-1],
-            U,
-            ca.repmat(theta_parameter, 1, horizon_steps),
-            ca.repmat(a_hat_parameter, 1, horizon_steps),
-        )
-        opti.subject_to(X[:, 1:] == predicted_next)
-        state_error = X[:, :-1] - ca.DM(waypoints[reference_indices].T)
-        input_error = U - ca.repmat(ca.DM(u_reference), 1, horizon_steps)
-        waypoint_error = X[:, endpoint_offsets.tolist()] - ca.DM(waypoints[endpoint_indices].T)
-        objective = ca.dot(state_error, ca.DM(self.Q) @ state_error)
-        objective += ca.dot(input_error, ca.DM(self.R) @ input_error)
-        objective += ca.dot(waypoint_error, ca.DM(self.Q_f) @ waypoint_error)
-        opti.minimize(objective)
-        if self.u_min is not None:
-            lower = ca.repmat(ca.DM(self.u_min), 1, horizon_steps)
-            opti.subject_to(ca.vec(lower) <= ca.vec(U))
-        if self.u_max is not None:
-            upper = ca.repmat(ca.DM(self.u_max), 1, horizon_steps)
-            opti.subject_to(ca.vec(U) <= ca.vec(upper))
+        problem = self._mpc_problem
+        if problem is None or (problem["horizon_steps"], problem["prediction_dt"]) != (
+            horizon_steps, prediction_dt
+        ):
+            problem = self._build_certainty_equivalent_mpc_problem(horizon_steps, prediction_dt)
+            self._mpc_problem = problem
+            self._mpc_warm_start = None
+        opti, X, U = problem["opti"], problem["X"], problem["U"]
+        parameter_values = {
+            "x_init": x_init, "theta": theta, "a_hat": a_hat, "u_reference": u_reference,
+            "state_reference": guide, "waypoint_reference": waypoint_reference,
+            "waypoint_mask": waypoint_mask, "waypoint_fraction": waypoint_fraction,
+        }
+        for name, value in parameter_values.items():
+            opti.set_value(problem["parameters"][name], value)
 
         warm_start = self._mpc_warm_start
         if warm_start is not None:
-            previous_step, previous_waypoints, previous_interval, previous_x, previous_u = (
-                warm_start
-            )
-            shift = start_step - previous_step
-            compatible = previous_interval == interval_steps
+            previous_time, previous_waypoints, previous_interval, previous_u = warm_start
+            shift_float = (start_time - previous_time) / prediction_dt
+            shift = int(round(shift_float))
+            compatible = previous_interval == interval_duration
             compatible &= np.array_equal(previous_waypoints, waypoints)
+            compatible &= np.isclose(shift, shift_float)
             compatible &= 0 <= shift < previous_u.shape[1]
-            compatible &= previous_u.shape[1] - shift == horizon_steps
         else:
             compatible = False
         if compatible:
-            x_guess, u_guess = previous_x[:, shift:].copy(), previous_u[:, shift:].copy()
+            tail = np.repeat(previous_u[:, -1:], shift, axis=1)
+            u_guess = np.hstack((previous_u[:, shift:], tail))
+            x_guess = np.empty((self.xdim, horizon_steps + 1))
+            x_guess[:, 0] = x_init
+            for k in range(horizon_steps):
+                next_state = self._certainty_equivalent_rk4(
+                    x_guess[:, k], u_guess[:, k], theta, a_hat
+                )
+                x_guess[:, k + 1] = np.asarray(next_state).reshape(self.xdim)
         else:
-            waypoint_steps = interval_steps * np.arange(len(waypoints))
-            prediction_steps = start_step + np.arange(horizon_steps + 1)
-            x_guess = np.array(
-                [np.interp(prediction_steps, waypoint_steps, row) for row in waypoints.T]
-            )
+            x_guess = guide.copy()
             u_guess = np.repeat(u_reference[:, None], horizon_steps, axis=1)
         x_guess[:, 0] = x_init
         opti.set_initial(X, x_guess)
         opti.set_initial(U, u_guess)
-        opti.solver("ipopt", {"expand": False, **self.ipopt_options})
         solution = opti.solve()
         x_d = np.asarray(solution.value(X), dtype=float).reshape(self.xdim, horizon_steps + 1)
         u_d = np.asarray(solution.value(U), dtype=float).reshape(self.udim, horizon_steps)
-        self._mpc_warm_start = (start_step, waypoints.copy(), interval_steps, x_d, u_d)
+        self._mpc_warm_start = (start_time, waypoints.copy(), interval_duration, u_d)
         stats = solution.stats()
         self.last_mpc_stats = {
             "horizon_steps": horizon_steps,
+            "prediction_dt": prediction_dt,
+            "waypoint_indices": included_waypoints,
             "iterations": int(stats["iter_count"]),
             "return_status": stats["return_status"],
         }
