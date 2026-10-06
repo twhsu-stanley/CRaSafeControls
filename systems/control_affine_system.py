@@ -527,12 +527,12 @@ class ControlAffineSystem:
                                               self.Gamma_ccm)
         #a_hat_dot = self.nu_ccm(rho_ccm) * self.Gamma_ccm @ self.Y(x).T @ gamma_s1_M_x.T
 
-        c1 = (2 * gamma_s0_M_d @ self.Y(x_d) @ a_hat_ccm).item()
+        #c1 = (2 * gamma_s0_M_d @ self.Y(x_d) @ a_hat_ccm).item()
         c2 = (dErem_dai @ a_hat_ccm_dot).item()
         # Printing for debugging
         #print("dErem_dai = ", dErem_dai, "; a_hat_dot = ", a_hat_ccm_dot)
         #print("c1 = ", c1, "; c2 = ", c2)
-        rho_ccm_dot = -(self.nu_ccm(rho_ccm) * (c1 + c2)) / (self.dnu_drho_ccm(rho_ccm) * (self.Erem + self.eta_ccm))
+        rho_ccm_dot = -(self.nu_ccm(rho_ccm) * c2) / (self.dnu_drho_ccm(rho_ccm) * (self.Erem + self.eta_ccm))
 
         return a_hat_ccm_dot.ravel(), rho_ccm_dot
 
