@@ -805,7 +805,7 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
 
 
 def plot_craccm_results(results, desired_trajectory=None):
-    """Plot and compare one or more planar-quadrotor simulations"""
+    """Compare tracking-error norms and plot each simulation against its own reference"""
     items = (
         list(results.items())
         if isinstance(results, dict)
@@ -813,8 +813,7 @@ def plot_craccm_results(results, desired_trajectory=None):
     )
     if not items:
         raise ValueError("At least one result is required")
-    trajectory_items = []
-    seen_trajectories = set()
+    trajectories = {}
     for label, result in items:
         trajectory = result.get("desired_trajectory")
         if trajectory is None and desired_trajectory is not None:
@@ -824,9 +823,7 @@ def plot_craccm_results(results, desired_trajectory=None):
                 trajectory = desired_trajectory[label]
         if trajectory is None:
             raise ValueError(f"{label}: no desired trajectory is available")
-        if id(trajectory) not in seen_trajectories:
-            trajectory_items.append((label, trajectory))
-            seen_trajectories.add(id(trajectory))
+        trajectories[label] = trajectory
     reference = max((result for _, result in items), key=lambda result: len(result["t"]))
     for label, result in items:
         if result is reference:
@@ -844,58 +841,64 @@ def plot_craccm_results(results, desired_trajectory=None):
     figures = []
     state_labels = ("x (m)", "z (m)", r"$\phi$ (rad)", r"$v_x$", r"$v_z$", r"$\dot\phi$")
 
-    fig, axs = plt.subplots(3, 2, sharex=True, figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(8, 6))
     figures.append(fig)
-    for state_index, ax in enumerate(axs.flat):
-        for label, trajectory in trajectory_items:
-            shared_reference = len(trajectory_items) == 1 and len(items) > 1
-            desired_label = "desired" if shared_reference else f"{label} desired"
-            ax.plot(
-                trajectory["t_x"],
-                trajectory["x_d"][state_index],
-                "--",
-                color="black" if shared_reference else color_map[label],
-                label=desired_label if state_index == 0 else None,
-            )
-        for label, result in items:
-            ax.plot(result["t"], result["x_hist"][:, state_index], color=color_map[label], label=label)
-            if result["status"] != "completed":
-                ax.plot(result["t"][-1], result["x_hist"][-1, state_index], "x", markersize=9)
-        ax.set_ylabel(state_labels[state_index])
-        ax.set_xlim(0.0, maximum_time)
-        ax.grid(True)
-    axs[0, 0].legend()
-    axs[-1, 0].set_xlabel("time (s)")
-    axs[-1, 1].set_xlabel("time (s)")
-    fig.suptitle("Planar-quadrotor state tracking comparison")
-
-    fig, ax = plt.subplots(1, 1, sharex=True, figsize=(8, 6))
-    figures.append(fig)
-    for label, trajectory in trajectory_items:
-        shared_reference = len(trajectory_items) == 1 and len(items) > 1
-        desired_label = "desired" if shared_reference else f"{label} desired"
-        ax.plot(
-            trajectory["x_d"][0],
-            trajectory["x_d"][1],
-            "--",
-            color="black" if shared_reference else color_map[label],
-            label=desired_label,
-        )
-    waypoints = trajectory_items[0][1].get("waypoints")
-    if waypoints is not None:
-        ax.plot(waypoints[:, 0], waypoints[:, 1], "ko", markersize=3, label="waypoints")
     for label, result in items:
-        ax.plot(result["x_hist"][:, 0], result["x_hist"][:, 1], color=color_map[label], label=label)
+        x_d_hist = result.get("x_d_hist")
+        if x_d_hist is None:
+            trajectory = trajectories[label]
+            x_d_hist = np.column_stack(
+                [np.interp(result["t"], trajectory["t_x"], state) for state in trajectory["x_d"]]
+            )
+        tracking_error = np.linalg.norm(result["x_hist"] - x_d_hist, axis=1)
+        ax.plot(result["t"], tracking_error, color=color_map[label], label=label)
         if result["status"] != "completed":
-                ax.plot(result["x_hist"][-1, 0], result["x_hist"][-1, 1], "x", markersize=9)
-    ax.set_xlabel(state_labels[0])
-    ax.set_ylabel(state_labels[1])
+            ax.plot(result["t"][-1], tracking_error[-1], "x", color=color_map[label], markersize=9)
+    ax.set_xlabel("time (s)")
+    ax.set_ylabel(r"$\|x(t)-x_d(t)\|_2$")
+    ax.set_xlim(0.0, maximum_time)
     ax.grid(True)
     ax.legend()
-    fig.suptitle("Planar-quadrotor x-z position tracking comparison")
+    fig.suptitle("Planar-quadrotor tracking error comparison")
 
     for label, result in items:
         color = color_map[label]
+        trajectory = trajectories[label]
+        fig, axs = plt.subplots(3, 2, sharex=True, figsize=(8, 6))
+        figures.append(fig)
+        for state_index, ax in enumerate(axs.flat):
+            ax.plot(trajectory["t_x"], trajectory["x_d"][state_index], "k--", label="desired")
+            ax.plot(result["t"], result["x_hist"][:, state_index], color=color, label="actual")
+            if result["status"] != "completed":
+                ax.plot(
+                    result["t"][-1], result["x_hist"][-1, state_index], "x",
+                    color=color, markersize=9,
+                )
+            ax.set_ylabel(state_labels[state_index])
+            ax.set_xlim(0.0, float(result["t"][-1]))
+            ax.grid(True)
+        axs[0, 0].legend()
+        axs[-1, 0].set_xlabel("time (s)")
+        axs[-1, 1].set_xlabel("time (s)")
+        fig.suptitle(f"{label}: Planar-quadrotor state tracking comparison")
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+        figures.append(fig)
+        ax.plot(trajectory["x_d"][0], trajectory["x_d"][1], "k--", label="desired")
+        waypoints = trajectory.get("waypoints")
+        if waypoints is not None:
+            ax.plot(waypoints[:, 0], waypoints[:, 1], "ko", markersize=3, label="waypoints")
+        ax.plot(result["x_hist"][:, 0], result["x_hist"][:, 1], color=color, label="actual")
+        if result["status"] != "completed":
+            ax.plot(
+                result["x_hist"][-1, 0], result["x_hist"][-1, 1], "x", color=color, markersize=9
+            )
+        ax.set_xlabel(state_labels[0])
+        ax.set_ylabel(state_labels[1])
+        ax.grid(True)
+        ax.legend()
+        fig.suptitle(f"{label}: Planar-quadrotor x-z position tracking comparison")
+
         fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
         figures.append(fig)
         for input_index, ax in enumerate(axs[:2]):
