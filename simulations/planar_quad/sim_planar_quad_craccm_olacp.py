@@ -1065,7 +1065,8 @@ def main():
         "epsilon": projection_epsilon,
         "eta_ccm": 500.0,
         "ccm_rate": 0.2,
-        "weight_slack": 1e5,
+        "weight_slack": 2000.0 / 3.0,  # w_xi after normalizing the input weight to one.
+        "ccm_authority_threshold": 0.01,
         "u_min": np.zeros(PLANAR_QUAD.udim),
         "u_max": 6.0 * np.ones(PLANAR_QUAD.udim),
         "dt": dt,

@@ -15,6 +15,9 @@ class ControlAffineSystem:
         self.use_adaptive = self.params.get("use_adaptive", False)
         self.weight_slack = self.params.get("weight_slack", 100)
         self.dt = self.params.get("dt")
+        self.ccm_authority_threshold = float(self.params.get("ccm_authority_threshold", 0.01))
+        if not np.isfinite(self.ccm_authority_threshold) or self.ccm_authority_threshold <= 0.0:
+            raise ValueError("ccm_authority_threshold must be finite and strictly positive")
 
         # Subclasses provide numerical dynamics and explicit dimensions.
         for name in ("xdim", "udim", "adim"):
@@ -354,11 +357,24 @@ class ControlAffineSystem:
 
         return u_qp
     
-    def ctrl_craccm(self, x, a_hat_ccm, x_d, u_d, geodesic_solver, use_qpsolvers=True, use_slack=True, verify_geodesic=False):
-        """CRaCCM control law"""
+    def ctrl_craccm(
+        self, x, a_hat_ccm, x_d, u_d, geodesic_solver, use_qpsolvers=True, use_slack=True,
+        verify_geodesic=False,
+    ):
+        """Minimize corrective state-rate magnitude with smooth conformal tightening.
+
+        The slack QP minimizes 0.5 * du.T @ (g.T @ g) @ du + 0.5 * weight_slack
+        * slack**2 subject to A @ du + C <= slack and slack >= 0. Without slack,
+        it uses the same input cost and offset C, subject to A @ du + C <= 0.
+        No identity regularization or sampling-dependent input weight is added.
+        The existing quadprog backend requires a positive-definite g.T @ g.
+        """
         # x: current state
         # x_d: desired state
-        # u_d: nominal control input; u_d.shape = (self.udim,) or (self.udim, 1)
+        # u_d: desired control input; u_d.shape = (self.udim,) or (self.udim, 1)
+
+        if use_slack and (not np.isfinite(self.weight_slack) or self.weight_slack <= 0.0):
+            raise ValueError("CRaCCM requires a finite, strictly positive weight_slack")
 
         x = np.asarray(x, dtype=float).reshape(self.xdim)
         x_d = np.asarray(x_d, dtype=float).reshape(self.xdim)
@@ -366,7 +382,7 @@ class ControlAffineSystem:
         u_d = np.asarray(u_d, dtype=float).reshape(self.udim, 1)
 
         # Compute geodesic
-        self.calc_geodesic(geodesic_solver, x, x_d, a_hat_ccm, verify_geodesic) # update gamma, gamma_s, and E_rem
+        self.calc_geodesic(geodesic_solver, x, x_d, a_hat_ccm, verify_geodesic)
 
         gamma_s1_M_x = self.gamma_s[:, -1].reshape(1,-1) @ np.linalg.inv(self.W_fcn(x, a_hat_ccm))
         gamma_s0_M_d = self.gamma_s[:, 0].reshape(1,-1) @ np.linalg.inv(self.W_fcn(x_d, a_hat_ccm))
@@ -383,54 +399,53 @@ class ControlAffineSystem:
             Y_x_a = np.zeros((self.xdim, 1))
             Y_d_a = np.zeros((self.xdim, 1))
 
+        A = gamma_s1_M_x @ g_x
         if self.use_cp:
-            #Theta = np.linalg.cholesky(M_x)
-            #sigma_max = np.max(np.linalg.svd(Theta, compute_uv=False))  # maximum singular value
-            #tightening = sigma_max * self.cp_quantile * np.sqrt(self.Erem)
-            tightening = np.linalg.norm(gamma_s1_M_x, 2) * self.cp_quantile
+            if not np.isfinite(self.cp_quantile) or self.cp_quantile < 0.0:
+                raise ValueError("The CRaCCM conformal quantile must be finite and nonnegative")
+            ratio = min(float(np.linalg.norm(A)) / self.ccm_authority_threshold, 1.0)
+            tightening_scale = ratio**3 * (10.0 - 15.0 * ratio + 6.0 * ratio**2)
+            tightening = tightening_scale * np.linalg.norm(gamma_s1_M_x) * self.cp_quantile
         else:
             tightening = 0.0
         
-        A = gamma_s1_M_x @ g_x
         B = (gamma_s1_M_x @ (f_x + g_x @ u_d + Y_x_a)
             - gamma_s0_M_d @ (f_d + g_d @ u_d + Y_d_a)
             + self.ccm_rate * self.Erem).item()
+        constraint_offset = B + tightening
+        input_weight = g_x.T @ g_x
 
         if use_qpsolvers is True: 
             if use_slack:
-                P = np.block([[np.eye(self.udim),        np.zeros((self.udim, 1))],
-                              [np.zeros((1, self.udim)), np.array([[self.weight_slack]])],
-                ])
+                P = np.zeros((self.udim + 1, self.udim + 1))
+                P[:self.udim, :self.udim] = input_weight
+                P[-1, -1] = self.weight_slack
                 q = np.zeros(self.udim + 1)
                 G = np.vstack([np.hstack([A, np.array([[-1.0]])]),
                                np.hstack([np.zeros((1, self.udim)), np.array([[-1.0]])]),
                 ])
-                h = np.array([-(B + tightening), 0.0])
+                h = np.array([-constraint_offset, 0.0])
                 qp_sol = solve_qp(P, q, G, h, solver = 'quadprog')
+                if qp_sol is None:
+                    raise ValueError("The CRaCCM QP solver did not return a solution")
                 u_qp = qp_sol[0:self.udim].reshape(-1,1)
-                slack = qp_sol[-1]
+                slack = float(qp_sol[-1])
             else:
-                # no slack
-                P = np.eye(self.udim)
+                if constraint_offset > 0.0 and not np.any(A):
+                    raise ValueError("The no-slack CRaCCM QP is infeasible at zero authority")
+                P = input_weight
                 q = np.zeros(self.udim)
                 G = A
-                h = np.array([-(B + tightening)])
+                h = np.array([-constraint_offset])
                 qp_sol = solve_qp(P, q, G, h, solver = 'quadprog')
+                if qp_sol is None:
+                    raise ValueError("The no-slack CRaCCM QP has no solution; it may be infeasible")
                 u_qp = qp_sol.reshape(-1,1)
                 slack = 0.0
             
         else:
             # Analytic solution
-            if use_slack:
-                denom = (1 + self.weight_slack * A @ A.T).item()
-                if B + tightening <= 0:
-                    u_qp = np.zeros((self.udim,1))
-                    slack = 0.0
-                else:
-                    u_qp = (-self.weight_slack * (B + tightening) * A.T) / denom
-                    slack = (B + tightening) / denom
-            else:
-                raise ValueError(f"Analytic QP solution for CRaCCM with no slack is not supported")
+            raise ValueError(f"Analytic QP solution for CRaCCM is not supported for now")
 
         uc = u_d + u_qp
 
