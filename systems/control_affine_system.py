@@ -15,6 +15,9 @@ class ControlAffineSystem:
         self.use_adaptive = self.params.get("use_adaptive", False)
         self.weight_slack = self.params.get("weight_slack", 100)
         self.dt = self.params.get("dt")
+        self.clf_goal_radius = float(self.params.get("clf_goal_radius", 0.1))
+        if not np.isfinite(self.clf_goal_radius) or self.clf_goal_radius <= 0.0:
+            raise ValueError("clf_goal_radius must be finite and strictly positive")
         self.ccm_authority_threshold = float(self.params.get("ccm_authority_threshold", 0.01))
         if not np.isfinite(self.ccm_authority_threshold) or self.ccm_authority_threshold <= 0.0:
             raise ValueError("ccm_authority_threshold must be finite and strictly positive")
@@ -202,7 +205,13 @@ class ControlAffineSystem:
 
     # Control laws
     def ctrl_craclf(self, x, a_hat_clf, u_ref, use_slack=True):
-        """CRaCLF-QP Controller"""  
+        """CRaCLF-QP with smoothly scaled conformal tightening.
+
+        Minimize 0.5 * ||u - u_ref||**2 + 0.5 * weight_slack * slack**2,
+        using the C2 goal-ball scaling with radius clf_goal_radius. Setting
+        u_ref to zero gives the min-norm policy. Optional input bounds apply
+        only when u_min or u_max is explicitly included in params.
+        """
 
         #NOTE: using reshape to enforce correct shape
         V = self.clf(x, a_hat_clf)
@@ -212,7 +221,11 @@ class ControlAffineSystem:
         dclfdx = self.dclfdx(x, a_hat_clf).reshape(self.xdim,1)
 
         if self.use_cp:
-            tightening = self.cp_quantile * np.linalg.norm(dclfdx, 2)
+            if not np.isfinite(self.cp_quantile) or self.cp_quantile < 0.0:
+                raise ValueError("The CRaCLF conformal quantile must be finite and nonnegative")
+            ratio = min(float(np.linalg.norm(x)) / self.clf_goal_radius, 1.0)
+            tightening_scale = ratio**3 * (10.0 - 15.0 * ratio + 6.0 * ratio**2)
+            tightening = tightening_scale * self.cp_quantile * np.linalg.norm(dclfdx, 2)
         else:
             tightening = 0.0
 

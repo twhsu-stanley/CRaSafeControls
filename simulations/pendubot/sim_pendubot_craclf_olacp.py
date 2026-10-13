@@ -61,7 +61,6 @@ def run_pretraining(system, olacp, config, plot=True):
             #    2.0 * np.pi * config["pretrain_excitation_frequency"] * 2 * t
             #)
             u = system.local_lqr_control(x, a_hat_0) + excitation
-            u = np.clip(u, system.params["u_min"], system.params["u_max"])
 
             x_hist[sample_index] = x
             u_hist[sample_index] = float(u.item())
@@ -720,8 +719,6 @@ def main():
     clf_scale = 5e-4
     effective_gamma_clf = 7.5e-4
     gamma_clf = (effective_gamma_clf / clf_scale) * np.eye(Pendubot.adim) / 5.0
-    u_min = -120.0
-    u_max = 120.0
 
     config = {
         "K_pre": K_pre,
@@ -763,9 +760,8 @@ def main():
         "epsilon": projection_epsilon,
         "eta_clf": clf_scale * 10.0,
         "clf_rate": 0.5,
+        "clf_goal_radius": 0.1,
         "weight_slack": 1e5 / clf_scale**2,
-        "u_min": u_min,
-        "u_max": u_max,
         "dt": dt,
     }
 
