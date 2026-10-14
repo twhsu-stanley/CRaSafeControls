@@ -248,7 +248,7 @@ def run_craclf_simulation(
 
     x = config["main_initial_state"].copy()
     initial_state = x.copy()
-    a_hat = system.a_center.copy() #online_olacp.a_k.copy() if use_adaptive else system.a_center.copy()
+    a_hat = system.a_center.copy()
     rho = 0.0
     x_ext = np.hstack((x, a_hat, rho))
     x_hist = np.zeros((len(t_full), system.xdim))
@@ -489,12 +489,16 @@ def run_craclf_simulation(
     )
 
     if plot:
-        plot_craclf_results({run_label: result})
+        plot_craclf_results({run_label: result}, interval_duration=interval_duration)
     return result
 
 
-def plot_craclf_results(results):
-    """Plot and compare one or more main CRaCLF simulation results"""
+def plot_craclf_results(results, interval_duration=None):
+    """Compare results and show the prescribed wind over its full duration.
+
+    Infer interval_duration from the first complete recorded interval when omitted.
+    Pass it explicitly if all results stopped before completing their first interval.
+    """
     items = (
         list(results.items())
         if isinstance(results, dict)
@@ -504,7 +508,9 @@ def plot_craclf_results(results):
         raise ValueError("At least one CRaCLF result is required")
 
     reference = max((result for _, result in items), key=lambda result: len(result["t"]))
-    for label, result in items[1:]:
+    for label, result in items:
+        if result is reference:
+            continue
         if not np.array_equal(result["initial_state"], reference["initial_state"]):
             raise RuntimeError(f"{label}: comparison initial state does not match")
         for schedule_name in ("horizontal_wind_schedule", "vertical_wind_schedule"):
@@ -547,26 +553,25 @@ def plot_craclf_results(results):
     axs[-1].set_xlabel("time (s)")
     fig.suptitle("Pendubot state comparison")
 
+    fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
+    figures.append(fig)
     for label, result in items:
         color = color_map[label]
-        result_end_time = float(result["t"][-1])
-        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
-        figures.append(fig)
-        axs[0].plot(result["t"], result["u_hist"], color=color, label="control")
+        axs[0].plot(result["t"], result["u_hist"], color=color, label=label)
         axs[1].semilogy(
             result["t"],
             np.maximum(result["slack_hist"], 1e-12),
             color=color,
-            label="QP slack",
+            label=label,
         )
-        axs[0].set_ylabel("torque (N m)")
-        axs[1].set_ylabel("QP slack")
-        axs[1].set_xlabel("time (s)")
-        for ax in axs:
-            ax.set_xlim(0.0, result_end_time)
-            ax.grid(True)
-            ax.legend()
-        fig.suptitle(f"{label}: control and QP slack")
+    axs[0].set_ylabel("torque (N m)")
+    axs[1].set_ylabel("QP slack")
+    axs[1].set_xlabel("time (s)")
+    for ax in axs:
+        ax.set_xlim(0.0, maximum_time)
+        ax.grid(True)
+        ax.legend()
+    fig.suptitle("Pendubot control and QP slack comparison")
 
     for label, result in items:
         color = color_map[label]
@@ -646,44 +651,54 @@ def plot_craclf_results(results):
             ax.legend()
         fig.suptitle(f"{label}: Algorithm 1")
 
-    for label, result in items:
-        color = color_map[label]
-        result_end_time = float(result["t"][-1])
-        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
-        figures.append(fig)
-        axs[0].plot(result["t"], result["wind_hist"][:, 0], color=color, label=r"$w_x$")
-        axs[1].plot(result["t"], result["wind_hist"][:, 1], color=color, label=r"$w_z$")
-        axs[0].set_ylabel(r"$w_x$")
-        axs[1].set_ylabel(r"$w_z$")
-        axs[1].set_xlabel("time (s)")
-        for ax in axs:
-            ax.set_xlim(0.0, result_end_time)
-            ax.grid(True)
-            ax.legend()
-        fig.suptitle(f"{label}: wind history")
+    # Reconstruct the prescribed schedule, including intervals after a controller stops.
+    if interval_duration is None:
+        if len(reference["interval_times"]) == 0 or len(reference["t"]) < 2:
+            raise ValueError("Pass interval_duration when no complete interval is available")
+        sample_period = float(reference["t"][1] - reference["t"][0])
+        interval_duration = float(reference["interval_times"][0]) + sample_period
+    if not np.isfinite(interval_duration) or interval_duration <= 0.0:
+        raise ValueError("interval_duration must be finite and positive")
+    wind_times = np.arange(len(reference["vertical_wind_schedule"]) + 1) * interval_duration
+    fig, ax = plt.subplots(figsize=(8, 4))
+    figures.append(fig)
+    for schedule_name, wind_label in (
+        ("horizontal_wind_schedule", r"$v_{w,x}$"),
+        ("vertical_wind_schedule", r"$v_{w,z}$"),
+    ):
+        schedule = np.asarray(reference[schedule_name], dtype=float)
+        ax.step(wind_times, np.r_[schedule, schedule[-1]], where="post", label=wind_label)
+    ax.set_xlim(0.0, float(wind_times[-1]))
+    ax.set_ylabel("wind velocity (m/s)")
+    ax.set_xlabel("time (s)")
+    ax.grid(True)
+    ax.legend()
+    fig.suptitle("Pendubot prescribed wind history")
 
     components = ((2, r"$w_3$"), (3, r"$w_4$"))
-    for label, result in items:
-        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
-        figures.append(fig)
-        for ax, (component, component_label) in zip(axs, components):
+    fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
+    figures.append(fig)
+    for ax, (component, component_label) in zip(axs, components):
+        for label, result in items:
             ax.plot(
                 result["t"],
                 result["true_uncertainty_hist"][:, component],
-                label="true uncertainty",
+                color=color_map[label],
+                label=f"true: {label}",
             )
             ax.plot(
                 result["t"],
                 result["fitted_uncertainty_hist"][:, component],
                 "--",
-                label=r"$Y_\Theta(x)a_k$",
+                color=color_map[label],
+                label=rf"$Y_{{\Theta_j}}(x)a_k$: {label}",
             )
-            ax.set_xlim(0.0, float(result["t"][-1]))
-            ax.set_ylabel(component_label)
-            ax.grid(True)
-            ax.legend()
-        axs[-1].set_xlabel("time (s)")
-        fig.suptitle(rf"{label}: $Y_\Theta(x)a_k$ versus true uncertainty")
+        ax.set_xlim(0.0, maximum_time)
+        ax.set_ylabel(component_label)
+        ax.grid(True)
+        ax.legend(fontsize="small")
+    axs[-1].set_xlabel("time (s)")
+    fig.suptitle(r"Pendubot: $Y_{\Theta_j}(x)a_k$ versus true uncertainty")
 
     plt.tight_layout()
     plt.show()
@@ -868,7 +883,7 @@ def main():
     if nonadaptive_metrics["a_hat_change"] > 1e-12 or nonadaptive_metrics["rho_range"] > 1e-12:
         warnings.warn("The nonadaptive run unexpectedly changed its CRaCLF adaptive states")
 
-    plot_craclf_results(results)
+    plot_craclf_results(results, interval_duration=interval_duration)
 
     return pretraining_history, results
 

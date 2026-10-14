@@ -476,12 +476,16 @@ def run_craclf_simulation(
     )
 
     if plot:
-        plot_craclf_results({run_label: result})
+        plot_craclf_results({run_label: result}, interval_duration=interval_duration)
     return result
 
 
-def plot_craclf_results(results):
-    """Plot and compare one or more main CRaCLF simulation results"""
+def plot_craclf_results(results, interval_duration=None):
+    """Compare results and show the prescribed wind over its full duration.
+
+    Infer interval_duration from the first complete recorded interval when omitted.
+    Pass it explicitly if all results stopped before completing their first interval.
+    """
     items = (
         list(results.items())
         if isinstance(results, dict)
@@ -534,26 +538,25 @@ def plot_craclf_results(results):
     axs[-1].set_xlabel("time (s)")
     fig.suptitle("Inverted-pendulum state comparison")
 
+    fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
+    figures.append(fig)
     for label, result in items:
         color = color_map[label]
-        result_end_time = float(result["t"][-1])
-        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
-        figures.append(fig)
-        axs[0].plot(result["t"], result["u_hist"], color=color, label="control")
+        axs[0].plot(result["t"], result["u_hist"], color=color, label=label)
         axs[1].semilogy(
             result["t"],
             np.maximum(result["slack_hist"], 1e-12),
             color=color,
-            label="QP slack",
+            label=label,
         )
-        axs[0].set_ylabel("torque (N m)")
-        axs[1].set_ylabel("QP slack")
-        axs[1].set_xlabel("time (s)")
-        for ax in axs:
-            ax.set_xlim(0.0, result_end_time)
-            ax.grid(True)
-            ax.legend()
-        fig.suptitle(f"{label}: control and QP slack")
+    axs[0].set_ylabel("torque (N m)")
+    axs[1].set_ylabel("QP slack")
+    axs[1].set_xlabel("time (s)")
+    for ax in axs:
+        ax.set_xlim(0.0, maximum_time)
+        ax.grid(True)
+        ax.legend()
+    fig.suptitle("Inverted-pendulum control and QP slack comparison")
 
     for label, result in items:
         color = color_map[label]
@@ -633,34 +636,46 @@ def plot_craclf_results(results):
             ax.legend()
         fig.suptitle(f"{label}: Algorithm 1")
 
-    for label, result in items:
-        color = color_map[label]
-        fig, ax = plt.subplots(1, 1, figsize=(8, 4))
-        figures.append(fig)
-        ax.plot(result["t"], result["wind_hist"][:, 1], color=color, label=r"$w_z$")
-        ax.set_xlim(0.0, float(result["t"][-1]))
-        ax.set_ylabel(r"$w_z$ (m/s)")
-        ax.set_xlabel("time (s)")
-        ax.grid(True)
-        ax.legend()
-        fig.suptitle(f"{label}: vertical-wind history")
+    # Reconstruct the prescribed schedule, including intervals after a controller stops.
+    if interval_duration is None:
+        if len(reference["interval_times"]) == 0 or len(reference["t"]) < 2:
+            raise ValueError("Pass interval_duration when no complete interval is available")
+        sample_period = float(reference["t"][1] - reference["t"][0])
+        interval_duration = float(reference["interval_times"][0]) + sample_period
+    if not np.isfinite(interval_duration) or interval_duration <= 0.0:
+        raise ValueError("interval_duration must be finite and positive")
+    schedule = np.asarray(reference["vertical_wind_schedule"], dtype=float)
+    wind_times = np.arange(len(schedule) + 1) * interval_duration
+    fig, ax = plt.subplots(figsize=(8, 4))
+    figures.append(fig)
+    ax.step(wind_times, np.r_[schedule, schedule[-1]], where="post", label=r"$v_{w,z}$")
+    ax.set_xlim(0.0, float(wind_times[-1]))
+    ax.set_ylabel("wind velocity (m/s)")
+    ax.set_xlabel("time (s)")
+    ax.grid(True)
+    ax.legend()
+    fig.suptitle("Inverted-pendulum prescribed wind history")
 
+    fig, ax = plt.subplots(figsize=(8, 4))
+    figures.append(fig)
     for label, result in items:
-        fig, ax = plt.subplots(1, 1, figsize=(8, 4))
-        figures.append(fig)
-        ax.plot(result["t"], result["true_uncertainty_hist"][:, 1], label="true uncertainty")
+        ax.plot(
+            result["t"], result["true_uncertainty_hist"][:, 1],
+            color=color_map[label], label=f"true: {label}",
+        )
         ax.plot(
             result["t"],
             result["fitted_uncertainty_hist"][:, 1],
             "--",
-            label=r"$Y_\Theta(x)a_k$",
+            color=color_map[label],
+            label=rf"$Y_{{\Theta_j}}(x)a_k$: {label}",
         )
-        ax.set_xlim(0.0, float(result["t"][-1]))
-        ax.set_ylabel(r"$w_2$")
-        ax.set_xlabel("time (s)")
-        ax.grid(True)
-        ax.legend()
-        fig.suptitle(rf"{label}: $Y_\Theta(x)a_k$ versus true uncertainty")
+    ax.set_xlim(0.0, maximum_time)
+    ax.set_ylabel(r"$w_2$")
+    ax.set_xlabel("time (s)")
+    ax.grid(True)
+    ax.legend(fontsize="small")
+    fig.suptitle(r"Inverted-pendulum: $Y_{\Theta_j}(x)a_k$ versus true uncertainty")
 
     plt.tight_layout()
     plt.show()
@@ -853,7 +868,7 @@ def main():
     if nonadaptive_metrics["rho_range"] > 1e-12:
         warnings.warn("The nonadaptive run unexpectedly changed its scaling state")
 
-    plot_craclf_results(results)
+    plot_craclf_results(results, interval_duration=interval_duration)
 
     return pretraining_history, results
 

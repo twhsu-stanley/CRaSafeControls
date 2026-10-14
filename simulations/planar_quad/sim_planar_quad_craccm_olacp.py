@@ -861,6 +861,32 @@ def plot_craccm_results(results, desired_trajectory=None):
     ax.legend()
     fig.suptitle("Planar-quadrotor tracking error comparison")
 
+    fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
+    figures.append(fig)
+    for label, result in items:
+        color = color_map[label]
+        for input_index, ax in enumerate(axs[:2]):
+            ax.plot(
+                result["t"], result["u_hist"][:, input_index],
+                color=color, label=f"control: {label}",
+            )
+            ax.plot(
+                result["t"], result["u_d_hist"][:, input_index], "--",
+                color=color, label=f"reference: {label}",
+            )
+        axs[2].semilogy(
+            result["t"], np.maximum(result["slack_hist"], 1e-12), color=color, label=label
+        )
+    for input_index, ax in enumerate(axs[:2]):
+        ax.set_ylabel(rf"$u_{input_index + 1}$")
+    axs[2].set_ylabel("QP slack")
+    axs[2].set_xlabel("time (s)")
+    for ax in axs:
+        ax.set_xlim(0.0, maximum_time)
+        ax.grid(True)
+        ax.legend(fontsize="small")
+    fig.suptitle("Planar-quadrotor controls and QP slack comparison")
+
     for label, result in items:
         color = color_map[label]
         trajectory = trajectories[label]
@@ -899,20 +925,6 @@ def plot_craccm_results(results, desired_trajectory=None):
         ax.legend()
         fig.suptitle(f"{label}: Planar-quadrotor x-z position tracking comparison")
 
-        fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
-        figures.append(fig)
-        for input_index, ax in enumerate(axs[:2]):
-            ax.plot(result["t"], result["u_hist"][:, input_index], color=color, label="CRaCCM")
-            ax.plot(result["t"], result["u_d_hist"][:, input_index], "k--", label="reference")
-            ax.set_ylabel(rf"$u_{input_index + 1}$")
-            ax.grid(True)
-            ax.legend()
-        axs[2].semilogy(result["t"], np.maximum(result["slack_hist"], 1e-12), color=color)
-        axs[2].set_ylabel("QP slack")
-        axs[2].set_xlabel("time (s)")
-        axs[2].grid(True)
-        fig.suptitle(f"{label}: controls and slack")
-
         fig, axs = plt.subplots(4, 1, sharex=True, figsize=(8, 8))
         figures.append(fig)
         for parameter_index, ax in enumerate(axs[:2]):
@@ -944,21 +956,27 @@ def plot_craccm_results(results, desired_trajectory=None):
         axs[0].legend()
         fig.suptitle(f"{label}: Algorithm 1")
 
-        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 6))
-        figures.append(fig)
-        for ax, component in zip(axs, (3, 4)):
-            ax.plot(result["t"], result["true_uncertainty_hist"][:, component], label="true")
+    fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 6))
+    figures.append(fig)
+    for ax, component in zip(axs, (3, 4)):
+        for label, result in items:
+            ax.plot(
+                result["t"], result["true_uncertainty_hist"][:, component],
+                color=color_map[label], label=f"true: {label}",
+            )
             ax.plot(
                 result["t"],
                 result["fitted_uncertainty_hist"][:, component],
                 "--",
-                label="fitted",
+                color=color_map[label],
+                label=rf"$Y_{{\Theta_j}}(x)a_k$: {label}",
             )
-            ax.set_ylabel(rf"$w_{component + 1}$")
-            ax.grid(True)
-            ax.legend()
-        axs[-1].set_xlabel("time (s)")
-        fig.suptitle(rf"{label}: $Y_\Theta(x)a_k$ versus true uncertainty")
+        ax.set_xlim(0.0, maximum_time)
+        ax.set_ylabel(rf"$w_{component + 1}$")
+        ax.grid(True)
+        ax.legend(fontsize="small")
+    axs[-1].set_xlabel("time (s)")
+    fig.suptitle(r"Planar-quadrotor: $Y_{\Theta_j}(x)a_k$ versus true uncertainty")
 
     plt.tight_layout()
     plt.show()

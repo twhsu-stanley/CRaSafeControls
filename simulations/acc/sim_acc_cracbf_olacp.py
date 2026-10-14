@@ -891,25 +891,27 @@ def plot_cracbf_results(results):
     fig.suptitle("Scaling, projection, and prediction-loss comparison")
 
     components = ((1, r"$w_2=d/m$"), (2, r"$w_3=\Delta v_l$"))
-    fig, axs = plt.subplots(2, len(items), squeeze=False, figsize=(6 * len(items), 7))
+    fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
     figures.append(fig)
-    for column, (label, result) in enumerate(items):
-        for row, (component, component_label) in enumerate(components):
-            ax = axs[row, column]
-            ax.plot(result["t"], result["true_uncertainty_hist"][:, component], label="true")
+    for ax, (component, component_label) in zip(axs, components):
+        for label, result in items:
+            ax.plot(
+                result["t"], result["true_uncertainty_hist"][:, component],
+                color=color_map[label], label=f"true: {label}",
+            )
             ax.plot(
                 result["t"],
                 result["fitted_uncertainty_hist"][:, component],
                 "--",
-                label=r"$Y_\Theta(x)a_k$",
+                color=color_map[label],
+                label=rf"$Y_{{\Theta_j}}(x)a_k$: {label}",
             )
-            ax.set_xlim(0.0, float(result["t"][-1]))
-            ax.set_ylabel(component_label)
-            ax.set_title(label)
-            ax.grid(True)
-            ax.legend()
-        axs[-1, column].set_xlabel("time (s)")
-    fig.suptitle(r"Main CRaCBF uncertainty-model comparison")
+        ax.set_xlim(0.0, maximum_time)
+        ax.set_ylabel(component_label)
+        ax.grid(True)
+        ax.legend(fontsize="small")
+    axs[-1].set_xlabel("time (s)")
+    fig.suptitle(r"ACC: $Y_{\Theta_j}(x)a_k$ versus true uncertainty")
     return figures
 
 

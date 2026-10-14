@@ -644,32 +644,32 @@ def plot_craccm_results(results, desired_trajectory):
     axs[-1].set_xlabel("time (s)")
     fig.suptitle("Nonlinear-toy state tracking comparison")
 
+    fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
+    figures.append(fig)
     for label, result in items:
         color = color_map[label]
-        result_end_time = float(result["t"][-1])
-        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
-        figures.append(fig)
-        axs[0].plot(result["t"], result["u_hist"], color=color, label=r"$u$")
+        axs[0].plot(result["t"], result["u_hist"], color=color, label=f"control: {label}")
         axs[0].plot(
             result["t"],
             result["u_d_hist"],
-            "k--",
-            label=r"$u_d$",
+            "--",
+            color=color,
+            label=f"reference: {label}",
         )
         axs[1].semilogy(
             result["t"],
             np.maximum(result["slack_hist"], 1e-12),
             color=color,
-            label="QP slack",
+            label=label,
         )
-        axs[0].set_ylabel("input")
-        axs[1].set_ylabel("QP slack")
-        axs[1].set_xlabel("time (s)")
-        for ax in axs:
-            ax.set_xlim(0.0, result_end_time)
-            ax.grid(True)
-            ax.legend()
-        fig.suptitle(f"{label}: control and QP slack")
+    axs[0].set_ylabel("input")
+    axs[1].set_ylabel("QP slack")
+    axs[1].set_xlabel("time (s)")
+    for ax in axs:
+        ax.set_xlim(0.0, maximum_time)
+        ax.grid(True)
+        ax.legend(fontsize="small")
+    fig.suptitle("Nonlinear-toy control and QP slack comparison")
 
     for label, result in items:
         color = color_map[label]
@@ -795,27 +795,29 @@ def plot_craccm_results(results, desired_trajectory):
         fig.suptitle(f"{label}: true-uncertainty coefficient schedule")
 
     components = ((0, r"$w_1$"), (2, r"$w_3$"))
-    for label, result in items:
-        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
-        figures.append(fig)
-        for ax, (component, component_label) in zip(axs, components):
+    fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
+    figures.append(fig)
+    for ax, (component, component_label) in zip(axs, components):
+        for label, result in items:
             ax.plot(
                 result["t"],
                 result["true_uncertainty_hist"][:, component],
-                label="true uncertainty",
+                color=color_map[label],
+                label=f"true: {label}",
             )
             ax.plot(
                 result["t"],
                 result["fitted_uncertainty_hist"][:, component],
                 "--",
-                label=r"$Y_\Theta(x)a_k$",
+                color=color_map[label],
+                label=rf"$Y_{{\Theta_j}}(x)a_k$: {label}",
             )
-            ax.set_xlim(0.0, float(result["t"][-1]))
-            ax.set_ylabel(component_label)
-            ax.grid(True)
-            ax.legend()
-        axs[-1].set_xlabel("time (s)")
-        fig.suptitle(rf"{label}: $Y_\Theta(x)a_k$ versus true uncertainty")
+        ax.set_xlim(0.0, maximum_time)
+        ax.set_ylabel(component_label)
+        ax.grid(True)
+        ax.legend(fontsize="small")
+    axs[-1].set_xlabel("time (s)")
+    fig.suptitle(r"Nonlinear-toy: $Y_{\Theta_j}(x)a_k$ versus true uncertainty")
 
     plt.tight_layout()
     plt.show()
