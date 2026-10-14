@@ -24,6 +24,7 @@ def run_pretraining(system, olacp, config, plot=True):
     t_pre = np.arange(K_pre * I_length, dtype=float) * dt
 
     wind_indices = np.arange(K_pre)
+    horizontal_wind_schedule = 0.4 * np.sin(2.0 * np.pi * wind_indices / 5.0)
     vertical_wind_schedule = -8.0
     vertical_wind_schedule += 1.5 * np.sin(2.0 * np.pi * wind_indices / 7.0)
     vertical_wind_schedule += 0.5 * np.sin(2.0 * np.pi * wind_indices / 3.0)
@@ -34,7 +35,8 @@ def run_pretraining(system, olacp, config, plot=True):
         return min(int(np.floor(max(float(t), 0.0) / interval_duration)), K_pre - 1)
 
     def wind_velocity(t):
-        return np.array([0.0, vertical_wind_schedule[schedule_index(t)]])
+        index = schedule_index(t)
+        return np.array([horizontal_wind_schedule[index], vertical_wind_schedule[index]])
 
     system.wind_velocity_fcn = wind_velocity
     system.set_representation(olacp.Theta)
@@ -123,6 +125,7 @@ def run_pretraining(system, olacp, config, plot=True):
         "prediction_error_hist": prediction_error_hist,
         "true_uncertainty_hist": true_uncertainty_hist,
         "fitted_uncertainty_hist": fitted_uncertainty_hist,
+        "horizontal_wind_schedule": horizontal_wind_schedule,
         "vertical_wind_schedule": vertical_wind_schedule,
         "quantile": quantile,
     }
@@ -154,12 +157,14 @@ def run_pretraining(system, olacp, config, plot=True):
         fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
         axs[0].plot(t_pre, u_hist)
         axs[0].set_ylabel("torque (N m)")
-        axs[1].plot(t_pre, wind_hist[:, 1])
-        axs[1].set_ylabel(r"$v_{w,z}$ (m/s)")
+        axs[1].plot(t_pre, wind_hist[:, 0], label=r"$v_{w,x}$")
+        axs[1].plot(t_pre, wind_hist[:, 1], label=r"$v_{w,z}$")
+        axs[1].set_ylabel("wind (m/s)")
+        axs[1].legend()
         axs[1].set_xlabel("time (s)")
         for ax in axs:
             ax.grid(True)
-        fig.suptitle("Pretraining: torque and vertical wind")
+        fig.suptitle("Pretraining: torque and wind")
 
         components = ((2, r"$w_3$"), (3, r"$w_4$"))
         fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
@@ -216,7 +221,9 @@ def run_craclf_simulation(
     rho_divergence_event.terminal = True
     rho_divergence_event.direction = -1.0
 
-    # Vertical wind (m/s) over the six 2-second simulation intervals.
+    # Wind velocities (m/s) over the six 2-second simulation intervals.
+    # End horizontal gusts before the tail to preserve the upright equilibrium with u_ref=0.
+    horizontal_wind_schedule = np.array([0.0, 1.0, -1.5, 1.0, 0.0, 0.0])
     vertical_wind_schedule = np.array(
         [0.0, -5.27114277397773, -17.1152930753884, -26.6135641506339, -6.0, -6.0]
     )
@@ -225,7 +232,8 @@ def run_craclf_simulation(
         return min(int(np.floor(max(float(t), 0.0) / interval_duration)), K - 1)
 
     def wind_velocity(t):
-        return np.array([0.0, vertical_wind_schedule[schedule_index(t)]])
+        index = schedule_index(t)
+        return np.array([horizontal_wind_schedule[index], vertical_wind_schedule[index]])
 
     online_olacp.clear_buffers()
     if online_olacp._representation_intervals:
@@ -454,6 +462,7 @@ def run_craclf_simulation(
         "score_hist": np.asarray(score_hist),
         "delta_hist": np.asarray(delta_hist),
         "miscoverage_hist": np.asarray(miscoverage_hist),
+        "horizontal_wind_schedule": horizontal_wind_schedule,
         "vertical_wind_schedule": vertical_wind_schedule,
         "status": status,
         "failure_reason": failure_reason,
@@ -498,10 +507,9 @@ def plot_craclf_results(results):
     for label, result in items[1:]:
         if not np.array_equal(result["initial_state"], reference["initial_state"]):
             raise RuntimeError(f"{label}: comparison initial state does not match")
-        if not np.array_equal(
-            result["vertical_wind_schedule"], reference["vertical_wind_schedule"]
-        ):
-            raise RuntimeError(f"{label}: comparison wind schedule does not match")
+        for schedule_name in ("horizontal_wind_schedule", "vertical_wind_schedule"):
+            if not np.array_equal(result[schedule_name], reference[schedule_name]):
+                raise RuntimeError(f"{label}: comparison {schedule_name} does not match")
 
     colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
     color_map = {label: colors[index % len(colors)] for index, (label, _) in enumerate(items)}
@@ -762,9 +770,10 @@ def main():
         "epsilon": projection_epsilon,
         "eta_clf": clf_scale * 10.0,
         "clf_rate": 0.5,
-        "clf_goal_radius": 0.1,
+        # Restore full tightening closer to upright to reduce the residual regulation error.
+        "clf_goal_radius": 0.08,
         # Allow slack near low control authority rather than nearly enforcing a hard constraint.
-        "weight_slack": 7e2 / clf_scale**2,
+        "weight_slack": 1e2 / clf_scale**2,
         "dt": dt,
     }
 
