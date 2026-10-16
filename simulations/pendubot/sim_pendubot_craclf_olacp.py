@@ -2,8 +2,11 @@
 
 import copy
 import os
+import pickle
 import sys
 import warnings
+from datetime import datetime
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -706,8 +709,8 @@ def plot_craclf_results(results, interval_duration=None):
     return figures
 
 
-def main():
-    """Build the shared experiment, run two controller settings, and compare them"""
+def main(plot=False):
+    """Run the three controller settings and save results, optionally displaying plots."""
     K_pre = 45
     N_cal = 30
     K = 6.0
@@ -814,7 +817,7 @@ def main():
         representation_loss_gradient=pretrain_system.representation_loss_gradient,
     )
     pretrained_olacp, pretraining_history = run_pretraining(
-        pretrain_system, olacp, config, plot=True
+        pretrain_system, olacp, config, plot=plot
     )
     pretrained_theta = pretrained_olacp.Theta.copy()
     pretrained_a_k = pretrained_olacp.a_k.copy()
@@ -861,6 +864,23 @@ def main():
     if pretrained_olacp.representation_update_index != pretrained_update_index:
         raise RuntimeError("A main simulation mutated the pretrained representation-update index")
 
+    timestamp = datetime.now().strftime("%Y_%m%d_%H%M%S_%f")
+    results_filename = Path(__file__).resolve().parent / (
+        f"sim_pendubot_craclf_results_{timestamp}.pkl"
+    )
+    with results_filename.open("xb") as stream:
+        pickle.dump(
+            {
+                "config": config,
+                "base_params": base_pendubot_params,
+                "pretraining_history": pretraining_history,
+                "results": results,
+            },
+            stream,
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+    print(f"Saved results to {results_filename}")
+
     cp_adaptive_result = results["CP + adaptive"]
     cp_adaptive_metrics = cp_adaptive_result["metrics"]
     nonadaptive_result = results["No CP + nonadaptive"]
@@ -883,7 +903,8 @@ def main():
     if nonadaptive_metrics["a_hat_change"] > 1e-12 or nonadaptive_metrics["rho_range"] > 1e-12:
         warnings.warn("The nonadaptive run unexpectedly changed its CRaCLF adaptive states")
 
-    plot_craclf_results(results, interval_duration=interval_duration)
+    if plot:
+        plot_craclf_results(results, interval_duration=interval_duration)
 
     return pretraining_history, results
 
