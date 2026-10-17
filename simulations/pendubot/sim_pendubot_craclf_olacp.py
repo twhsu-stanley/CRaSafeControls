@@ -496,12 +496,15 @@ def run_craclf_simulation(
     return result
 
 
-def plot_craclf_results(results, interval_duration=None):
+def plot_craclf_results(results, interval_duration=None, file_format="png"):
     """Compare results and show the prescribed wind over its full duration.
 
     Infer interval_duration from the first complete recorded interval when omitted.
     Pass it explicitly if all results stopped before completing their first interval.
+    Save figures in this example's results folder as PNG (default) or PDF.
     """
+    if file_format not in ("png", "pdf"):
+        raise ValueError('file_format must be "png" or "pdf"')
     items = (
         list(results.items())
         if isinstance(results, dict)
@@ -704,6 +707,13 @@ def plot_craclf_results(results, interval_duration=None):
     fig.suptitle(r"Pendubot: $Y_{\Theta_j}(x)a_k$ versus true uncertainty")
 
     plt.tight_layout()
+    results_directory = Path(__file__).resolve().parent / "results"
+    results_directory.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y_%m%d_%H%M%S_%f")
+    for index, figure in enumerate(figures, start=1):
+        filename = results_directory / f"pendubot_{timestamp}_figure_{index:02d}.{file_format}"
+        figure.savefig(filename, format=file_format, dpi=300, bbox_inches="tight")
+    print(f"Saved {len(figures)} {file_format.upper()} figures to {results_directory}")
     plt.show()
     
     return figures
@@ -865,9 +875,9 @@ def main(plot=False):
         raise RuntimeError("A main simulation mutated the pretrained representation-update index")
 
     timestamp = datetime.now().strftime("%Y_%m%d_%H%M%S_%f")
-    results_filename = Path(__file__).resolve().parent / (
-        f"sim_pendubot_craclf_results_{timestamp}.pkl"
-    )
+    results_directory = Path(__file__).resolve().parent / "results"
+    results_directory.mkdir(exist_ok=True)
+    results_filename = results_directory / f"sim_pendubot_craclf_results_{timestamp}.pkl"
     with results_filename.open("xb") as stream:
         pickle.dump(
             {

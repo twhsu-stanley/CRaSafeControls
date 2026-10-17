@@ -703,8 +703,10 @@ def run_cracbf_simulation(
     return result
 
 
-def plot_cracbf_results(results):
-    """Plot and compare one or more main CRaCBF simulation results"""
+def plot_cracbf_results(results, file_format="png"):
+    """Compare results and save figures in this example's results folder as PNG or PDF."""
+    if file_format not in ("png", "pdf"):
+        raise ValueError('file_format must be "png" or "pdf"')
     items = (
         list(results.items())
         if isinstance(results, dict)
@@ -915,6 +917,13 @@ def plot_cracbf_results(results):
         ax.legend(fontsize="small")
     axs[-1].set_xlabel("time (s)")
     fig.suptitle(r"ACC: $Y_{\Theta_j}(x)a_k$ versus true uncertainty")
+    results_directory = Path(__file__).resolve().parent / "results"
+    results_directory.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y_%m%d_%H%M%S_%f")
+    for index, figure in enumerate(figures, start=1):
+        filename = results_directory / f"acc_{timestamp}_figure_{index:02d}.{file_format}"
+        figure.savefig(filename, format=file_format, dpi=300, bbox_inches="tight")
+    print(f"Saved {len(figures)} {file_format.upper()} figures to {results_directory}")
     return figures
 
 
@@ -1095,7 +1104,9 @@ def main(plot=False):
         raise RuntimeError("A main simulation mutated the pretrained representation-update index")
 
     timestamp = datetime.now().strftime("%Y_%m%d_%H%M%S_%f")
-    results_filename = Path(__file__).resolve().parent / f"sim_acc_cracbf_results_{timestamp}.pkl"
+    results_directory = Path(__file__).resolve().parent / "results"
+    results_directory.mkdir(exist_ok=True)
+    results_filename = results_directory / f"sim_acc_cracbf_results_{timestamp}.pkl"
     with results_filename.open("xb") as stream:
         pickle.dump(
             {

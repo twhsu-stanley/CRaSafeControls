@@ -5,6 +5,8 @@ import os
 import pickle
 import sys
 import time
+from datetime import datetime
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -804,8 +806,10 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
     return result
 
 
-def plot_craccm_results(results, desired_trajectory=None):
-    """Compare tracking-error norms and plot each simulation against its own reference"""
+def plot_craccm_results(results, desired_trajectory=None, file_format="png"):
+    """Compare each run against its reference and save figures in results as PNG or PDF."""
+    if file_format not in ("png", "pdf"):
+        raise ValueError('file_format must be "png" or "pdf"')
     items = (
         list(results.items())
         if isinstance(results, dict)
@@ -979,6 +983,13 @@ def plot_craccm_results(results, desired_trajectory=None):
     fig.suptitle(r"Planar-quadrotor: $Y_{\Theta_j}(x)a_k$ versus true uncertainty")
 
     plt.tight_layout()
+    results_directory = Path(__file__).resolve().parent / "results"
+    results_directory.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y_%m%d_%H%M%S_%f")
+    for index, figure in enumerate(figures, start=1):
+        filename = results_directory / f"planar_quad_{timestamp}_figure_{index:02d}.{file_format}"
+        figure.savefig(filename, format=file_format, dpi=300, bbox_inches="tight")
+    print(f"Saved {len(figures)} {file_format.upper()} figures to {results_directory}")
     plt.show()
 
     return figures
@@ -1160,9 +1171,11 @@ def main():
     desired_trajectories = {label: result["desired_trajectory"] for label, result in results.items()}
 
     # Save results to a file
-    timestamp = time.strftime("%Y_%m%d_%H%M")
-    results_filename = f"./simulations/planar_quad/sim_planar_quad_craccm_results_{timestamp}.pkl"
-    with open(results_filename, "wb") as f:
+    timestamp = datetime.now().strftime("%Y_%m%d_%H%M%S_%f")
+    results_directory = Path(__file__).resolve().parent / "results"
+    results_directory.mkdir(exist_ok=True)
+    results_filename = results_directory / f"sim_planar_quad_craccm_results_{timestamp}.pkl"
+    with results_filename.open("xb") as f:
         pickle.dump(
             {
                 "config": config,
