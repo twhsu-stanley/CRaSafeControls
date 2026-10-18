@@ -864,6 +864,7 @@ def plot_craccm_results(results, desired_trajectory=None, file_format="png"):
     ax.grid(True)
     ax.legend()
     fig.suptitle("Planar-quadrotor tracking error comparison")
+    fig.set_label("planar_quad_tracking_error")
 
     fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
     figures.append(fig)
@@ -890,10 +891,13 @@ def plot_craccm_results(results, desired_trajectory=None, file_format="png"):
         ax.grid(True)
         ax.legend(fontsize="small")
     fig.suptitle("Planar-quadrotor controls and QP slack comparison")
+    fig.set_label("planar_quad_control_slack")
 
     for label, result in items:
         color = color_map[label]
         trajectory = trajectories[label]
+        setting_name = "".join(c if c.isalnum() else " " for c in label.lower())
+        setting_name = "_".join(setting_name.split())
         fig, axs = plt.subplots(3, 2, sharex=True, figsize=(8, 6))
         figures.append(fig)
         for state_index, ax in enumerate(axs.flat):
@@ -911,6 +915,7 @@ def plot_craccm_results(results, desired_trajectory=None, file_format="png"):
         axs[-1, 0].set_xlabel("time (s)")
         axs[-1, 1].set_xlabel("time (s)")
         fig.suptitle(f"{label}: Planar-quadrotor state tracking comparison")
+        fig.set_label(f"planar_quad_states_{setting_name}")
 
         fig, ax = plt.subplots(figsize=(8, 6))
         figures.append(fig)
@@ -928,6 +933,7 @@ def plot_craccm_results(results, desired_trajectory=None, file_format="png"):
         ax.grid(True)
         ax.legend()
         fig.suptitle(f"{label}: Planar-quadrotor x-z position tracking comparison")
+        fig.set_label(f"planar_quad_trajectory_{setting_name}")
 
         fig, axs = plt.subplots(4, 1, sharex=True, figsize=(8, 8))
         figures.append(fig)
@@ -944,6 +950,7 @@ def plot_craccm_results(results, desired_trajectory=None, file_format="png"):
         axs[2].grid(True)
         axs[3].grid(True)
         fig.suptitle(f"{label}: CRaCCM adaptation and OLACP identification")
+        fig.set_label(f"planar_quad_adaptation_{setting_name}")
 
         fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
         figures.append(fig)
@@ -959,6 +966,7 @@ def plot_craccm_results(results, desired_trajectory=None, file_format="png"):
             ax.grid(True)
         axs[0].legend()
         fig.suptitle(f"{label}: Algorithm 1")
+        fig.set_label(f"planar_quad_olacp_{setting_name}")
 
     fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 6))
     figures.append(fig)
@@ -981,13 +989,13 @@ def plot_craccm_results(results, desired_trajectory=None, file_format="png"):
         ax.legend(fontsize="small")
     axs[-1].set_xlabel("time (s)")
     fig.suptitle(r"Planar-quadrotor: $Y_{\Theta_j}(x)a_k$ versus true uncertainty")
+    fig.set_label("planar_quad_uncertainty_fit")
 
     plt.tight_layout()
     results_directory = Path(__file__).resolve().parent / "results"
     results_directory.mkdir(exist_ok=True)
-    timestamp = datetime.now().strftime("%Y_%m%d_%H%M%S_%f")
-    for index, figure in enumerate(figures, start=1):
-        filename = results_directory / f"planar_quad_{timestamp}_figure_{index:02d}.{file_format}"
+    for figure in figures:
+        filename = results_directory / f"{figure.get_label()}.{file_format}"
         figure.savefig(filename, format=file_format, dpi=300, bbox_inches="tight")
     print(f"Saved {len(figures)} {file_format.upper()} figures to {results_directory}")
     plt.show()

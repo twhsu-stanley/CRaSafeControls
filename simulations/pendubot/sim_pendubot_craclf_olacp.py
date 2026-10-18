@@ -492,15 +492,13 @@ def run_craclf_simulation(
     )
 
     if plot:
-        plot_craclf_results({run_label: result}, interval_duration=interval_duration)
+        plot_craclf_results({run_label: result})
     return result
 
 
-def plot_craclf_results(results, interval_duration=None, file_format="png"):
-    """Compare results and show the prescribed wind over its full duration.
+def plot_craclf_results(results, file_format="png"):
+    """Compare results and plot the longest recorded wind history.
 
-    Infer interval_duration from the first complete recorded interval when omitted.
-    Pass it explicitly if all results stopped before completing their first interval.
     Save figures in this example's results folder as PNG (default) or PDF.
     """
     if file_format not in ("png", "pdf"):
@@ -558,6 +556,7 @@ def plot_craclf_results(results, interval_duration=None, file_format="png"):
     axs[0].legend()
     axs[-1].set_xlabel("time (s)")
     fig.suptitle("Pendubot state comparison")
+    fig.set_label("pendubot_states")
 
     fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
     figures.append(fig)
@@ -578,10 +577,13 @@ def plot_craclf_results(results, interval_duration=None, file_format="png"):
         ax.grid(True)
         ax.legend()
     fig.suptitle("Pendubot control and QP slack comparison")
+    fig.set_label("pendubot_control_slack")
 
     for label, result in items:
         color = color_map[label]
         result_end_time = float(result["t"][-1])
+        setting_name = "".join(c if c.isalnum() else " " for c in label.lower())
+        setting_name = "_".join(setting_name.split())
         fig, axs = plt.subplots(Pendubot.adim + 2, 1, sharex=True, figsize=(8, 11))
         figures.append(fig)
         for parameter_index, ax in enumerate(axs[: Pendubot.adim]):
@@ -612,10 +614,13 @@ def plot_craclf_results(results, interval_duration=None, file_format="png"):
         axs[0].legend()
         axs[-1].set_xlabel("time (s)")
         fig.suptitle(f"{label}: CRaCLF adaptation and OLACP identification")
+        fig.set_label(f"pendubot_adaptation_{setting_name}")
 
     for label, result in items:
         color = color_map[label]
         result_end_time = float(result["t"][-1])
+        setting_name = "".join(c if c.isalnum() else " " for c in label.lower())
+        setting_name = "_".join(setting_name.split())
         fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
         figures.append(fig)
         axs[0].step(
@@ -656,30 +661,19 @@ def plot_craclf_results(results, interval_duration=None, file_format="png"):
             ax.grid(True)
             ax.legend()
         fig.suptitle(f"{label}: Algorithm 1")
+        fig.set_label(f"pendubot_olacp_{setting_name}")
 
-    # Reconstruct the prescribed schedule, including intervals after a controller stops.
-    if interval_duration is None:
-        if len(reference["interval_times"]) == 0 or len(reference["t"]) < 2:
-            raise ValueError("Pass interval_duration when no complete interval is available")
-        sample_period = float(reference["t"][1] - reference["t"][0])
-        interval_duration = float(reference["interval_times"][0]) + sample_period
-    if not np.isfinite(interval_duration) or interval_duration <= 0.0:
-        raise ValueError("interval_duration must be finite and positive")
-    wind_times = np.arange(len(reference["vertical_wind_schedule"]) + 1) * interval_duration
     fig, ax = plt.subplots(figsize=(8, 4))
     figures.append(fig)
-    for schedule_name, wind_label in (
-        ("horizontal_wind_schedule", r"$v_{w,x}$"),
-        ("vertical_wind_schedule", r"$v_{w,z}$"),
-    ):
-        schedule = np.asarray(reference[schedule_name], dtype=float)
-        ax.step(wind_times, np.r_[schedule, schedule[-1]], where="post", label=wind_label)
-    ax.set_xlim(0.0, float(wind_times[-1]))
+    for component, wind_label in enumerate((r"$v_{w,x}$", r"$v_{w,z}$")):
+        ax.step(reference["t"], reference["wind_hist"][:, component], where="post", label=wind_label)
+    ax.set_xlim(0.0, maximum_time)
     ax.set_ylabel("wind velocity (m/s)")
     ax.set_xlabel("time (s)")
     ax.grid(True)
     ax.legend()
-    fig.suptitle("Pendubot prescribed wind history")
+    fig.suptitle("Pendubot recorded wind history")
+    fig.set_label("pendubot_wind")
 
     components = ((2, r"$w_3$"), (3, r"$w_4$"))
     fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
@@ -705,13 +699,13 @@ def plot_craclf_results(results, interval_duration=None, file_format="png"):
         ax.legend(fontsize="small")
     axs[-1].set_xlabel("time (s)")
     fig.suptitle(r"Pendubot: $Y_{\Theta_j}(x)a_k$ versus true uncertainty")
+    fig.set_label("pendubot_uncertainty_fit")
 
     plt.tight_layout()
     results_directory = Path(__file__).resolve().parent / "results"
     results_directory.mkdir(exist_ok=True)
-    timestamp = datetime.now().strftime("%Y_%m%d_%H%M%S_%f")
-    for index, figure in enumerate(figures, start=1):
-        filename = results_directory / f"pendubot_{timestamp}_figure_{index:02d}.{file_format}"
+    for figure in figures:
+        filename = results_directory / f"{figure.get_label()}.{file_format}"
         figure.savefig(filename, format=file_format, dpi=300, bbox_inches="tight")
     print(f"Saved {len(figures)} {file_format.upper()} figures to {results_directory}")
     plt.show()
@@ -914,7 +908,7 @@ def main(plot=False):
         warnings.warn("The nonadaptive run unexpectedly changed its CRaCLF adaptive states")
 
     if plot:
-        plot_craclf_results(results, interval_duration=interval_duration)
+        plot_craclf_results(results)
 
     return pretraining_history, results
 

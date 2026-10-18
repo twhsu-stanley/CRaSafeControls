@@ -750,6 +750,7 @@ def plot_cracbf_results(results, file_format="png"):
         ax.grid(True)
         ax.legend()
     fig.suptitle("ACC state comparison")
+    fig.set_label("acc_states")
 
     fig, axs = plt.subplots(1, 1, sharex=True, figsize=(8, 7))
     figures.append(fig)
@@ -765,7 +766,8 @@ def plot_cracbf_results(results, file_format="png"):
     axs.set_xlim(0.0, maximum_time)
     axs.grid(True)
     axs.legend()
-    fig.suptitle("ACC control comparison")    
+    fig.suptitle("ACC control comparison")
+    fig.set_label("acc_controls")
 
     fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
     figures.append(fig)
@@ -798,6 +800,7 @@ def plot_cracbf_results(results, file_format="png"):
         ax.grid(True)
         ax.legend()
     fig.suptitle("CRaCBF safety comparison")
+    fig.set_label("acc_cbf")
 
     fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
     figures.append(fig)
@@ -837,6 +840,7 @@ def plot_cracbf_results(results, file_format="png"):
         ax.grid(True)
         ax.legend()
     fig.suptitle("Algorithm 1 comparison")
+    fig.set_label("acc_olacp")
 
     fig, axs = plt.subplots(ACC.adim, 1, sharex=True, figsize=(8, 7))
     figures.append(fig)
@@ -872,6 +876,7 @@ def plot_cracbf_results(results, file_format="png"):
     axs[3].legend()
     axs[-1].set_xlabel("time (s)")
     fig.suptitle("CRaCBF adaptation and OLACP identification comparison")
+    fig.set_label("acc_adaptation")
 
     fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
     figures.append(fig)
@@ -894,6 +899,7 @@ def plot_cracbf_results(results, file_format="png"):
         ax.grid(True)
         ax.legend()
     fig.suptitle("Scaling, projection, and prediction-loss comparison")
+    fig.set_label("acc_scaling_prediction_loss")
 
     components = ((1, r"$w_2=d/m$"), (2, r"$w_3=\Delta v_l$"))
     fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
@@ -917,11 +923,11 @@ def plot_cracbf_results(results, file_format="png"):
         ax.legend(fontsize="small")
     axs[-1].set_xlabel("time (s)")
     fig.suptitle(r"ACC: $Y_{\Theta_j}(x)a_k$ versus true uncertainty")
+    fig.set_label("acc_uncertainty_fit")
     results_directory = Path(__file__).resolve().parent / "results"
     results_directory.mkdir(exist_ok=True)
-    timestamp = datetime.now().strftime("%Y_%m%d_%H%M%S_%f")
-    for index, figure in enumerate(figures, start=1):
-        filename = results_directory / f"acc_{timestamp}_figure_{index:02d}.{file_format}"
+    for figure in figures:
+        filename = results_directory / f"{figure.get_label()}.{file_format}"
         figure.savefig(filename, format=file_format, dpi=300, bbox_inches="tight")
     print(f"Saved {len(figures)} {file_format.upper()} figures to {results_directory}")
     return figures

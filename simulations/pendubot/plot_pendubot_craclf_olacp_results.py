@@ -14,6 +14,4 @@ if __name__ == "__main__":
         data = pickle.load(stream)
         results = data["results"]
 
-    plot_craclf_results(
-        results, interval_duration=data["config"]["interval_duration"], file_format="png"
-    )
+    plot_craclf_results(results, file_format="png")
