@@ -231,7 +231,7 @@ def plan_nominal_trajectory(system, config):
         dt=config["dt"],
         Q=config["motion_planner_Q"],
         R=config["motion_planner_R"],
-        Q_f=config["motion_planner_Q_f"],
+        Q_terminal=config["motion_planner_Q_terminal"],
         u_min=np.array([system.params["u_min"]]),
         u_max=np.array([system.params["u_max"]]),
     )
@@ -860,7 +860,7 @@ def main():
         "nominal_goal_state": np.array([-0.05, 0.0, 0.01]),
         "motion_planner_Q": np.diag([100.0, 1.0, 100.0]),
         "motion_planner_R": 1e-3 * np.eye(NONLINEAR_TOY.udim),
-        "motion_planner_Q_f": np.diag([1000.0, 10.0, 1000.0]),
+        "motion_planner_Q_terminal": np.diag([1000.0, 10.0, 1000.0]),
         "tracking_initial_offset": np.array([0.3, -0.2, 0.4]) * 0.0,
         "x_norm_divergence_threshold": 10.0,
         "rho_divergence_threshold": 1e10,

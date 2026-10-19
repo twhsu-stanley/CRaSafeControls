@@ -288,16 +288,18 @@ def plan_nominal_trajectory(system, config, plot=True):
         dt=config["dt"],
         Q=config["motion_planner_Q"],
         R=config["motion_planner_R"],
-        Q_f=config["motion_planner_Q_f"],
+        Q_terminal=config["motion_planner_Q_terminal"],
         u_min=np.asarray(system.params["u_min"], dtype=float).reshape(system.udim),
         u_max=np.asarray(system.params["u_max"], dtype=float).reshape(system.udim),
         output_matrix=np.eye(2, system.xdim),
+        S=config.get("motion_planner_S"),
     )
     hover_input = 0.5 * system.mass * system.grav * np.ones(system.udim)
     u_guess = np.repeat(hover_input[:, None], horizon_steps, axis=1)
     t_x = config["dt"] * np.arange(horizon_steps + 1)
     x_guess = np.repeat(x_init[:, None], horizon_steps + 1, axis=1)
-    x_guess[:2] = build_waypoint_cost_guide(waypoints, config["interval_duration"])(t_x)
+    waypoint_cost_guide = build_waypoint_cost_guide(waypoints, config["interval_duration"])
+    x_guess[:2] = waypoint_cost_guide(t_x)
 
     x_d, u_d = planner.plan_nominal_through_waypoints(
         waypoints,
@@ -306,6 +308,7 @@ def plan_nominal_trajectory(system, config, plot=True):
         u_guess,
         hover_input,
         x_init=x_init,
+        output_reference=waypoint_cost_guide,
     )
     
     t_u = t_x[:-1]
@@ -432,13 +435,17 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
         raise ValueError("mpc_prediction_dt must be an integer multiple of simulation dt")
     if not np.isclose(replan_steps * dt, replan_interval) or replan_steps % prediction_stride:
         raise ValueError("mpc_replan_interval must be an integer multiple of prediction dt")
+    # Align representation updates with the existing replanning grid.
+    if (online_olacp.representation_period * I_length) % replan_steps:
+        raise ValueError(
+            "The representation update period must be an integer multiple of mpc_replan_interval"
+        )
     waypoint_cost_guide = build_waypoint_cost_guide(waypoints, interval_duration)
     planner = MotionPlanner(
         system=system,
         dt=dt,
         Q=config["motion_planner_Q"],
         R=config["motion_planner_R"],
-        Q_f=config["motion_planner_Q_f"],
         u_min=np.asarray(system.params["u_min"], dtype=float).reshape(system.udim),
         u_max=np.asarray(system.params["u_max"], dtype=float).reshape(system.udim),
         output_matrix=np.eye(2, system.xdim),
@@ -1034,10 +1041,8 @@ def main():
         "pretrain_initial_state": np.array([0.0, 5.0, 0.0, 0.0, 0.0, 0.0]),
         "nominal_waypoints": nominal_waypoints,
         "reference_initial_state": np.array([0.0, 5.0, -0.03, 0.0, 0.0, 0.0]),
-        # Discrete running weights absorb the previous prediction_dt / dt = 5 factor.
         "motion_planner_Q": np.diag([5.0, 50.0]),
         "motion_planner_R": 50.0 * np.eye(PLANAR_QUAD.udim),
-        "motion_planner_Q_f": np.diag([1500.0, 2500.0]),
         "motion_planner_Q_terminal": np.diag([1.0, 10.0]),
         "motion_planner_S": np.zeros((PLANAR_QUAD.udim, PLANAR_QUAD.udim)),
         "mpc_horizon_duration": 4.0,
@@ -1108,8 +1113,8 @@ def main():
     pretrained_delta = float(pretrained_olacp.delta)
     settings = (
         ("CP + adaptive", True, True),
-        #("No CP + adaptive", False, True),
-        #("No CP + nonadaptive", False, False),
+        ("No CP + adaptive", False, True),
+        ("No CP + nonadaptive", False, False),
     )
     results = {}
     for label, use_cp, use_adaptive in settings:
