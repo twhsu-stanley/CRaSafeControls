@@ -274,7 +274,7 @@ class MotionPlanner:
         }
         return x_d, u_d
 
-    def plan(
+    def plan_nominal_towards_goal(
         self,
         x_init,
         x_goal,
@@ -345,8 +345,7 @@ class MotionPlanner:
         
         return x_d, u_d
 
-
-    def plan_through_waypoints(
+    def plan_nominal_through_waypoints(
         self,
         waypoints,
         interval_steps,

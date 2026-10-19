@@ -241,7 +241,7 @@ def plan_nominal_trajectory(system, config):
         config["nominal_goal_state"] - config["nominal_initial_state"]
     )[:, None] * alpha
     u_guess = np.zeros((system.udim, horizon_steps))
-    x_d, u_d = planner.plan(
+    x_d, u_d = planner.plan_nominal_towards_goal(
         config["nominal_initial_state"],
         config["nominal_goal_state"],
         horizon_steps,

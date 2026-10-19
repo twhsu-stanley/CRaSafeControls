@@ -309,7 +309,7 @@ def plan_nominal_trajectory(system, config, plot=True):
     hover_input = 0.5 * system.mass * system.grav * np.ones(system.udim)
     u_guess = np.repeat(hover_input[:, None], horizon_steps, axis=1)
 
-    x_d, u_d = planner.plan_through_waypoints(
+    x_d, u_d = planner.plan_nominal_through_waypoints(
         waypoints,
         interval_steps,
         x_guess,
