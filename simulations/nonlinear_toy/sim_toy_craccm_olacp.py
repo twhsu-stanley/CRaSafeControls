@@ -527,13 +527,10 @@ def run_craccm_simulation(
 
     tracking_error = np.linalg.norm(x_hist - x_d_hist, axis=1)
     metrics = {
-        "final_error": float(tracking_error[-1]),
         "rms_error": float(np.sqrt(np.mean(tracking_error ** 2))),
         "max_error": float(np.max(tracking_error)),
         "max_control": float(np.nanmax(np.abs(u_hist))),
         "max_slack": float(np.nanmax(slack_hist)),
-        "a_hat_change": float(np.linalg.norm(a_hat_hist[-1] - a_hat_hist[0])),
-        "rho_range": float(np.ptp(rho_hist)),
     }
     result = {
         "label": run_label,
@@ -578,7 +575,6 @@ def run_craccm_simulation(
     
     print(
         f"{run_label}: status={status}{failure_summary}, "
-        f"final_error={metrics['final_error']:.3e}, "
         f"rms_error={metrics['rms_error']:.3e}, max_error={metrics['max_error']:.3e}, "
         f"max|u|={metrics['max_control']:.3e}, max_slack={metrics['max_slack']:.3e}"
     )

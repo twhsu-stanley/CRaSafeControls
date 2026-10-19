@@ -11,7 +11,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.integrate import solve_ivp
-from scipy.interpolate import CubicHermiteSpline, interp1d
+from scipy.interpolate import CubicSpline, interp1d
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
@@ -273,11 +273,14 @@ def plan_nominal_trajectory(system, config, plot=True):
         raise ValueError("K and I_length must be positive")
 
     waypoints = np.asarray(config["nominal_waypoints"], dtype=float)
-    expected_shape = (interval_count + 1, system.xdim)
+    expected_shape = (interval_count + 1, 2)
     if waypoints.shape != expected_shape:
         raise ValueError(f"nominal_waypoints must have shape {expected_shape}")
     if not np.all(np.isfinite(waypoints)):
         raise ValueError("nominal_waypoints must be finite")
+    x_init = np.asarray(config["reference_initial_state"], dtype=float).reshape(system.xdim)
+    if not np.all(np.isfinite(x_init)) or not np.allclose(x_init[:2], waypoints[0]):
+        raise ValueError("reference_initial_state must be finite and start at the first waypoint")
 
     horizon_steps = interval_count * interval_steps
     planner = MotionPlanner(
@@ -288,26 +291,13 @@ def plan_nominal_trajectory(system, config, plot=True):
         Q_f=config["motion_planner_Q_f"],
         u_min=np.asarray(system.params["u_min"], dtype=float).reshape(system.udim),
         u_max=np.asarray(system.params["u_max"], dtype=float).reshape(system.udim),
+        output_matrix=np.eye(2, system.xdim),
     )
-    
-    # x_guess should be straight-line segments connecting the waypoints
-    for waypoint_index in range(interval_count):
-        x_guess_segment = waypoints[waypoint_index, :, None] + (
-            waypoints[waypoint_index + 1, :, None] - waypoints[waypoint_index, :, None]
-        ) * np.linspace(0.0, 1.0, interval_steps + 1)[:, None].T
-
-        if waypoint_index < interval_count - 1:
-            x_guess_segment = x_guess_segment[:, :-1]  # exclude the last point to avoid duplication
-        else:
-            x_guess_segment = x_guess_segment  # include the last point for the final segment
-
-        if waypoint_index == 0:
-            x_guess = x_guess_segment
-        else:
-            x_guess = np.hstack((x_guess, x_guess_segment))
-
     hover_input = 0.5 * system.mass * system.grav * np.ones(system.udim)
     u_guess = np.repeat(hover_input[:, None], horizon_steps, axis=1)
+    t_x = config["dt"] * np.arange(horizon_steps + 1)
+    x_guess = np.repeat(x_init[:, None], horizon_steps + 1, axis=1)
+    x_guess[:2] = build_waypoint_cost_guide(waypoints, config["interval_duration"])(t_x)
 
     x_d, u_d = planner.plan_nominal_through_waypoints(
         waypoints,
@@ -315,13 +305,11 @@ def plan_nominal_trajectory(system, config, plot=True):
         x_guess,
         u_guess,
         hover_input,
+        x_init=x_init,
     )
     
-    t_x = config["dt"] * np.arange(horizon_steps + 1)
     t_u = t_x[:-1]
     waypoint_indices = interval_steps * np.arange(interval_count + 1)
-    waypoint_error = x_d[:, waypoint_indices].T - waypoints
-    maximum_waypoint_error = float(np.max(np.abs(waypoint_error)))
     regressor_norm = np.asarray(
         [
             np.linalg.norm(system.Y(x_d[:, index]), ord="fro")
@@ -329,17 +317,15 @@ def plan_nominal_trajectory(system, config, plot=True):
         ]
     )
     maximum_regressor_norm = float(np.max(regressor_norm))
-    print(
-        f"Nominal plan complete: max waypoint error={maximum_waypoint_error:.3e}, "
-        f"max ||Y_Theta(x_d)||_F={maximum_regressor_norm:.3e}"
-    )
+    print(f"Nominal plan complete: max ||Y_Theta(x_d)||_F={maximum_regressor_norm:.3e}")
 
     if plot:
         fig, axs = plt.subplots(3, 2, sharex=True, figsize=(8, 6))
         waypoint_times = config["interval_duration"] * np.arange(interval_count + 1)
         for state_index, ax in enumerate(axs.flat):
             ax.plot(t_x, x_d[state_index])
-            ax.plot(waypoint_times, waypoints[:, state_index], "o")
+            if state_index < 2:
+                ax.plot(waypoint_times, waypoints[:, state_index], "o")
             ax.set_ylabel(rf"$x_{state_index + 1}$")
             ax.grid(True)
         axs[-1, 0].set_xlabel("time (s)")
@@ -371,36 +357,22 @@ def plan_nominal_trajectory(system, config, plot=True):
 
 
 def build_waypoint_cost_guide(waypoints, interval_duration):
-    """Build a smooth cost guide, not a replacement for the certainty-equivalent dynamics.
-
-    Position tangents use the specified body velocities rotated to the inertial
-    frame. Angle tangents use phi_dot. Guide velocities are derived from these
-    curves so the kinematic state components are consistent with each other.
-    """
+    """Interpolate position waypoints without prescribing attitude or waypoint velocities."""
     waypoints = np.asarray(waypoints, dtype=float)
-    if waypoints.ndim != 2 or waypoints.shape[1] != 6 or len(waypoints) < 2:
-        raise ValueError("waypoints must have shape (K + 1, 6), with K >= 1")
+    if waypoints.ndim != 2 or waypoints.shape[1] != 2 or len(waypoints) < 2:
+        raise ValueError("waypoints must have shape (K + 1, 2), with K >= 1")
     if not np.all(np.isfinite(waypoints)):
         raise ValueError("waypoints must be finite")
     if not np.isfinite(interval_duration) or interval_duration <= 0.0:
         raise ValueError("interval_duration must be finite and positive")
     waypoint_times = interval_duration * np.arange(len(waypoints))
-    phi, vx, vz = waypoints[:, 2], waypoints[:, 3], waypoints[:, 4]
-    inertial_velocity = np.column_stack((
-        vx * np.cos(phi) - vz * np.sin(phi), vx * np.sin(phi) + vz * np.cos(phi)
-    ))
-    position_curve = CubicHermiteSpline(waypoint_times, waypoints[:, :2], inertial_velocity)
-    angle_curve = CubicHermiteSpline(waypoint_times, phi, waypoints[:, 5])
+    position_curve = CubicSpline(waypoint_times, waypoints, bc_type="natural")
 
-    def state_reference(times):
+    def position_reference(times):
         times = np.clip(np.atleast_1d(times), waypoint_times[0], waypoint_times[-1])
-        position, velocity = position_curve(times), position_curve(times, 1)
-        angle, angular_velocity = angle_curve(times), angle_curve(times, 1)
-        body_vx = velocity[:, 0] * np.cos(angle) + velocity[:, 1] * np.sin(angle)
-        body_vz = -velocity[:, 0] * np.sin(angle) + velocity[:, 1] * np.cos(angle)
-        return np.vstack((position.T, angle, body_vx, body_vz, angular_velocity))
+        return position_curve(times).T
 
-    return state_reference
+    return position_reference
 
 
 def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, label=None):
@@ -438,8 +410,11 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
     t_hist = np.arange(len(t_full) + 1, dtype=float) * dt
     run_label = label or f"CP={bool(use_cp)}, adaptive={bool(use_adaptive)}"
     waypoints = np.asarray(config["nominal_waypoints"], dtype=float)
-    if waypoints.shape != (K + 1, system.xdim) or not np.all(np.isfinite(waypoints)):
-        raise ValueError(f"nominal_waypoints must be finite with shape {(K + 1, system.xdim)}")
+    if waypoints.shape != (K + 1, 2) or not np.all(np.isfinite(waypoints)):
+        raise ValueError(f"nominal_waypoints must be finite with shape {(K + 1, 2)}")
+    x_d = np.asarray(config["reference_initial_state"], dtype=float).reshape(system.xdim).copy()
+    if not np.all(np.isfinite(x_d)) or not np.allclose(x_d[:2], waypoints[0]):
+        raise ValueError("reference_initial_state must be finite and start at the first waypoint")
     if K < 1 or I_length < 1 or not np.isclose(I_length * dt, interval_duration):
         raise ValueError("K and I_length must be positive and match interval_duration / dt")
     horizon_duration = float(config.get("mpc_horizon_duration", 4.0))
@@ -466,6 +441,9 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
         Q_f=config["motion_planner_Q_f"],
         u_min=np.asarray(system.params["u_min"], dtype=float).reshape(system.udim),
         u_max=np.asarray(system.params["u_max"], dtype=float).reshape(system.udim),
+        output_matrix=np.eye(2, system.xdim),
+        Q_terminal=config["motion_planner_Q_terminal"],
+        S=config["motion_planner_S"],
     )
     hover_input = 0.5 * system.mass * system.grav * np.ones(system.udim)
     rho_index = system.xdim + system.adim
@@ -480,7 +458,6 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
     rho_divergence_event.terminal = True
     rho_divergence_event.direction = -1.0
 
-    x_d = waypoints[0].copy()
     x = x_d + config["tracking_initial_offset"]
     a_hat = system.a_center.copy()
     rho = 0.0
@@ -560,6 +537,7 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
         return np.hstack((adaptive_derivative, desired_derivative))
 
     predicted_inputs = None
+    u_d = hover_input.copy()
     plan_start_step = 0
     for sample_index, t in enumerate(t_full):
         last_sample_index = sample_index
@@ -570,7 +548,7 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
                 _, predicted_inputs = planner.plan_certainty_equivalent_through_waypoints(
                     x_d, waypoints, I_length, sample_index, system.Theta_hat, model_a_hat,
                     hover_input, horizon_duration=horizon_duration, prediction_dt=prediction_dt,
-                    state_reference=waypoint_cost_guide,
+                    output_reference=waypoint_cost_guide, u_previous=u_d,
                 )
             except RuntimeError as error:
                 raise RuntimeError(f"{run_label}: waypoint MPC failed at t={t:.3f}") from error
@@ -711,13 +689,6 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
     reference_states = np.asarray(reference_states).T
     reference_inputs = np.asarray(reference_inputs).T
     waypoint_times = interval_duration * np.arange(K + 1)
-    waypoint_errors = np.full_like(waypoints, np.nan)
-    for waypoint_index, waypoint_time in enumerate(waypoint_times):
-        matches = np.flatnonzero(np.isclose(reference_times, waypoint_time, rtol=0.0, atol=1e-9))
-        if matches.size:
-            waypoint_errors[waypoint_index] = (
-                reference_states[:, matches[0]] - waypoints[waypoint_index]
-            )
     desired_trajectory = {
         "mode": "certainty_equivalent_dynamics_mpc",
         "t_x": reference_times,
@@ -726,7 +697,6 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
         "u_d": reference_inputs,
         "waypoints": waypoints.copy(),
         "waypoint_times": waypoint_times,
-        "waypoint_errors": waypoint_errors,
         "mpc_horizon_duration": horizon_duration,
         "mpc_prediction_dt": prediction_dt,
         "mpc_replan_interval": replan_interval,
@@ -734,17 +704,10 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
 
     tracking_error = np.linalg.norm(x_hist - x_d_hist, axis=1)
     metrics = {
-        "final_error": float(tracking_error[-1]),
         "rms_error": float(np.sqrt(np.mean(tracking_error ** 2))),
         "max_error": float(np.max(tracking_error)),
         "max_control": float(np.nanmax(np.linalg.norm(u_hist, axis=1))),
         "max_slack": float(np.nanmax(slack_hist)),
-        "a_hat_change": float(np.linalg.norm(a_hat_hist[-1] - a_hat_hist[0])),
-        "rho_range": float(np.ptp(rho_hist)),
-        "max_waypoint_error": float(np.nanmax(np.linalg.norm(waypoint_errors, axis=1))),
-        "max_position_waypoint_error": float(
-            np.nanmax(np.linalg.norm(waypoint_errors[:, :2], axis=1))
-        ),
         "total_mpc_solve_time": float(np.nansum(mpc_solve_time_hist)),
         "mpc_replan_count": int(np.count_nonzero(mpc_replan_hist)),
         "mean_mpc_solve_time": float(np.mean(mpc_solve_time_hist[mpc_replan_hist])),
@@ -796,10 +759,9 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
         )
     print(
         f"{run_label}: status={status}{failure_summary}, "
-        f"final_error={metrics['final_error']:.3e}, rms_error={metrics['rms_error']:.3e}, "
+        f"rms_error={metrics['rms_error']:.3e}, "
         f"max_error={metrics['max_error']:.3e}, max|u|={metrics['max_control']:.3e}, "
         f"max_slack={metrics['max_slack']:.3e}, "
-        f"max_position_waypoint_error={metrics['max_position_waypoint_error']:.3e}, "
         f"mpc_solves={metrics['mpc_replan_count']}, "
         f"mpc_time={metrics['total_mpc_solve_time']:.2f}s"
     )
@@ -1034,27 +996,27 @@ def main():
 
     nominal_waypoints = np.array(
         [
-            [0.00, 5.00, -0.030, 0.00, 0.00, 0.00],
-            [0.57, 5.45, -0.025, 0.54, 0.40, 0.00],
-            [2.07, 6.18, -0.01, 0.90, 0.25, 0.00],
-            [3.93, 6.18, 0.00, 0.90, -0.25, 0.00],
-            [5.43, 5.45, 0.010, 0.54, -0.40, 0.00],
-            [6.00, 5.00, 0.017 , 0.00, 0.00, 0.00],
-            [5.43 + 1.0, 5.45, 0.025, -0.54, 0.40, 0.00],
-            [3.93 + 1.0, 6.18, 0.01, -0.90, 0.25, 0.00],
-            [2.07 + 1.0, 6.18, -0.01, -0.90, -0.25, 0.00],
-            [0.57 + 1.0, 5.45, -0.025, -0.54, -0.40, 0.00],
-            [0.00, 5.00, -0.03, 0.00, 0.00, 0.00],
-            [0.57, 5.45, -0.025, 0.54, 0.40, 0.00],
-            [2.07, 6.18, -0.01, 0.90, 0.25, 0.00],
-            [3.93, 6.18, 0.00, 0.90, -0.25, 0.00],
-            [5.43, 5.45, 0.010, 0.54, -0.40, 0.00],
-            [6.00, 5.00, 0.017, 0.00, 0.00, 0.00],
-            [5.43 + 1.0, 5.45, 0.025, -0.54, 0.40, 0.00],
-            [3.93 + 1.0, 6.18, 0.01, -0.90, 0.25, 0.00],
-            [2.07 + 1.0, 6.18, -0.01, -0.90, -0.25, 0.00],
-            [0.57 + 1.0, 5.45, -0.025, -0.54, -0.40, 0.0],
-            [0.00, 5.00, -0.030, 0.00, 0.00, 0.00],
+            [0.00, 5.00],
+            [0.57, 5.45],
+            [2.07, 6.18],
+            [3.93, 6.18],
+            [5.43, 5.45],
+            [6.00, 5.00],
+            [6.43, 5.45],
+            [4.93, 6.18],
+            [3.07, 6.18],
+            [1.57, 5.45],
+            [0.00, 5.00],
+            [0.57, 5.45],
+            [2.07, 6.18],
+            [3.93, 6.18],
+            [5.43, 5.45],
+            [6.00, 5.00],
+            [6.43, 5.45],
+            [4.93, 6.18],
+            [3.07, 6.18],
+            [1.57, 5.45],
+            [0.00, 5.00],
         ]
     )
 
@@ -1071,9 +1033,13 @@ def main():
         "pretrain_altitude": 5.0,
         "pretrain_initial_state": np.array([0.0, 5.0, 0.0, 0.0, 0.0, 0.0]),
         "nominal_waypoints": nominal_waypoints,
-        "motion_planner_Q": np.diag([1.0, 10.0, 1.0, 1.0, 1.0, 100.0]),
-        "motion_planner_R": 10.0 * np.eye(PLANAR_QUAD.udim),
-        "motion_planner_Q_f": np.diag([1500.0, 2500.0, 750.0, 250.0, 250.0, 1500.0]),
+        "reference_initial_state": np.array([0.0, 5.0, -0.03, 0.0, 0.0, 0.0]),
+        # Discrete running weights absorb the previous prediction_dt / dt = 5 factor.
+        "motion_planner_Q": np.diag([5.0, 50.0]),
+        "motion_planner_R": 50.0 * np.eye(PLANAR_QUAD.udim),
+        "motion_planner_Q_f": np.diag([1500.0, 2500.0]),
+        "motion_planner_Q_terminal": np.diag([1.0, 10.0]),
+        "motion_planner_S": np.zeros((PLANAR_QUAD.udim, PLANAR_QUAD.udim)),
         "mpc_horizon_duration": 4.0,
         "mpc_prediction_dt": 0.05,
         "mpc_replan_interval": 0.2,
@@ -1121,7 +1087,7 @@ def main():
         N_cal=N_cal,
         acp_lr=0.1,
         delta_target=0.1,
-        delta_init=0.1,
+        delta_init=0.15,
         buffer_maxlen=I_length,
         Theta_init=theta_init,
         representation_period=B,
@@ -1142,8 +1108,8 @@ def main():
     pretrained_delta = float(pretrained_olacp.delta)
     settings = (
         ("CP + adaptive", True, True),
-        ("No CP + adaptive", False, True),
-        ("No CP + nonadaptive", False, False),
+        #("No CP + adaptive", False, True),
+        #("No CP + nonadaptive", False, False),
     )
     results = {}
     for label, use_cp, use_adaptive in settings:

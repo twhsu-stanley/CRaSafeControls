@@ -3,6 +3,7 @@ import casadi as ca
 from systems.control_affine_system import ControlAffineSystem
 
 class MotionPlanner:
+    """Plan full-state trajectories with discrete-time output and input costs."""
 
     def __init__(
         self,
@@ -13,8 +14,17 @@ class MotionPlanner:
         Q_f: np.ndarray,
         u_min: np.ndarray = None,
         u_max: np.ndarray = None,
+        *,
+        output_matrix: np.ndarray = None,
+        Q_terminal: np.ndarray = None,
+        S: np.ndarray = None,
     ):
-        
+        """Track y = output_matrix @ x, defaulting to full-state tracking.
+
+        Q_f weights scheduled waypoints; Q_terminal weights the MPC horizon end.
+        S optionally penalizes input increments in the certainty-equivalent MPC.
+        All weights are discrete-time weights, without a time-step multiplier.
+        """
         if dt <= 0.0:
             raise ValueError("dt must be positive.")
 
@@ -22,9 +32,30 @@ class MotionPlanner:
         self.dt = dt
         self.xdim = system.xdim
         self.udim = system.udim
-        self.Q = Q
-        self.R = R
-        self.Q_f = Q_f
+        self.output_matrix = np.eye(self.xdim) if output_matrix is None else np.asarray(
+            output_matrix, dtype=float
+        )
+        if self.output_matrix.ndim != 2 or self.output_matrix.shape[1] != self.xdim:
+            raise ValueError("output_matrix must have shape (ydim, xdim)")
+        self.ydim = self.output_matrix.shape[0]
+        if self.ydim < 1 or not np.all(np.isfinite(self.output_matrix)):
+            raise ValueError("output_matrix must be finite and have at least one row")
+        self.Q = np.asarray(Q, dtype=float)
+        self.R = np.asarray(R, dtype=float)
+        self.Q_f = np.asarray(Q_f, dtype=float)
+        self.Q_terminal = (
+            self.Q.copy() if Q_terminal is None else np.asarray(Q_terminal, dtype=float)
+        )
+        self.S = np.zeros((self.udim, self.udim)) if S is None else np.asarray(S, dtype=float)
+        for name, weight, dim in (
+            ("Q", self.Q, self.ydim), ("Q_f", self.Q_f, self.ydim),
+            ("Q_terminal", self.Q_terminal, self.ydim), ("R", self.R, self.udim),
+            ("S", self.S, self.udim),
+        ):
+            if weight.shape != (dim, dim) or not np.all(np.isfinite(weight)):
+                raise ValueError(f"{name} must be a finite ({dim}, {dim}) matrix")
+            if not np.allclose(weight, weight.T) or np.min(np.linalg.eigvalsh(weight)) < -1e-10:
+                raise ValueError(f"{name} must be symmetric positive semidefinite")
         self.u_min = u_min
         self.u_max = u_max
         # TODO: inclde obstacles
@@ -108,8 +139,9 @@ class MotionPlanner:
             "theta": opti.parameter(*self.system.theta_shape),
             "a_hat": opti.parameter(self.system.adim),
             "u_reference": opti.parameter(self.udim),
-            "state_reference": opti.parameter(self.xdim, horizon_steps + 1),
-            "waypoint_reference": opti.parameter(self.xdim, horizon_steps),
+            "u_previous": opti.parameter(self.udim),
+            "output_reference": opti.parameter(self.ydim, horizon_steps + 1),
+            "waypoint_reference": opti.parameter(self.ydim, horizon_steps),
             "waypoint_mask": opti.parameter(1, horizon_steps),
             "waypoint_fraction": opti.parameter(1, horizon_steps),
         }
@@ -119,20 +151,20 @@ class MotionPlanner:
             ca.repmat(parameters["a_hat"], 1, horizon_steps),
         )
         opti.subject_to(X[:, 1:] == predicted_next)
-        state_error = X[:, :-1] - parameters["state_reference"][:, :-1]
+        outputs = ca.DM(self.output_matrix) @ X
+        output_error = outputs[:, :-1] - parameters["output_reference"][:, :-1]
         input_error = U - ca.repmat(parameters["u_reference"], 1, horizon_steps)
-        # Preserve the running/waypoint-cost balance on a coarser prediction grid.
-        objective = prediction_dt / self.dt * (
-            ca.dot(state_error, ca.DM(self.Q) @ state_error)
-            + ca.dot(input_error, ca.DM(self.R) @ input_error)
-        )
-        fraction = ca.repmat(parameters["waypoint_fraction"], self.xdim, 1)
-        waypoint_states = X[:, :-1] + fraction * (X[:, 1:] - X[:, :-1])
-        waypoint_error = waypoint_states - parameters["waypoint_reference"]
+        input_increment = ca.horzcat(U[:, 0] - parameters["u_previous"], U[:, 1:] - U[:, :-1])
+        objective = ca.dot(output_error, ca.DM(self.Q) @ output_error)
+        objective += ca.dot(input_error, ca.DM(self.R) @ input_error)
+        objective += ca.dot(input_increment, ca.DM(self.S) @ input_increment)
+        fraction = ca.repmat(parameters["waypoint_fraction"], self.ydim, 1)
+        waypoint_outputs = outputs[:, :-1] + fraction * (outputs[:, 1:] - outputs[:, :-1])
+        waypoint_error = waypoint_outputs - parameters["waypoint_reference"]
         waypoint_cost = ca.sum1(waypoint_error * (ca.DM(self.Q_f) @ waypoint_error))
         objective += ca.dot(parameters["waypoint_mask"], waypoint_cost)
-        terminal_error = X[:, -1] - parameters["state_reference"][:, -1]
-        objective += ca.mtimes([terminal_error.T, ca.DM(self.Q), terminal_error])
+        terminal_error = outputs[:, -1] - parameters["output_reference"][:, -1]
+        objective += ca.mtimes([terminal_error.T, ca.DM(self.Q_terminal), terminal_error])
         opti.minimize(objective)
         if self.u_min is not None:
             lower = ca.repmat(ca.DM(self.u_min), 1, horizon_steps)
@@ -148,16 +180,17 @@ class MotionPlanner:
 
     def plan_certainty_equivalent_through_waypoints(
         self, x_init, waypoints, interval_steps, start_step, theta, a_hat, u_reference=None,
-        *, horizon_duration=4.0, prediction_dt=None, state_reference=None,
+        *, horizon_duration=4.0, prediction_dt=None, output_reference=None, u_previous=None,
     ):
         """Replan a fixed-length certainty-equivalent horizon from the desired state.
 
         Waypoint times stay on the mission clock. Every future waypoint within
         the horizon receives Q_f at its scheduled time, interpolating adjacent
-        prediction states for off-grid times. The running reference is only a
+        predicted outputs for off-grid times. The running output reference is only a
         cost guide, not the dynamically generated desired state. Beyond the
         mission end the guide is padded with the final waypoint. Theta and
-        a_hat are frozen during prediction and refreshed at each replan.
+        a_hat are frozen during prediction and refreshed at each replan. All
+        cost weights are discrete-time weights; no time-step multiplier is applied.
         """
         interval_steps_int, start_step_int = int(interval_steps), int(start_step)
         if interval_steps_int != interval_steps or interval_steps_int < 1:
@@ -166,8 +199,8 @@ class MotionPlanner:
             raise ValueError("start_step must be a nonnegative integer")
         interval_steps, start_step = interval_steps_int, start_step_int
         waypoints = np.asarray(waypoints, dtype=float)
-        if waypoints.ndim != 2 or waypoints.shape[1] != self.xdim or len(waypoints) < 2:
-            raise ValueError("waypoints must have shape (K + 1, xdim), with K >= 1")
+        if waypoints.ndim != 2 or waypoints.shape[1] != self.ydim or len(waypoints) < 2:
+            raise ValueError("waypoints must have shape (K + 1, ydim), with K >= 1")
         if start_step >= (len(waypoints) - 1) * interval_steps:
             raise ValueError("start_step must precede the last waypoint deadline")
         prediction_dt = self.dt if prediction_dt is None else float(prediction_dt)
@@ -188,22 +221,26 @@ class MotionPlanner:
         if u_reference is None:
             u_reference = np.zeros(self.udim)
         u_reference = np.asarray(u_reference, dtype=float).reshape(self.udim)
-        arrays = (waypoints, x_init, theta, a_hat, u_reference)
+        u_previous = u_reference if u_previous is None else u_previous
+        u_previous = np.asarray(u_previous, dtype=float).reshape(self.udim)
+        arrays = (waypoints, x_init, theta, a_hat, u_reference, u_previous)
         if any(not np.all(np.isfinite(array)) for array in arrays):
             raise ValueError("MPC states, parameters, and references must be finite")
 
         start_time = start_step * self.dt
         prediction_times = start_time + prediction_dt * np.arange(horizon_steps + 1)
         waypoint_times = interval_duration * np.arange(len(waypoints))
-        if state_reference is None:
+        if output_reference is None:
             guide = np.array(
                 [np.interp(prediction_times, waypoint_times, row) for row in waypoints.T]
             )
         else:
-            guide = np.asarray(state_reference(prediction_times), dtype=float)
-        if guide.shape != (self.xdim, horizon_steps + 1) or not np.all(np.isfinite(guide)):
-            raise ValueError("state_reference must return a finite (xdim, horizon_steps + 1) array")
-        waypoint_reference = np.zeros((self.xdim, horizon_steps))
+            guide = np.asarray(output_reference(prediction_times), dtype=float)
+        if guide.shape != (self.ydim, horizon_steps + 1) or not np.all(np.isfinite(guide)):
+            raise ValueError(
+                "output_reference must return a finite (ydim, horizon_steps + 1) array"
+            )
+        waypoint_reference = np.zeros((self.ydim, horizon_steps))
         waypoint_mask = np.zeros((1, horizon_steps))
         waypoint_fraction = np.zeros((1, horizon_steps))
         included_waypoints = []
@@ -227,7 +264,8 @@ class MotionPlanner:
         opti, X, U = problem["opti"], problem["X"], problem["U"]
         parameter_values = {
             "x_init": x_init, "theta": theta, "a_hat": a_hat, "u_reference": u_reference,
-            "state_reference": guide, "waypoint_reference": waypoint_reference,
+            "u_previous": u_previous, "output_reference": guide,
+            "waypoint_reference": waypoint_reference,
             "waypoint_mask": waypoint_mask, "waypoint_fraction": waypoint_fraction,
         }
         for name, value in parameter_values.items():
@@ -247,17 +285,13 @@ class MotionPlanner:
         if compatible:
             tail = np.repeat(previous_u[:, -1:], shift, axis=1)
             u_guess = np.hstack((previous_u[:, shift:], tail))
-            x_guess = np.empty((self.xdim, horizon_steps + 1))
-            x_guess[:, 0] = x_init
-            for k in range(horizon_steps):
-                next_state = self._certainty_equivalent_rk4(
-                    x_guess[:, k], u_guess[:, k], theta, a_hat
-                )
-                x_guess[:, k + 1] = np.asarray(next_state).reshape(self.xdim)
         else:
-            x_guess = guide.copy()
             u_guess = np.repeat(u_reference[:, None], horizon_steps, axis=1)
+        x_guess = np.empty((self.xdim, horizon_steps + 1))
         x_guess[:, 0] = x_init
+        for k in range(horizon_steps):
+            next_state = self._certainty_equivalent_rk4(x_guess[:, k], u_guess[:, k], theta, a_hat)
+            x_guess[:, k + 1] = np.asarray(next_state).reshape(self.xdim)
         opti.set_initial(X, x_guess)
         opti.set_initial(U, u_guess)
         solution = opti.solve()
@@ -316,7 +350,7 @@ class MotionPlanner:
             x_next = self._nominal_rk4(x_k, u_k)
             opti.subject_to(X[:, k + 1] == x_next)
 
-            dx = x_k - x_goal
+            dx = ca.DM(self.output_matrix) @ (x_k - x_goal)
             du = u_k - u_reference
             objective += ca.mtimes([dx.T, Q, dx]) + ca.mtimes([du.T, R, du])
 
@@ -328,7 +362,7 @@ class MotionPlanner:
                 if self.u_max is not None:
                     opti.subject_to(u_k <= ca.DM(self.u_max))
 
-        dx_terminal = X[:, horizon_steps] - x_goal
+        dx_terminal = ca.DM(self.output_matrix) @ (X[:, horizon_steps] - x_goal)
         objective += ca.mtimes([dx_terminal.T, Q_f, dx_terminal])
         opti.minimize(objective)
 
@@ -352,8 +386,24 @@ class MotionPlanner:
         x_guess,
         u_guess,
         u_reference=None,
+        *,
+        x_init=None,
     ):
-        """Plan a nominal trajectory that follows waypoints"""
+        """Plan a nominal trajectory through output waypoints from a full initial state."""
+
+        waypoints = np.asarray(waypoints, dtype=float)
+        if waypoints.ndim != 2 or waypoints.shape[1] != self.ydim or len(waypoints) < 2:
+            raise ValueError("waypoints must have shape (K + 1, ydim), with K >= 1")
+        if int(interval_steps) != interval_steps or interval_steps < 1:
+            raise ValueError("interval_steps must be a positive integer")
+        interval_steps = int(interval_steps)
+        if x_init is None:
+            if self.ydim != self.xdim or not np.array_equal(self.output_matrix, np.eye(self.xdim)):
+                raise ValueError("x_init is required when tracking outputs instead of full states")
+            x_init = waypoints[0]
+        x_init = np.asarray(x_init, dtype=float).reshape(self.xdim)
+        if not np.all(np.isfinite(waypoints)) or not np.all(np.isfinite(x_init)):
+            raise ValueError("waypoints and x_init must be finite")
 
         if u_reference is None:
             u_reference = np.zeros(self.udim)
@@ -367,10 +417,7 @@ class MotionPlanner:
         X = opti.variable(self.xdim, horizon_steps + 1)
         U = opti.variable(self.udim, horizon_steps)
 
-        opti.subject_to(X[:, 0] == ca.DM(waypoints[0]))
-        #for waypoint_index in range(1, interval_count + 1):
-            #boundary_step = waypoint_index * interval_steps
-            #opti.subject_to(X[:, boundary_step] == ca.DM(waypoints[waypoint_index]))
+        opti.subject_to(X[:, 0] == ca.DM(x_init))
         
         Q = ca.DM(self.Q)
         R = ca.DM(self.R)
@@ -383,15 +430,17 @@ class MotionPlanner:
             x_next = self._nominal_rk4(x_k, u_k)
             opti.subject_to(X[:, k + 1] == x_next)
 
-            state_error = x_k - ca.DM(waypoints[k // interval_steps + 1])
+            output_error = ca.DM(self.output_matrix) @ x_k - waypoints[k // interval_steps + 1]
             input_error = u_k - u_reference_ca
-            objective += ca.mtimes([state_error.T, Q, state_error])
+            objective += ca.mtimes([output_error.T, Q, output_error])
             objective += ca.mtimes([input_error.T, R, input_error])
 
             # Apply Q_f cost at the end of each interval to encourage reaching the waypoints
             if (k + 1) % interval_steps == 0:
                 waypoint_index = (k + 1) // interval_steps
-                waypoint_error = X[:, k + 1] - ca.DM(waypoints[waypoint_index])
+                waypoint_error = (
+                    ca.DM(self.output_matrix) @ X[:, k + 1] - waypoints[waypoint_index]
+                )
                 objective += ca.mtimes([waypoint_error.T, Q_f, waypoint_error])
 
             if self.u_min is not None and self.u_max is not None:
@@ -402,8 +451,6 @@ class MotionPlanner:
                 if self.u_max is not None:
                     opti.subject_to(u_k <= ca.DM(self.u_max))
 
-        #terminal_error = X[:, horizon_steps] - ca.DM(waypoints[-1])
-        #objective += ca.mtimes([terminal_error.T, Q_f, terminal_error])
         opti.minimize(objective)
         opti.set_initial(X, x_guess)
         opti.set_initial(U, u_guess)

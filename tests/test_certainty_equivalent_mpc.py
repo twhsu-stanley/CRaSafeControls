@@ -1,13 +1,14 @@
 import unittest
 from unittest.mock import patch
 
+import casadi as ca
 import numpy as np
 from scipy.integrate import solve_ivp
 
 from motion_planner import MotionPlanner
 from olacp import OLACP
 from simulations.planar_quad.sim_planar_quad_craccm_olacp import (
-    build_waypoint_cost_guide, run_craccm_simulation,
+    build_waypoint_cost_guide, plan_nominal_trajectory, run_craccm_simulation,
 )
 from systems.planar_quad.planar_quad import PLANAR_QUAD
 
@@ -21,36 +22,44 @@ class CertaintyEquivalentMPCTests(unittest.TestCase):
             "ccm_rate": 0.2, "u_min": np.zeros(2), "u_max": 6.0 * np.ones(2),
         }
         self.system = PLANAR_QUAD(self.params)
-        self.planner = MotionPlanner(self.system, 0.01, np.eye(6), np.eye(2), np.eye(6),
-                                     np.zeros(2), 6.0 * np.ones(2))
-        self.waypoints = np.array([
-            [0.0, 5.0, -0.03, 0.0, 0.0, 0.0],
-            [0.5, 5.5, 0.02, 0.4, 0.2, 0.01],
-            [1.0, 5.0, 0.03, 0.0, 0.0, 0.0],
-        ])
+        self.output_matrix = np.eye(2, 6)
+        self.planner = MotionPlanner(
+            self.system, 0.01, 5.0 * np.eye(2), 5.0 * np.eye(2), 500.0 * np.eye(2),
+            np.zeros(2), 6.0 * np.ones(2), output_matrix=self.output_matrix,
+            Q_terminal=np.eye(2),
+        )
+        self.x_init = np.array([0.0, 5.0, -0.03, 0.0, 0.0, 0.0])
+        self.waypoints = np.array([[0.0, 5.0], [0.5, 5.5], [1.0, 5.0]])
         self.guide = build_waypoint_cost_guide(self.waypoints, 2.0)
         self.hover = self.system.mass * self.system.grav / 2 * np.ones(2)
 
-    def plan(self, start_step=0, x_init=None, horizon=4.0, a_hat=None):
+    def plan(self, start_step=0, x_init=None, horizon=4.0, a_hat=None, u_previous=None):
         return self.planner.plan_certainty_equivalent_through_waypoints(
-            self.waypoints[0] if x_init is None else x_init, self.waypoints, 200, start_step,
+            self.x_init if x_init is None else x_init, self.waypoints, 200, start_step,
             self.theta, np.zeros(2) if a_hat is None else a_hat, self.hover,
-            horizon_duration=horizon, prediction_dt=0.05, state_reference=self.guide,
+            horizon_duration=horizon, prediction_dt=0.05, output_reference=self.guide,
+            u_previous=u_previous,
         )
 
-    def test_guide_hits_all_waypoint_states_and_pads_final_state(self):
+    def test_guide_hits_position_waypoints_and_pads_endpoints(self):
         np.testing.assert_allclose(self.guide([0.0, 2.0, 4.0]).T, self.waypoints, atol=1e-14)
+        np.testing.assert_allclose(self.guide([-1.0]).ravel(), self.waypoints[0], atol=1e-14)
         np.testing.assert_allclose(self.guide([4.0, 5.0, 8.0]).T,
                                    np.repeat(self.waypoints[-1:], 3, axis=0), atol=1e-14)
 
-    def test_guide_velocities_and_angle_rate_are_kinematically_consistent(self):
-        times = np.array([0.3, 1.2, 2.3, 3.5])
-        state = self.guide(times)
-        derivative = (self.guide(times + 1e-6) - self.guide(times - 1e-6)) / 2e-6
-        inertial_vx = state[3] * np.cos(state[2]) - state[4] * np.sin(state[2])
-        inertial_vz = state[3] * np.sin(state[2]) + state[4] * np.cos(state[2])
-        np.testing.assert_allclose(derivative[:2], [inertial_vx, inertial_vz], atol=1e-8)
-        np.testing.assert_allclose(derivative[2], state[5], atol=1e-8)
+    def test_guide_is_smooth_at_intermediate_waypoints_without_forcing_a_stop(self):
+        step = 1e-4
+        position = self.guide([2.0]).ravel()
+        left_velocity = (position - self.guide([2.0 - step]).ravel()) / step
+        right_velocity = (self.guide([2.0 + step]).ravel() - position) / step
+        np.testing.assert_allclose(left_velocity, right_velocity, atol=1e-4)
+        self.assertGreater(np.linalg.norm(left_velocity), 0.2)
+        self.assertEqual(self.guide([0.3, 1.2, 2.3]).shape, (2, 3))
+
+    def test_two_waypoint_guide_is_linear(self):
+        guide = build_waypoint_cost_guide(np.array([[0.0, 5.0], [1.0, 6.0]]), 2.0)
+        np.testing.assert_allclose(guide([0.0, 1.0, 2.0]).T,
+                                   [[0.0, 5.0], [0.5, 5.5], [1.0, 6.0]])
 
     def test_fixed_size_problem_is_reused_and_all_upcoming_waypoints_are_penalized(self):
         X, U = self.plan()
@@ -66,13 +75,16 @@ class CertaintyEquivalentMPCTests(unittest.TestCase):
     def test_past_waypoints_are_excluded_and_size_stays_fixed_near_mission_end(self):
         self.plan()
         problem = self.planner._mpc_problem
-        X, U = self.plan(220, self.waypoints[1])
+        x_init = self.x_init.copy()
+        x_init[:2] = self.waypoints[1]
+        X, U = self.plan(220, x_init)
         self.assertIs(self.planner._mpc_problem, problem)
         self.assertEqual(self.planner.last_mpc_stats["waypoint_indices"], [2])
-        X, U = self.plan(390, self.waypoints[-1])
+        x_init[:2] = self.waypoints[-1]
+        X, U = self.plan(390, x_init)
         self.assertEqual(X.shape, (6, 81))
         self.assertEqual(U.shape, (2, 80))
-        reference = problem["opti"].value(problem["parameters"]["state_reference"])
+        reference = problem["opti"].value(problem["parameters"]["output_reference"])
         np.testing.assert_allclose(reference[:, -1], self.waypoints[-1], atol=1e-14)
 
     def test_off_grid_waypoint_cost_interpolates_at_the_original_deadline(self):
@@ -93,13 +105,84 @@ class CertaintyEquivalentMPCTests(unittest.TestCase):
                                                               a_hat)
             np.testing.assert_allclose(X[:, k + 1], np.asarray(predicted).ravel(), atol=1e-7)
         self.assertTrue(np.all(U >= -1e-7) and np.all(U <= 6.0 + 1e-7))
+        np.testing.assert_allclose(X[:, 0], self.x_init, atol=1e-12)
 
-    def test_nominal_planning_still_works(self):
-        X, U = self.planner.plan(self.waypoints[0], self.waypoints[0], 2,
-                                 np.repeat(self.waypoints[0, :, None], 3, axis=1),
-                                 np.repeat(self.hover[:, None], 2, axis=1), self.hover)
+    def test_cost_uses_discrete_output_weights_and_input_increments(self):
+        self.planner.S = np.diag([2.0, 3.0])
+        u_previous = self.hover + np.array([0.2, -0.1])
+        X, U = self.plan(u_previous=u_previous)
+        problem = self.planner._mpc_problem
+        errors = self.output_matrix @ X - self.guide(0.05 * np.arange(81))
+        input_errors = U - self.hover[:, None]
+        increments = U - np.column_stack((u_previous, U[:, :-1]))
+        expected = np.sum(errors[:, :-1] * (self.planner.Q @ errors[:, :-1]))
+        expected += np.sum(input_errors * (self.planner.R @ input_errors))
+        expected += np.sum(increments * (self.planner.S @ increments))
+        waypoint_errors = self.output_matrix @ X[:, [40, 80]] - self.waypoints[1:].T
+        expected += np.sum(waypoint_errors * (self.planner.Q_f @ waypoint_errors))
+        expected += errors[:, -1] @ self.planner.Q_terminal @ errors[:, -1]
+        self.assertAlmostEqual(float(problem["opti"].value(problem["opti"].f)), expected, places=9)
+        objective = ca.Function(
+            "output_cost", [problem["X"], problem["U"], problem["opti"].p], [problem["opti"].f]
+        )
+        changed_states = X.copy()
+        changed_states[2:, :] += np.arange(4)[:, None] + 1.0
+        changed_cost = objective(changed_states, U, problem["opti"].value(problem["opti"].p))
+        self.assertAlmostEqual(float(changed_cost), expected, places=9)
+        self.plan(20, X[:, 4], u_previous=U[:, 3])
+        self.assertIs(self.planner._mpc_problem, problem)
+        previous = problem["opti"].value(problem["parameters"]["u_previous"])
+        np.testing.assert_allclose(previous, U[:, 3])
+
+    def test_full_state_nominal_planning_still_works(self):
+        planner = MotionPlanner(self.system, 0.01, np.eye(6), np.eye(2), np.eye(6))
+        x_guess = np.repeat(self.x_init[:, None], 3, axis=1)
+        u_guess = np.repeat(self.hover[:, None], 2, axis=1)
+        X, U = planner.plan_nominal_towards_goal(
+            self.x_init, self.x_init, 2, x_guess, u_guess, self.hover,
+        )
         self.assertEqual(X.shape, (6, 3))
         self.assertEqual(U.shape, (2, 2))
+        X, U = planner.plan_nominal_through_waypoints(
+            np.array([self.x_init, self.x_init]), 2, x_guess, u_guess, self.hover,
+        )
+        self.assertEqual(X.shape, (6, 3))
+        self.assertEqual(U.shape, (2, 2))
+
+    def test_position_only_nominal_helper_uses_a_full_initial_state(self):
+        config = {
+            "K": 1, "I_length": 20, "dt": 0.01, "interval_duration": 0.2,
+            "nominal_waypoints": np.array([[0.0, 5.0], [0.02, 5.01]]),
+            "reference_initial_state": self.x_init,
+            "motion_planner_Q": np.eye(2), "motion_planner_R": np.eye(2),
+            "motion_planner_Q_f": np.eye(2),
+        }
+        trajectory = plan_nominal_trajectory(self.system, config, plot=False)
+        self.assertEqual(trajectory["x_d"].shape, (6, 21))
+        self.assertEqual(trajectory["waypoints"].shape, (2, 2))
+        np.testing.assert_allclose(trajectory["x_d"][:, 0], self.x_init, atol=1e-12)
+
+    def test_invalid_output_shapes_and_weights_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "output_matrix"):
+            MotionPlanner(self.system, 0.01, np.eye(2), np.eye(2), np.eye(2),
+                          output_matrix=np.eye(2))
+        with self.assertRaisesRegex(ValueError, "Q must be"):
+            MotionPlanner(self.system, 0.01, np.eye(6), np.eye(2), np.eye(2),
+                          output_matrix=self.output_matrix)
+        with self.assertRaisesRegex(ValueError, "positive semidefinite"):
+            MotionPlanner(self.system, 0.01, np.eye(2), np.eye(2), np.eye(2),
+                          output_matrix=self.output_matrix, S=-np.eye(2))
+        with self.assertRaisesRegex(ValueError, "ydim"):
+            self.planner.plan_certainty_equivalent_through_waypoints(
+                self.x_init, np.zeros((3, 6)), 200, 0, self.theta, np.zeros(2),
+            )
+        with self.assertRaisesRegex(ValueError, "x_init is required"):
+            self.planner.plan_nominal_through_waypoints(self.waypoints, 2, None, None)
+        with self.assertRaisesRegex(ValueError, "output_reference"):
+            self.planner.plan_certainty_equivalent_through_waypoints(
+                self.x_init, self.waypoints, 200, 0, self.theta, np.zeros(2),
+                output_reference=lambda times: np.zeros((6, len(times))),
+            )
 
     def test_invalid_prediction_settings_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "integer multiple"):
@@ -138,15 +221,18 @@ class CertaintyEquivalentMPCTests(unittest.TestCase):
     def test_simulation_executes_input_prefix_and_integrates_live_adaptive_reference(self):
         params = {**self.params, "use_cp": False, "use_adaptive": True}
         system = PLANAR_QUAD(params)
-        waypoints = np.repeat(np.array([[0.0, 5.0, 0.0, 0.0, 0.0, 0.0]]), 3, axis=0)
+        waypoints = np.repeat(np.array([[0.0, 5.0]]), 3, axis=0)
+        x_init = np.array([0.0, 5.0, 0.0, 0.0, 0.0, 0.0])
         learner = OLACP(np.full(80, 0.2), N_cal=80, Theta_init=self.theta,
                         representation_period=5, representation_lr=1e-3,
                         Y_Theta=system.Y_Theta,
                         representation_loss_gradient=system.representation_loss_gradient)
         config = {
             "K": 2, "dt": 0.01, "I_length": 20, "interval_duration": 0.2,
-            "nominal_waypoints": waypoints, "motion_planner_Q": np.eye(6),
-            "motion_planner_R": np.eye(2), "motion_planner_Q_f": np.eye(6),
+            "nominal_waypoints": waypoints, "motion_planner_Q": np.eye(2),
+            "motion_planner_R": np.eye(2), "motion_planner_Q_f": np.eye(2),
+            "motion_planner_Q_terminal": np.eye(2), "motion_planner_S": np.zeros((2, 2)),
+            "reference_initial_state": x_init,
             "mpc_horizon_duration": 0.4, "mpc_prediction_dt": 0.05,
             "mpc_replan_interval": 0.1, "tracking_initial_offset": np.zeros(6),
             "rho_divergence_threshold": 1e6, "x_norm_divergence_threshold": 10.0,
@@ -160,7 +246,9 @@ class CertaintyEquivalentMPCTests(unittest.TestCase):
 
         def fake_plan(planner, x_init, points, interval_steps, start_step, theta, a_hat,
                       u_reference, **kwargs):
-            calls.append((start_step, x_init.copy(), a_hat.copy()))
+            calls.append((start_step, x_init.copy(), a_hat.copy(), kwargs["u_previous"].copy()))
+            self.assertEqual(points.shape, (3, 2))
+            self.assertEqual(kwargs["output_reference"]([0.0, 0.1]).shape, (2, 2))
             planner.last_mpc_stats = {"horizon_steps": 8, "iterations": 0}
             return np.zeros((6, 9)), input_sequence.copy()
 
@@ -176,9 +264,11 @@ class CertaintyEquivalentMPCTests(unittest.TestCase):
         self.assertEqual([call[0] for call in calls], [0, 10, 20, 30])
         self.assertEqual(result["metrics"]["mpc_replan_count"], 4)
         np.testing.assert_array_equal(np.flatnonzero(result["mpc_replan_hist"]), [0, 10, 20, 30])
-        for step, initial_state, initial_a_hat in calls:
+        for step, initial_state, initial_a_hat, u_previous in calls:
             np.testing.assert_allclose(initial_state, result["x_d_hist"][step])
             np.testing.assert_allclose(initial_a_hat, adaptation * step * 0.01, atol=1e-12)
+            expected_previous = result["u_d_hist"][step - 1] if step else self.hover
+            np.testing.assert_allclose(u_previous, expected_previous)
         for step in range(40):
             expected_u = input_sequence[:, (step % 10) // 5]
             np.testing.assert_allclose(result["u_d_hist"][step], expected_u)

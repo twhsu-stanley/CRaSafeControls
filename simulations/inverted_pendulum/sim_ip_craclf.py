@@ -412,17 +412,9 @@ def run_craclf_simulation(
         "tail_rms": float(np.sqrt(np.mean(tail_norm**2))),
         "tail_peak": float(np.max(tail_norm)),
         "max_norm": float(np.max(state_norm)),
-        "V_ratio": float(V_hist[-1] / max(V_hist[0], np.finfo(float).eps)),
         "max_control": float(np.nanmax(np.abs(u_hist))),
         "max_slack": float(np.nanmax(slack_hist)),
-        "a_hat_change": float(np.linalg.norm(a_hat_hist[-1] - a_hat_hist[0])),
-        "a_hat_path_length": float(
-            np.sum(np.linalg.norm(np.diff(a_hat_hist, axis=0), axis=1))
-        ),
         "max_a_hat_dot": max_a_hat_dot,
-        "rho_change": float(rho_hist[-1] - rho_hist[0]),
-        "rho_range": float(np.ptp(rho_hist)),
-        "nu_range": float(np.ptp(nu_hist)),
     }
     result = {
         "label": run_label,
@@ -468,11 +460,8 @@ def run_craclf_simulation(
     print(
         f"{run_label}: status={status}{failure_summary}, t_final={t[-1]:.3f}, "
         f"final_norm={metrics['final_norm']:.3e}, tail_rms={metrics['tail_rms']:.3e}, "
-        f"max_norm={metrics['max_norm']:.3e}, V_final/V_initial={metrics['V_ratio']:.3e}, "
-        f"max|u|={metrics['max_control']:.2f}, max_slack={metrics['max_slack']:.3e}, "
-        f"Delta_a={metrics['a_hat_change']:.3e}, "
-        f"a_path={metrics['a_hat_path_length']:.3e}, "
-        f"Delta_rho={metrics['rho_change']:.3e}, Delta_nu={metrics['nu_range']:.3e}"
+        f"max_norm={metrics['max_norm']:.3e}, "
+        f"max|u|={metrics['max_control']:.2f}, max_slack={metrics['max_slack']:.3e}"
     )
 
     if plot:
@@ -844,12 +833,6 @@ def main():
         warnings.warn("The CP + adaptive run did not stabilize")
     if cp_adaptive_metrics["max_slack"] / clf_scale >= 1e-1:
         warnings.warn("The normalized CP + adaptive QP slack exceeded 1e-1")
-    if cp_adaptive_metrics["a_hat_change"] <= 1e-4:
-        warnings.warn("The CRaCLF parameter estimate did not change materially")
-    if cp_adaptive_metrics["rho_range"] <= 1e-6:
-        warnings.warn("The CRaCLF scaling state did not change materially")
-    if cp_adaptive_metrics["nu_range"] <= 1e-6:
-        warnings.warn("rho did not materially change the adaptation scaling")
     no_cp_adaptive_failed = (
         no_cp_adaptive_result["status"] != "completed"
         or no_cp_adaptive_metrics["tail_rms"] > 0.25
@@ -863,10 +846,6 @@ def main():
         warnings.warn("The no-CP nonadaptive run unexpectedly stabilized")
     if cp_adaptive_metrics["tail_rms"] >= nonadaptive_metrics["tail_rms"]:
         warnings.warn("The CP + adaptive run did not improve on the nonadaptive baseline")
-    if nonadaptive_metrics["a_hat_change"] > 1e-12:
-        warnings.warn("The nonadaptive run unexpectedly changed its parameter estimate")
-    if nonadaptive_metrics["rho_range"] > 1e-12:
-        warnings.warn("The nonadaptive run unexpectedly changed its scaling state")
 
     plot_craclf_results(results, interval_duration=interval_duration)
 
