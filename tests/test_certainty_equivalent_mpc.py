@@ -293,7 +293,7 @@ class CertaintyEquivalentMPCTests(unittest.TestCase):
             "K": 2, "dt": 0.01, "I_length": 20, "interval_duration": 0.2,
             "nominal_waypoints": waypoints, "motion_planner_Q": np.eye(2),
             "motion_planner_R": np.eye(2),
-            "motion_planner_Q_terminal": np.eye(2), "motion_planner_S": np.zeros((2, 2)),
+            "motion_planner_Q_terminal": np.eye(2),
             "reference_initial_state": x_init,
             "mpc_horizon_duration": 0.4, "mpc_prediction_dt": 0.05,
             "mpc_replan_interval": 0.1, "tracking_initial_offset": np.zeros(6),
@@ -308,6 +308,7 @@ class CertaintyEquivalentMPCTests(unittest.TestCase):
 
         def fake_plan(planner, x_init, points, interval_steps, start_step, theta, a_hat,
                       u_reference, **kwargs):
+            np.testing.assert_array_equal(planner.S, np.zeros((2, 2)))
             calls.append((
                 start_step, x_init.copy(), a_hat.copy(), kwargs["u_previous"].copy(), theta.copy(),
             ))

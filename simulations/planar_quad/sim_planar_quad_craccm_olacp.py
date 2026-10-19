@@ -292,7 +292,6 @@ def plan_nominal_trajectory(system, config, plot=True):
         u_min=np.asarray(system.params["u_min"], dtype=float).reshape(system.udim),
         u_max=np.asarray(system.params["u_max"], dtype=float).reshape(system.udim),
         output_matrix=np.eye(2, system.xdim),
-        S=config.get("motion_planner_S"),
     )
     hover_input = 0.5 * system.mass * system.grav * np.ones(system.udim)
     u_guess = np.repeat(hover_input[:, None], horizon_steps, axis=1)
@@ -450,7 +449,6 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
         u_max=np.asarray(system.params["u_max"], dtype=float).reshape(system.udim),
         output_matrix=np.eye(2, system.xdim),
         Q_terminal=config["motion_planner_Q_terminal"],
-        S=config["motion_planner_S"],
     )
     hover_input = 0.5 * system.mass * system.grav * np.ones(system.udim)
     rho_index = system.xdim + system.adim
@@ -1044,7 +1042,6 @@ def main():
         "motion_planner_Q": np.diag([5.0, 50.0]),
         "motion_planner_R": 50.0 * np.eye(PLANAR_QUAD.udim),
         "motion_planner_Q_terminal": np.diag([1.0, 10.0]),
-        "motion_planner_S": np.zeros((PLANAR_QUAD.udim, PLANAR_QUAD.udim)),
         "mpc_horizon_duration": 4.0,
         "mpc_prediction_dt": 0.05,
         "mpc_replan_interval": 0.2,
