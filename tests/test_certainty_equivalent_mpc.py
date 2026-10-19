@@ -264,7 +264,7 @@ class CertaintyEquivalentMPCTests(unittest.TestCase):
         actual = planner._certainty_equivalent_dynamics(X[:, 0], U[:, 0], theta, a_hat)
         np.testing.assert_allclose(np.asarray(actual).ravel(), expected)
 
-    def test_simulation_rejects_misaligned_representation_and_replanning_periods(self):
+    def test_simulation_rejects_misaligned_timing(self):
         system = PLANAR_QUAD({**self.params, "use_cp": False, "use_adaptive": True})
         learner = OLACP(
             np.full(80, 0.2), N_cal=80, Theta_init=self.theta, representation_period=5,
@@ -278,8 +278,15 @@ class CertaintyEquivalentMPCTests(unittest.TestCase):
             "B": 3,  # This would align; the learner's actual period of five does not.
         }
         with patch.object(MotionPlanner, "plan_certainty_equivalent_through_waypoints") as plan:
-            with self.assertRaisesRegex(ValueError, "representation update period"):
-                run_craccm_simulation(system, learner, config, False, True, "test")
+            for mpc_dt, message in (
+                (0.015, "mpc_dt must be an integer multiple of simulation dt"),
+                (0.04, "mpc_replan_interval must be an integer multiple of mpc_dt"),
+                (0.05, "representation update period"),
+            ):
+                with self.subTest(mpc_dt=mpc_dt):
+                    config["mpc_dt"] = mpc_dt
+                    with self.assertRaisesRegex(ValueError, message):
+                        run_craccm_simulation(system, learner, config, False, True, "test")
             plan.assert_not_called()
 
     def test_simulation_replans_after_representation_updates_and_integrates_live_reference(self):

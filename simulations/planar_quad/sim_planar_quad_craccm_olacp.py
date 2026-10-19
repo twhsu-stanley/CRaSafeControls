@@ -428,11 +428,13 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
         raise ValueError("mpc_dt must be finite and at least the simulation dt")
     if not np.isfinite(mpc_horizon) or mpc_horizon < replan_interval:
         raise ValueError("mpc_horizon must cover at least one replan interval")
-    prediction_stride = int(round(mpc_dt / dt))
     replan_steps = int(round(replan_interval / dt))
-    if not np.isclose(prediction_stride * dt, mpc_dt):
+    if not np.isclose(int(round(mpc_dt / dt)) * dt, mpc_dt):
         raise ValueError("mpc_dt must be an integer multiple of simulation dt")
-    if not np.isclose(replan_steps * dt, replan_interval) or replan_steps % prediction_stride:
+    if (
+        not np.isclose(replan_steps * dt, replan_interval)
+        or replan_steps % int(round(mpc_dt / dt))
+    ):
         raise ValueError("mpc_replan_interval must be an integer multiple of mpc_dt")
     # Align representation updates with the existing replanning grid.
     if (online_olacp.representation_period * I_length) % replan_steps:
@@ -562,7 +564,7 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
             mpc_iterations_hist[sample_index] = planner.last_mpc_stats["iterations"]
             mpc_replan_hist[sample_index] = True
         mpc_horizon_steps_hist[sample_index] = planner.last_mpc_stats["horizon_steps"]
-        input_index = (sample_index - plan_start_step) // prediction_stride
+        input_index = (sample_index - plan_start_step) // int(round(mpc_dt / dt))
         u_d = predicted_inputs[:, input_index].copy()
         reference_inputs.append(u_d.copy())
         x_hist[sample_index] = x
