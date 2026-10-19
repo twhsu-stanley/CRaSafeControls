@@ -132,14 +132,14 @@ class MotionPlanner:
         terminal_error = outputs[:, -1] - output_reference[:, -1]
         return objective + ca.mtimes([terminal_error.T, ca.DM(self.Q_terminal), terminal_error])
 
-    def _build_certainty_equivalent_mpc_problem(self, horizon_steps, prediction_dt):
+    def _build_certainty_equivalent_mpc_problem(self, horizon_steps, mpc_dt):
         """Build a reusable fixed-size problem with model and reference parameters."""
         if self._certainty_equivalent_dynamics is None:
             self._certainty_equivalent_dynamics = (
                 self._build_certainty_equivalent_dynamics_function()
             )
         self._certainty_equivalent_rk4 = self._build_rk4_function(
-            "certainty_equivalent_rk4", self._certainty_equivalent_dynamics, prediction_dt
+            "certainty_equivalent_rk4", self._certainty_equivalent_dynamics, mpc_dt
         )
         opti = ca.Opti()
         X = opti.variable(self.xdim, horizon_steps + 1)
@@ -171,12 +171,12 @@ class MotionPlanner:
         opti.solver("ipopt", {"expand": False, **self.ipopt_options})
         return {
             "opti": opti, "X": X, "U": U, "parameters": parameters,
-            "horizon_steps": horizon_steps, "prediction_dt": prediction_dt,
+            "horizon_steps": horizon_steps, "mpc_dt": mpc_dt,
         }
 
     def plan_certainty_equivalent_through_waypoints(
         self, x_init, waypoints, interval_steps, start_step, theta, a_hat, u_reference=None,
-        *, horizon_duration=4.0, prediction_dt=None, output_reference=None, u_previous=None,
+        *, mpc_horizon=4.0, mpc_dt=None, output_reference=None, u_previous=None,
     ):
         """Replan a fixed-length certainty-equivalent horizon from the desired state.
 
@@ -185,6 +185,7 @@ class MotionPlanner:
         desired state and is held at the final waypoint beyond the mission end.
         Theta and a_hat are frozen during prediction and refreshed at each replan.
         All weights are discrete-time weights; no time-step multiplier is applied.
+        mpc_horizon and mpc_dt are measured in seconds.
         """
         interval_steps_int, start_step_int = int(interval_steps), int(start_step)
         if interval_steps_int != interval_steps or interval_steps_int < 1:
@@ -197,16 +198,16 @@ class MotionPlanner:
             raise ValueError("waypoints must have shape (K + 1, ydim), with K >= 1")
         if start_step >= (len(waypoints) - 1) * interval_steps:
             raise ValueError("start_step must precede the last waypoint time")
-        prediction_dt = self.dt if prediction_dt is None else float(prediction_dt)
-        horizon_duration = float(horizon_duration)
+        mpc_dt = self.dt if mpc_dt is None else float(mpc_dt)
+        mpc_horizon = float(mpc_horizon)
         interval_duration = interval_steps * self.dt
-        if not np.isfinite(prediction_dt) or prediction_dt <= 0.0:
-            raise ValueError("prediction_dt must be finite and positive")
-        if not np.isfinite(horizon_duration) or horizon_duration < prediction_dt:
-            raise ValueError("horizon_duration must be finite and at least prediction_dt")
-        horizon_steps = int(round(horizon_duration / prediction_dt))
-        if not np.isclose(horizon_steps * prediction_dt, horizon_duration):
-            raise ValueError("horizon_duration must be an integer multiple of prediction_dt")
+        if not np.isfinite(mpc_dt) or mpc_dt <= 0.0:
+            raise ValueError("mpc_dt must be finite and positive")
+        if not np.isfinite(mpc_horizon) or mpc_horizon < mpc_dt:
+            raise ValueError("mpc_horizon must be finite and at least mpc_dt")
+        horizon_steps = int(round(mpc_horizon / mpc_dt))
+        if not np.isclose(horizon_steps * mpc_dt, mpc_horizon):
+            raise ValueError("mpc_horizon must be an integer multiple of mpc_dt")
         x_init = np.asarray(x_init, dtype=float).reshape(self.xdim)
         theta = np.asarray(theta, dtype=float)
         if theta.shape != self.system.theta_shape:
@@ -222,7 +223,7 @@ class MotionPlanner:
             raise ValueError("MPC states, parameters, and references must be finite")
 
         start_time = start_step * self.dt
-        prediction_times = start_time + prediction_dt * np.arange(horizon_steps + 1)
+        prediction_times = start_time + mpc_dt * np.arange(horizon_steps + 1)
         waypoint_times = interval_duration * np.arange(len(waypoints))
         if output_reference is None:
             guide = np.array(
@@ -235,10 +236,10 @@ class MotionPlanner:
                 "output_reference must return a finite (ydim, horizon_steps + 1) array"
             )
         problem = self._mpc_problem
-        if problem is None or (problem["horizon_steps"], problem["prediction_dt"]) != (
-            horizon_steps, prediction_dt
+        if problem is None or (problem["horizon_steps"], problem["mpc_dt"]) != (
+            horizon_steps, mpc_dt
         ):
-            problem = self._build_certainty_equivalent_mpc_problem(horizon_steps, prediction_dt)
+            problem = self._build_certainty_equivalent_mpc_problem(horizon_steps, mpc_dt)
             self._mpc_problem = problem
             self._mpc_warm_start = None
         opti, X, U = problem["opti"], problem["X"], problem["U"]
@@ -252,7 +253,7 @@ class MotionPlanner:
         warm_start = self._mpc_warm_start
         if warm_start is not None:
             previous_time, previous_waypoints, previous_interval, previous_u = warm_start
-            shift_float = (start_time - previous_time) / prediction_dt
+            shift_float = (start_time - previous_time) / mpc_dt
             shift = int(round(shift_float))
             compatible = previous_interval == interval_duration
             compatible &= np.array_equal(previous_waypoints, waypoints)
@@ -279,7 +280,7 @@ class MotionPlanner:
         stats = solution.stats()
         self.last_mpc_stats = {
             "horizon_steps": horizon_steps,
-            "prediction_dt": prediction_dt,
+            "mpc_dt": mpc_dt,
             "iterations": int(stats["iter_count"]),
             "return_status": stats["return_status"],
         }

@@ -37,7 +37,7 @@ class CertaintyEquivalentMPCTests(unittest.TestCase):
         return self.planner.plan_certainty_equivalent_through_waypoints(
             self.x_init if x_init is None else x_init, self.waypoints, 200, start_step,
             self.theta, np.zeros(2) if a_hat is None else a_hat, self.hover,
-            horizon_duration=horizon, prediction_dt=0.05, output_reference=self.guide,
+            mpc_horizon=horizon, mpc_dt=0.05, output_reference=self.guide,
             u_previous=u_previous,
         )
 
@@ -66,6 +66,8 @@ class CertaintyEquivalentMPCTests(unittest.TestCase):
         problem = self.planner._mpc_problem
         self.assertEqual(X.shape, (6, 81))
         self.assertEqual(U.shape, (2, 80))
+        self.assertEqual(problem["mpc_dt"], 0.05)
+        self.assertEqual(self.planner.last_mpc_stats["mpc_dt"], 0.05)
         self.assertEqual(set(problem["parameters"]), {
             "x_init", "theta", "a_hat", "u_reference", "u_previous", "output_reference",
         })
@@ -142,7 +144,7 @@ class CertaintyEquivalentMPCTests(unittest.TestCase):
             with self.subTest(custom_guide=guide is not None):
                 X_ce, U_ce = planner.plan_certainty_equivalent_through_waypoints(
                     self.x_init, self.waypoints, 40, 0, self.theta, np.zeros(2), self.hover,
-                    horizon_duration=4.0, prediction_dt=0.05, output_reference=guide,
+                    mpc_horizon=4.0, mpc_dt=0.05, output_reference=guide,
                     u_previous=u_previous,
                 )
                 X_nominal, U_nominal = planner.plan_nominal_through_waypoints(
@@ -255,7 +257,7 @@ class CertaintyEquivalentMPCTests(unittest.TestCase):
         waypoints = np.array([[0.1, 0.0], [0.2, 0.1]])
         X, U = planner.plan_certainty_equivalent_through_waypoints(
             waypoints[0], waypoints, 200, 0, theta, a_hat,
-            horizon_duration=2.0, prediction_dt=0.05,
+            mpc_horizon=2.0, mpc_dt=0.05,
         )
         expected = system.f(X[:, 0]) + system.g(X[:, 0]) @ U[:, 0]
         expected += system.Y_Theta(X[:, 0], theta) @ a_hat
@@ -272,7 +274,7 @@ class CertaintyEquivalentMPCTests(unittest.TestCase):
         config = {
             "K": 2, "dt": 0.01, "I_length": 200, "interval_duration": 2.0,
             "nominal_waypoints": self.waypoints, "reference_initial_state": self.x_init,
-            "mpc_prediction_dt": 0.05, "mpc_replan_interval": 0.3,
+            "mpc_dt": 0.05, "mpc_replan_interval": 0.3,
             "B": 3,  # This would align; the learner's actual period of five does not.
         }
         with patch.object(MotionPlanner, "plan_certainty_equivalent_through_waypoints") as plan:
@@ -295,7 +297,7 @@ class CertaintyEquivalentMPCTests(unittest.TestCase):
             "motion_planner_R": np.eye(2),
             "motion_planner_Q_terminal": np.eye(2),
             "reference_initial_state": x_init,
-            "mpc_horizon_duration": 0.4, "mpc_prediction_dt": 0.05,
+            "mpc_horizon": 0.4, "mpc_dt": 0.05,
             "mpc_replan_interval": 0.1, "tracking_initial_offset": np.zeros(6),
             "rho_divergence_threshold": 1e6, "x_norm_divergence_threshold": 10.0,
             "geodesic_degree": 2, "geodesic_nodes": 8,
@@ -342,6 +344,8 @@ class CertaintyEquivalentMPCTests(unittest.TestCase):
             np.testing.assert_allclose(result["u_d_hist"][step], expected_u)
         reference = result["desired_trajectory"]["x_d"].T
         self.assertEqual(reference.shape, (41, 6))
+        self.assertEqual(result["desired_trajectory"]["mpc_dt"], config["mpc_dt"])
+        self.assertEqual(result["desired_trajectory"]["mpc_horizon"], config["mpc_horizon"])
         for step in range(40):
             t = step * 0.01
             expected_u = result["u_d_hist"][step]

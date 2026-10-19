@@ -419,21 +419,21 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
         raise ValueError("reference_initial_state must be finite and start at the first waypoint")
     if K < 1 or I_length < 1 or not np.isclose(I_length * dt, interval_duration):
         raise ValueError("K and I_length must be positive and match interval_duration / dt")
-    horizon_duration = float(config.get("mpc_horizon_duration", 4.0))
-    prediction_dt = float(config.get("mpc_prediction_dt", 0.05))
+    mpc_horizon = float(config.get("mpc_horizon", 4.0))
+    mpc_dt = float(config.get("mpc_dt", 0.05))
     replan_interval = float(config.get("mpc_replan_interval", 0.2))
     if not np.isfinite(replan_interval) or not 0.1 <= replan_interval <= 0.5:
         raise ValueError("mpc_replan_interval must lie between 0.1 and 0.5 seconds")
-    if not np.isfinite(prediction_dt) or prediction_dt < dt:
-        raise ValueError("mpc_prediction_dt must be finite and at least the simulation dt")
-    if not np.isfinite(horizon_duration) or horizon_duration < replan_interval:
-        raise ValueError("mpc_horizon_duration must cover at least one replan interval")
-    prediction_stride = int(round(prediction_dt / dt))
+    if not np.isfinite(mpc_dt) or mpc_dt < dt:
+        raise ValueError("mpc_dt must be finite and at least the simulation dt")
+    if not np.isfinite(mpc_horizon) or mpc_horizon < replan_interval:
+        raise ValueError("mpc_horizon must cover at least one replan interval")
+    prediction_stride = int(round(mpc_dt / dt))
     replan_steps = int(round(replan_interval / dt))
-    if not np.isclose(prediction_stride * dt, prediction_dt):
-        raise ValueError("mpc_prediction_dt must be an integer multiple of simulation dt")
+    if not np.isclose(prediction_stride * dt, mpc_dt):
+        raise ValueError("mpc_dt must be an integer multiple of simulation dt")
     if not np.isclose(replan_steps * dt, replan_interval) or replan_steps % prediction_stride:
-        raise ValueError("mpc_replan_interval must be an integer multiple of prediction dt")
+        raise ValueError("mpc_replan_interval must be an integer multiple of mpc_dt")
     # Align representation updates with the existing replanning grid.
     if (online_olacp.representation_period * I_length) % replan_steps:
         raise ValueError(
@@ -552,7 +552,7 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
             try:
                 _, predicted_inputs = planner.plan_certainty_equivalent_through_waypoints(
                     x_d, waypoints, I_length, sample_index, system.Theta_hat, model_a_hat,
-                    hover_input, horizon_duration=horizon_duration, prediction_dt=prediction_dt,
+                    hover_input, mpc_horizon=mpc_horizon, mpc_dt=mpc_dt,
                     output_reference=waypoint_cost_guide, u_previous=u_d,
                 )
             except RuntimeError as error:
@@ -702,8 +702,8 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
         "u_d": reference_inputs,
         "waypoints": waypoints.copy(),
         "waypoint_times": waypoint_times,
-        "mpc_horizon_duration": horizon_duration,
-        "mpc_prediction_dt": prediction_dt,
+        "mpc_horizon": mpc_horizon,
+        "mpc_dt": mpc_dt,
         "mpc_replan_interval": replan_interval,
     }
 
@@ -1042,8 +1042,8 @@ def main():
         "motion_planner_Q": np.diag([5.0, 50.0]),
         "motion_planner_R": 50.0 * np.eye(PLANAR_QUAD.udim),
         "motion_planner_Q_terminal": np.diag([1.0, 10.0]),
-        "mpc_horizon_duration": 4.0,
-        "mpc_prediction_dt": 0.05,
+        "mpc_horizon": 4.0,
+        "mpc_dt": 0.05,
         "mpc_replan_interval": 0.2,
         "tracking_initial_offset": np.zeros(PLANAR_QUAD.xdim),
         "x_norm_divergence_threshold": 10.0,
