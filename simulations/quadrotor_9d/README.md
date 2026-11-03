@@ -1,126 +1,163 @@
-# 9D quadrotor: 코드 읽기와 실행
+# 9D Quadrotor
 
-기준 branch는 `adaptive_reference_trajectory`입니다. 공통 controller, MPC,
-GeodesicSolver, OLACP는 branch의 구현을 그대로 사용합니다.
+Compare four controllers using the shared CE-MPC, CRaCCM and OLACP implementations.
+Simulation learns the uncertainty representation with a fixed offline CCM from
+[NeuralCCM](../../systems/quadrotor_9d/NeuralCCM/README.md) or
+[LMICCM](../../systems/quadrotor_9d/LMICCM/README.md).
 
-## 읽는 순서
+## Files
 
-| 순서 | 파일 | 확인할 내용 |
-| --- | --- | --- |
-| 1 | [run_example.py](run_example.py) | 설정, metric 선택, Theta 사전학습/보정, 네 조건 실행 |
-| 2 | [reference.py](reference.py) | 위치 waypoint, 별도 초기 기준 상태, natural spline, 위치 비용 |
-| 3 | [simulation.py](simulation.py) | MPC 재계획, 입력 유지, plant·적응·기준 상태 결합 적분 |
-| 4 | [learning.py](learning.py) | 관측 수집, Theta 학습, CP 보정, 온라인 Θ 설치 |
-| 5 | [quadrotor_9d.py](../../systems/quadrotor_9d/quadrotor_9d.py) | f, g, Psi, Y_Theta, W와 미분 연결 |
-| 별도 | [results.py](results.py) | 평가 수치, 파일 저장, 그래프 |
-
-실제 제어식은 [control_affine_system.py](../../systems/control_affine_system.py)의
-`ctrl_craccm`/`adaptation_craccm`, 예측·비용·제약은
-[motion_planner.py](../../motion_planner.py)의 `_tracking_cost`,
-`_build_certainty_equivalent_mpc_problem`, `plan_certainty_equivalent_through_waypoints`에 있습니다.
-실제 외란은 [nonlinear_uncertainty.py](../../systems/quadrotor_9d/nonlinear_uncertainty.py)에서
-plant에만 더하며, MPC/controller가 실제 외란 함수를 직접 사용하지 않습니다.
-
-## 기준 생성: 문단과 코드의 대응
-
-경로는 `position waypoints -> natural spline cost guide -> CE-MPC inputs -> CE reference ODE`입니다.
-Spline은 비용의 위치 guide이며, 실제 기준 상태 x_d는 ODE의 적분 결과입니다.
-
-| 문단의 조건 | 9D 구현 |
+| File | Role |
 | --- | --- |
-| p_i^wp, T_i=i|I| | `reference.DEFAULT_WAYPOINTS` 또는 `--waypoints` JSON, `WaypointReference.times` |
-| natural cubic spline | `WaypointReference.spline`, `bc_type="natural"` |
-| 위치 선택 C_p | `make_planner`: `[I_3,0]`, 3×9 |
-| 별도 완전 초기 상태 x_d,0 | `--initial-reference`의 9개 값; 첫 waypoint 위치와 일치 검사 |
-| 중간 속도/자세를 지정하지 않음 | waypoint와 guide는 위치 3개만 포함 |
-| running/terminal 위치 비용, hover 입력 비용 | Q=8I_3, P=60I_3, R=.03I_4, 이산시간 가중치 |
-| S=0 | `make_planner`에서 명시적으로 4×4 영행렬 |
-| z_0=x_d(t_l) | `simulation`에서 현재 적분된 x_d를 planner에 전달 |
-| frozen Θ/a_hat RK4 예측 | 공통 `MotionPlanner`의 parameterized RK4 |
-| 별도 waypoint penalty/equality 없음 | 공통 MPC의 비용과 제약을 그대로 사용 |
-| 최적화된 입력 순차 유지 | `index=(k-plan_start_step)//mpc_input_steps` |
-| live a_hat, 현재 Θ로 x_d 적분 | `simulation.dynamics`의 결합 RK45 |
-| 예측 상태로 x_d를 reset하지 않음 | planner의 첫 반환값을 버리고 입력만 사용 |
-| Θ 갱신 후 공유 경계의 재계획 | `finish_interval` 실행 후 다음 루프에서 MPC |
-| B|I|/Delta t_r 정수 | `validate_timing`으로 강제 |
-| 종료 뒤 마지막 waypoint 유지 | `WaypointReference.guide`에서 시간 clip |
+| [run_example.py](run_example.py) | Entry point, configuration, metric selection and four-arm comparison. |
+| [learning.py](learning.py) | Streaming pretraining, interval fits, Theta updates, CP scores and adaptation gains. |
+| [reference.py](reference.py) | Ascending figure-eight guide, custom waypoint splines and MPC configuration. |
+| [simulation.py](simulation.py) | MPC replanning, CRaCCM feedback and coupled plant/reference integration. |
+| [results.py](results.py) | Diagnostics, saved arrays and plots. |
+| [quadrotor_9d.py](../../systems/quadrotor_9d/quadrotor_9d.py) | Dynamics, uncertainty features and metric adapter. |
+| [nonlinear_uncertainty.py](../../systems/quadrotor_9d/nonlinear_uncertainty.py) | Physical plant disturbance. |
+| [ccm.py](../../systems/quadrotor_9d/ccm.py) | Load the saved NeuralCCM or LMICCM metric. |
+| [ccm_conditions.py](../../systems/quadrotor_9d/ccm_conditions.py) | Shared estimated model and CCM checks for offline training/verification. |
+| [verify_ccm.py](../../systems/quadrotor_9d/verify_ccm.py) | Sample CCM conditions and optionally search for C1 violations. |
 
-문단의 planar는 위치2·상태6·입력2이고, 여기서는 **위치3·상태9·입력4**입니다.
-상태는 `[p_x,p_y,p_z,v_x,v_y,v_z,roll,pitch,yaw]`, 입력은
-`[thrust_acceleration,omega_x,omega_y,omega_z]`입니다.
-Hover 입력은 `[9.81,0,0,0]`, MPC 입력 범위는 `[0,-2,-2,-2]`~`[20,2,2,2]`입니다.
-이 범위는 MPC 기준 입력 u_d의 제약이며, 최종 CRaCCM 입력 u의 포화 제약은 아닙니다.
+## Model and learning
 
-## 시간 설정과 바꿀 위치
+- State: `[px, py, pz, vx, vy, vz, roll, pitch, yaw]`, with inertial velocities.
+  Input: `[thrust_acceleration, omega_x, omega_y, omega_z]`.
+  Body rates are inputs; rotor and torque dynamics are omitted.
+- Estimated uncertainty: `Y_Theta(x) a = Psi(x) Theta a`, with
+  `Psi: 9x5`, `Theta: 5x4`, `a: 4`, and physical coefficients `b = Theta a: 5`.
+  The true plant separately adds quadratic drag, payload, gusts and rate biases.
+- Theta entries are sampled uniformly from a fixed box: rows 1-3 use
+  `[-.15, .15]`, rows 4-5 use `[-.04, .04]`. The same box constrains every update.
+  `--theta-seed 42` is independent of the observation `--seed`.
 
-| 설정 | 기본값 | 수정 위치 |
-| --- | --- | --- |
-| 제어/적분 간격 dt | .02 s | `--dt` |
-| 공통 waypoint/학습 구간 | 2 s | `--interval-steps` × dt; 기본100 |
-| MPC 예측 간격 Delta t_p | .02 s | `--mpc-input-steps` × dt; 기본1 |
-| 예측 스텝 N_p / horizon | 40 / .8 s | `--mpc-horizon-steps` |
-| 재계획 간격 Delta t_r | .4 s | `--mpc-replan-steps` × dt; 기본20 |
-| 재계획 사이 사용하는 입력 수 | 20개 | Delta t_r / Delta t_p |
-| Θ 갱신 주기 | B=4 구간=8 s | `--representation-period` |
-| 초기 기준 상태 | 9개 모두0 | `--initial-reference` |
-| 기본 위치 경로 | 7개의3D 위치, 12초 | `reference.DEFAULT_WAYPOINTS` |
-| 비용 Q/R/P/S | 위치/hover 비용 | `reference.make_planner` |
-| Γ·slack·적응 관련 설정 | CLI 및 `set_defaults` | `run_example.parse_args` |
+Pretraining follows the planar example:
 
-주신 문단과 동일한 시간 수치를 쓰려면 아래 옵션을 추가하면 됩니다.
-9D 모델과 입력 범위는 위 설명을 따릅니다.
+1. Collect one interval of physical observations under nominal PD feedback.
+2. Fit bounded `a_k` and save the maximum residual norm using that interval's Theta.
+3. Update Theta every B intervals, then collect the next interval.
+4. Compute the initial CP quantile from recent scores and copy the learner into each arm.
 
-```bash
---dt .01 --interval-steps 200 --mpc-input-steps 5 \
---mpc-horizon-steps 80 --mpc-replan-steps 20
+Defaults are 64 pretraining intervals and a 32-score CP window. Scores retain their
+historical Theta; delta stays at 0.1 during pretraining. The same learner's scores,
+Theta and update counters continue into online control. `--calibration-intervals`
+sets the score-window size. Pretraining must fill this window and complete B-interval blocks.
+
+Pretraining is a separate 128 s PD-driven simulation at the default settings,
+with 16 Theta updates. Each online arm then starts its own clock at zero using
+that learned Theta, the latest 32 CP scores and the resulting fixed Gamma.
+The plant and reference restart at `--initial-reference`; `a_hat` and `rho` start
+at zero. Loading the offline CCM is separate: its weights stay fixed throughout.
+Without `--source`, every command collects fresh pretraining data before the mission.
+
+Wind is held constant inside each observation interval and changes at its boundary.
+Pretraining uses a sinusoidal sequence of B wind vectors, so one wind cycle spans
+one Theta update block (8 s by default). Online simulation repeats the five vectors
+in `ONLINE_WIND_PATTERN`, giving a 10 s cycle at the default 2 s interval length.
+Changing B changes the pretraining cycle and Theta update period; the online
+pattern still has five intervals. Every controller case receives the same wind.
+The adaptive estimate `a_hat` continues evolving throughout ODE integration.
+
+Online control uses `position cost guide -> MPC inputs -> reference ODE`.
+The default spatial guide is an ascending figure eight:
+`p(t) = p(0) + [0.45 sin(2 pi t/12), 0.30 sin(4 pi t/12), 0.03 t]` in meters.
+Each horizontal lap takes 12 s and rises 0.36 m; a 40 s mission rises 1.2 m.
+Increasing `--sim-time` adds laps without slowing the motion. Position samples
+are recorded every observation interval; the MPC evaluates the smooth analytic
+guide between them. Custom `--waypoints` and point targets use a natural cubic spline.
+Both guide types hold the final position beyond the mission end.
+MPC freezes estimates during each solve. The reference ODE uses live `a_hat` and is
+integrated jointly with the plant and adaptation states. Interval-end Theta/CP
+updates precede the next MPC replan. Gamma is computed once from pretrained Theta:
+`gain * inv(Theta.T @ Theta + regularization * I)`, plus a payload-direction boost.
+This gain controls `a_hat` adaptation; `--learning-rate` controls Theta learning.
+
+The four arms cover all combinations of CP and continuous `a_hat/rho` adaptation.
+Theta/OLACP updates remain enabled in all arms by default. `--no-online-theta`
+freezes Theta after pretraining. MPC bounds apply to reference inputs `u_d`;
+the final CRaCCM input `u` is not saturated.
+
+## Run
+
+Run from `CRaSafeControls-review`; both metric packages and their saved models
+are included under `systems/quadrotor_9d`.
+Runtime packages: `numpy scipy matplotlib casadi qpsolvers quadprog`.
+Each output directory must be new or empty. PowerShell examples:
+
+```powershell
+$env:OPENBLAS_NUM_THREADS = "1"
+$env:OMP_NUM_THREADS = "1"
+$env:MPLBACKEND = "Agg"
+
+# Default: neural CCM, fresh Theta pretraining, four 40 s controller arms.
+python simulations/quadrotor_9d/run_example.py --output outputs/quad9d_neural
+
+# Use the saved LMI CCM, or select a custom NPZ with --checkpoint.
+python simulations/quadrotor_9d/run_example.py --metric lmi --output outputs/quad9d_lmi
+
+# Independently check a saved metric.
+python -m systems.quadrotor_9d.verify_ccm --metric neural --output outputs/quad9d_metric_check
+
+# Replay saved observations and reconstruct the same learner state.
+python simulations/quadrotor_9d/run_example.py --source outputs/quad9d_neural/pretraining --output outputs/quad9d_replay
 ```
 
-## 실행과 확인
+Replay requires matching metric, `--dt`, `--interval-steps`, `--residual-scale`
+and the recorded periodic pretraining wind schedule.
+Counts, B, learning rate and seeds come from the saved pretraining configuration.
+Archives from the previous random-wind pretraining protocol require a fresh run
+without `--source`.
 
-저장소 root에서 실행합니다. 출력 폴더는 새 폴더 또는 빈 폴더여야 합니다.
+To amplify unstructured disturbances, use `--residual-scale`. It scales additive
+gusts and time/state-varying rate biases while keeping drag/payload coefficients
+and the prescribed wind sequence fixed.
+Collect fresh pretraining data at the same scale as the online experiment:
 
-```bash
-source /workspace/.venvs/crasafecontrols/bin/activate
-export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MPLBACKEND=Agg
-export XDG_CACHE_HOME=/workspace/.cache
-export MPLCONFIGDIR=/workspace/.cache/crasafecontrols/matplotlib
-python simulations/quadrotor_9d/run_example.py --output /workspace/outputs/quad9d_new
+```powershell
+python simulations/quadrotor_9d/run_example.py --metric neural --residual-scale 20 --output outputs/quad9d_neural_residual20 --quiet
 ```
 
-처음 실행하면 Θ 사전학습·독립 CP 보정부터 만듭니다. 같은 관측을 재사용하려면
-`--source /workspace/outputs/quad9d_new/pretraining`을 추가합니다.
-재사용 관측과 `--dt`, `--interval-steps`가 일치해야 합니다.
+For new 40 s comparisons with ascending figure-eight motion, use empty outputs:
 
-직접 위치를 지정하려면 K+1개의 `[x,y,z]`를 담은 JSON 파일을 `--waypoints`로 전달합니다.
-K=sim_time/(interval_steps*dt)이고, 기본값은7개 waypoint입니다.
-`--initial-reference`에는 위치뿐 아니라 초기 속도·자세까지9개 값을 지정할 수 있습니다.
-첫 위치는 첫 waypoint와 같아야 합니다. 실제 plant 초기 상태는 이 값에 `initial_offset`을 더합니다.
+```powershell
+python simulations/quadrotor_9d/run_example.py --residual-scale 1 --output outputs/wind40_residual1
+python simulations/quadrotor_9d/run_example.py --residual-scale 20 --output outputs/wind40_residual20
+```
 
-| 확인 파일 | 볼 내용 |
+For a short point-tracking check:
+
+```powershell
+python simulations/quadrotor_9d/run_example.py --output outputs/quad9d_smoke --sim-time 1 --dt .05 --interval-steps 10 --pretrain-intervals 32 --calibration-intervals 30 --representation-period 2 --trajectory point --goal 0 0 .01 --quiet
+```
+
+## Defaults and outputs
+
+| Setting | Default |
 | --- | --- |
-| `reference.png` | 공통 spline guide·waypoint와 조건별 적분된 x_d가 서로 다른지 |
-| `comparison.png` | 실제 위치와 guide, 실제 x와 자체 x_d 사이의 추적 오차 |
-| `inputs.png` | 네 조건의 원시 실제 입력 |
-| 각 조건 `.npz` | t, x, x_d, u, u_d, a, rho, theta, quantile, slack, mpc_replanned |
-| `summary.json`의 `reference` | 위치 waypoint, 시간, 초기 상태, MPC 시간 설정 |
-| `intervals.json` | Θ 갱신 시점과 적용 여부 |
+| Simulation / control step | 40 s / 0.02 s |
+| Spatial guide | 12 s per horizontal lap; 0.03 m/s climb |
+| Observation / waypoint interval | 100 steps = 2 s |
+| Theta update period / learning rate | B = 4 intervals / 1e-4 |
+| Pretraining / online wind cycle | B intervals = 8 s / 5 intervals = 10 s |
+| MPC input hold / horizon / replan period | 0.02 s / 0.8 s / 0.4 s |
+| Initial reference | Nine zeros; spatial waypoints in `reference.py` |
 
-NPZ의 `target`은 3D 위치 비용 guide입니다. `x_d`가 실제 기준 상태입니다.
-네 조건은 `(CP, continuous adaptation)=(Yes,Yes),(No,Yes),(Yes,No),(No,No)`입니다.
-No adaptation은 a_hat/rho 및 기준 모델의 해당 항을 끄며, 온라인 Θ/OLACP 설정은 공통입니다.
+Theta updates at 8, 16, 24 and 32 s affect subsequent control in the default
+40 s mission. The update at 40 s is recorded but has no remaining control interval.
 
-## Metric과 검증
+Use `--waypoints positions.json` for K+1 position triples, where
+`K = sim_time / (interval_steps * dt)`. The first position must match
+`--initial-reference`, which specifies the full nine-state initial reference.
+Use `--help` for all options and [methods.tex](methods.tex) for the equations.
 
-세 metric은 [metric 안내](../../neural_ccm/README.md)에 정리했습니다.
-**CCM metric의 offline 학습**, `learning.py`의 **Θ 학습**, **CP 보정**은 별개입니다.
+Results include per-arm NPZ histories, `summary.json`, `intervals.json`,
+`calibration.json`, and `comparison.png`, `inputs.png`, `reference.png`, `wind.png`.
+`pretraining/` stores observations, Theta/score history, initial Theta, bounds and seeds.
+Reports include both wind schedules; per-arm NPZ files include the active `wind` vector.
+In histories, `target` is the position cost guide and `x_d` is the integrated reference.
 
-```bash
-python -m unittest discover -s tests -p 'test_quadrotor_9d.py' -v
-python -m unittest discover -s tests -p 'test_quadrotor_reference.py' -v
+```powershell
+python -m unittest discover -s tests -p "test_quadrotor_9d.py" -v
+python -m unittest discover -s tests -p "test_quadrotor_reference.py" -v
 ```
-
-두 번째 검증은 natural spline·위치 비용·고정 파라미터 RK4·입력 유지·live a_hat 적분·
-예측 상태 reset 방지·Θ 갱신 순서·종료 후 guide 유지 조건을 확인합니다.
-
-최근 결과는 `/workspace/outputs/quadrotor_9d_waypoints/`에 있습니다.
-과거 실험 결과와 이전 소스 ZIP은 삭제했습니다. 코드 변경 전 백업은 `/workspace/backups/`에 있습니다.

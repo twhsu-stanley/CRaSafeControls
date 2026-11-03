@@ -1,4 +1,9 @@
-"""Result files, experiment provenance and plots; no control calculations."""
+"""Turn simulation histories into metrics, reproducibility records and plots.
+
+Called by run_example.py after each controller case and after the comparison.
+Inputs are the histories and interval events returned by simulation.py.
+Outputs are scalar summaries, JSON reports and PNG figures.
+"""
 
 
 import hashlib
@@ -12,7 +17,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def dump_json(path, value):
+    """Write NumPy values and paths as portable JSON."""
     def convert(item):
+        """Convert array values and filesystem paths into JSON-compatible objects."""
         if isinstance(item, np.ndarray):
             return item.tolist()
         if isinstance(item, (np.integer, np.floating, np.bool_)):
@@ -27,6 +34,7 @@ def dump_json(path, value):
 
 
 def core_hashes():
+    """Fingerprint shared controller, learning, planning and geodesic source files."""
     names = [
         "systems/control_affine_system.py", "olacp.py",
         "motion_planner.py", "geodesic_solver.py",
@@ -35,7 +43,9 @@ def core_hashes():
 
 
 def repository_state():
+    """Record the local Git branch and commit, or None when Git is unavailable."""
     def git(*args):
+        """Read one property of the local repository."""
         return subprocess.check_output(["git","-C",str(ROOT),*args],text=True,
                                        stderr=subprocess.DEVNULL).strip()
     try:
@@ -45,6 +55,11 @@ def repository_state():
 
 
 def interval_diagnostics(result, events, system, interval_steps):
+    """Reconstruct interval fits and compare both estimates with true uncertainty.
+
+    Return fitted arrays, residual RMSEs and the fraction of interval scores
+    covered by the quantile that was available before each interval ended.
+    """
     fitted = np.full_like(result["true_w"], np.nan)
     a_k = np.full((len(result["t"]), system.adim), np.nan)
     fit_errors = []
@@ -53,11 +68,13 @@ def interval_diagnostics(result, events, system, interval_steps):
         last = min(first+interval_steps, len(result["t"])-1)
         parameter = np.asarray(event["a_fit"])
         for k in range(first, last):
+            # Use the Theta active at this sample, not the final learned matrix.
             estimate = system.Y_Theta(result["x"][k], result["theta"][k]) @ parameter
             fitted[k], a_k[k] = estimate, parameter
             fit_errors.append(np.linalg.norm(estimate-result["true_w"][k]))
     scores = np.asarray([event["score"] for event in events])
     quantiles = np.asarray([event["previous_quantile"] for event in events])
+    # a_fit minimizes an interval loss; result['a'] is the live adaptive estimate.
     controller_fit = np.asarray([
         system.Y_Theta(x, theta) @ a
         for x, theta, a in zip(result["x"], result["theta"], result["a"])
@@ -73,7 +90,8 @@ def interval_diagnostics(result, events, system, interval_steps):
 
 
 def summarize(result, events, system, interval_steps):
-    """Tracking metrics and interval fits, independent of controller execution."""
+    """Add fitted arrays to result and return scalar metrics for one case."""
+    # Measure both tracking of the integrated x_d and error against the common guide.
     reference_error = np.linalg.norm(result["x"][:, :3]-result["x_d"][:, :3], axis=1)
     target_error = np.linalg.norm(result["x"][:, :3]-result["target"][:, :3], axis=1)
     fits = interval_diagnostics(result, events, system, interval_steps)
@@ -97,6 +115,7 @@ def summarize(result, events, system, interval_steps):
 
 
 def common_prefix_comparison(results):
+    """Compare the shared time prefix when some arms terminate early."""
     count = min(len(result["t"]) for result in results.values())
     comparison = dict(sample_count=count, end_time=float(next(iter(results.values()))["t"][count-1]))
     for name, reference in (("position_rmse", "x_d"), ("target_position_rmse", "target")):
@@ -109,6 +128,7 @@ def common_prefix_comparison(results):
 
 
 def save_plot(results, path):
+    """Plot position traces, 3D paths, tracking errors and control corrections."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -143,7 +163,7 @@ def save_plot(results, path):
 
 
 def save_input_plot(results,path):
-    """Show actual input components, separately from the correction-norm plot."""
+    """Plot actual thrust acceleration and the three body-rate commands over time."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -163,7 +183,7 @@ def save_input_plot(results,path):
 
 
 def save_reference_plot(histories, reference, path):
-    """Expose the distinction between the common cost guide and generated x_d."""
+    """Compare common position targets with each case's integrated reference x_d."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -179,5 +199,21 @@ def save_reference_plot(histories, reference, path):
         ax.grid(alpha=.3)
     axes[0].legend(fontsize=7, ncol=2)
     axes[-1].set_xlabel("Time [s]")
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
+def save_wind_plot(histories, path):
+    """Show the common prescribed wind with its interval-boundary jumps."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    data = max(histories.values(), key=lambda value: len(value["t"]))
+    fig, ax = plt.subplots(figsize=(9, 4), constrained_layout=True)
+    for index, axis in enumerate("xyz"):
+        ax.step(data["t"], data["wind"][:, index], where="post", label=f"wind {axis}")
+    ax.set(xlabel="Time [s]", ylabel="Inertial wind [m/s]", title="Prescribed interval wind")
+    ax.grid(alpha=.3)
+    ax.legend(loc="upper left", bbox_to_anchor=(1., 1.))
     fig.savefig(path, dpi=160)
     plt.close(fig)

@@ -1,2 +1,0 @@
-cvxpy==1.8.2
-clarabel==0.11.1

@@ -1,8 +1,9 @@
 """9D Euler quadrotor adapter for the repository's existing CRaCCM controller.
 
 Dynamics and features follow the supplied NeuralCCM payload-adaptive system:
-x=[position(3), inertial velocity(3), roll, pitch, yaw];
-u=[thrust acceleration, body rates(3)]. This is an attitude-rate model, not
+x = [p_x, p_y, p_z, v_x, v_y, v_z, roll, pitch, yaw]
+u = [thrust_acceleration, omega_x, omega_y, omega_z]
+This is an attitude-rate model, not
 a 12-state rigid-body model. Physical plant uncertainty is supplied separately.
 """
 
@@ -11,10 +12,21 @@ import numpy as np
 from systems.control_affine_system import ControlAffineSystem
 
 
-THETA_INITIAL = np.array([
-    [.22, 0, 0, 0], [.22, 0, 0, 0], [0, .22, 0, 0],
-    [0, 0, .04, 0], [0, 0, 0, .04],
-])
+# Fixed entrywise bounds, independent of the sampled initial representation.
+# With a in [-1, 1]^4, |Theta @ a| <= [0.6, 0.6, 0.6, 0.16, 0.16],
+# which fits the physical-parameter domains of the bundled CCMs.
+THETA_UPPER = np.broadcast_to(np.array([.15, .15, .15, .04, .04])[:, None], (5, 4)).copy()
+THETA_LOWER = -THETA_UPPER
+
+
+def initial_representation(seed=42):
+    """Draw all entries uniformly from the fixed box, as in planar_quad."""
+    return np.random.default_rng(seed).uniform(THETA_LOWER, THETA_UPPER)
+
+
+# Reproducible default for callers without an explicit Theta_init. Experiments
+# draw their initial representation using a separately recorded theta seed.
+THETA_INITIAL = initial_representation()
 
 
 class QUADROTOR_9D(ControlAffineSystem):
@@ -40,10 +52,12 @@ class QUADROTOR_9D(ControlAffineSystem):
         super().__init__(params)
 
     def f(self, x):
+        """Return position kinematics and free-fall acceleration without input."""
         return np.array([x[3], x[4], x[5], 0., 0., -self.grav, 0., 0., 0.])
 
     @staticmethod
     def _thrust_direction(x):
+        """Return R(roll, pitch, yaw) e_z in inertial coordinates."""
         phi, pitch, yaw = x[6:9]
         if type(x[0]).__module__.startswith("casadi"):
             import casadi as math
@@ -55,7 +69,13 @@ class QUADROTOR_9D(ControlAffineSystem):
         return cy*st*cp+sy*sp, sy*st*cp-cy*sp, ct*cp
 
     def g(self, x):
+        """Map thrust acceleration and body angular rates into state derivatives.
+
+        The last three rows convert body rates to Euler rates. This model
+        assumes rate-command tracking and omits rotor/torque dynamics.
+        """
         phi, pitch = x[6:8]
+        # Use the same trigonometric model for numerical simulation and symbolic MPC.
         symbolic = type(x[0]).__module__.startswith("casadi")
         if not symbolic and abs(np.cos(pitch)) < 1e-5:
             raise ValueError("Euler pitch singularity")
@@ -82,6 +102,12 @@ class QUADROTOR_9D(ControlAffineSystem):
         return np.vstack(rows)
 
     def psi(self, x):
+        """Return the prescribed 9x5 feature matrix used in Y_Theta = Psi @ Theta.
+
+        Columns represent x/y linear drag, a payload-like thrust-direction term,
+        and additive roll/pitch Euler-rate biases. These features approximate
+        the physical disturbance; they do not generate the simulated true w.
+        """
         symbolic = type(x[0]).__module__.startswith("casadi")
         x = np.asarray(x, dtype=object if symbolic else float).reshape(self.xdim)
         bx, by, bz = self._thrust_direction(x)
@@ -96,6 +122,7 @@ class QUADROTOR_9D(ControlAffineSystem):
         return self.Y_Theta(x, self.Theta_hat)
 
     def Y_Theta(self, x, theta):
+        """Map a four-component parameter to uncertainty using a 5x4 Theta."""
         theta = np.asarray(theta)
         if theta.shape != self.theta_shape:
             raise ValueError("Theta must be finite with shape (5,4)")
@@ -110,12 +137,14 @@ class QUADROTOR_9D(ControlAffineSystem):
         return self.dynamics_nominal(x,u)+self.Y(x) @ np.asarray(a_hat).reshape(self.adim)
 
     def representation_loss_gradient(self, x, theta, a, w):
+        """Differentiate ||Psi(x) Theta a - w||^2 with the fitted a held fixed."""
         a = np.asarray(a, dtype=float).reshape(self.adim)
         w = np.asarray(w, dtype=float).reshape(self.xdim)
         error = self.Y_Theta(x, theta) @ a - w
         return 2*np.outer(self.psi(x).T @ error, a)
 
     def set_representation(self, theta):
+        """Install an independent Theta copy for prediction, feedback and the CCM."""
         theta = np.asarray(theta, dtype=float)
         if theta.shape != self.theta_shape or not np.all(np.isfinite(theta)):
             raise ValueError("Theta must be finite with shape (5,4)")
@@ -130,12 +159,14 @@ class QUADROTOR_9D(ControlAffineSystem):
         return value
 
     def dynamics(self, x, u, t=0.):
+        """Evaluate the true simulated plant: nominal dynamics plus physical w."""
         return self.dynamics_nominal(x, u)+self.true_uncertainty(x, t)
 
     def ctrl_nominal(self, x):
         return np.array([self.grav, 0., 0., 0.])
 
     def dynamics_extended(self, state, x_d, u, geodesic_solver, t=0.):
+        """Integrate plant x and continuous a_hat/rho; Theta updates are external."""
         state = np.asarray(state, dtype=float).reshape(self.xdim+self.adim+1)
         x, a, rho = state[:9], state[9:13], state[-1]
         if self.use_adaptive:
@@ -145,10 +176,12 @@ class QUADROTOR_9D(ControlAffineSystem):
         return np.r_[self.dynamics(x, u, t), np.asarray(da).reshape(-1), drho]
 
     def _metric_parameter(self, a):
+        """Convert adaptive coordinates a(4) to the CCM's physical coordinates b(5)."""
         a = np.asarray(a, dtype=float).reshape(self.adim)
         return self.Theta_hat @ a
 
     def W_fcn(self, x, a):
+        """Evaluate the saved dual metric W(x, Theta @ a) = M^-1."""
         return self.metric.W(x, self._metric_parameter(a))
 
     def dW_dxi_fcn(self, i, x, a):
@@ -160,6 +193,7 @@ class QUADROTOR_9D(ControlAffineSystem):
         if not 0 <= i < self.adim:
             raise IndexError(i)
         derivative = self.metric.derivatives(x, self._metric_parameter(a))[1]
+        # Chain rule: dW/da_i = sum_r (dW/db_r) * Theta[r, i].
         return derivative @ self.Theta_hat[:, i]
 
     def metric_in_training_domain(self, x, a):

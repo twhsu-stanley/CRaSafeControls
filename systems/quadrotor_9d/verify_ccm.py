@@ -13,28 +13,35 @@ import sys
 import numpy as np
 from scipy.optimize import differential_evolution
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-from neural_ccm.ccm_conditions import ccm_matrices, evaluate
-from neural_ccm.neural_metric import load_metric
+ROOT = Path(__file__).resolve().parents[2]
+# Support direct script execution as well as python -m systems.quadrotor_9d.verify_ccm.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from systems.quadrotor_9d.ccm import METRICS, load_metric, metric_checkpoint
+from systems.quadrotor_9d.ccm_conditions import ccm_matrices, evaluate
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", type=Path, required=True)
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--metric", choices=tuple(METRICS), default="neural")
+    selection.add_argument("--checkpoint", type=Path, help="Custom CCM NPZ")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--samples", type=int, default=20000)
     parser.add_argument("--seed", type=int, default=20261026)
     parser.add_argument("--search-iterations", type=int, default=80)
     parser.add_argument("--simulation", type=Path)
     args = parser.parse_args(argv)
+    if args.checkpoint is None:
+        args.checkpoint = metric_checkpoint(args.metric)
     if args.output.exists() or args.samples < 1 or args.seed < 0 or args.search_iterations < 0:
         parser.error("Choose a new output folder and valid sample/search settings")
     metric = load_metric(args.checkpoint)
     rng = np.random.default_rng(args.seed)
     d = metric.domain
     x = rng.uniform(d["x_min"], d["x_max"], (args.samples, 9))
-    b = rng.uniform(d["a_min"], d["a_max"], (args.samples, 5))
+    b = rng.uniform(d["b_min"], d["b_max"], (args.samples, 5))
     summary, samples = evaluate(metric, x, b)
     report = dict(checkpoint=str(args.checkpoint.resolve()),
                   checkpoint_sha256=hashlib.sha256(args.checkpoint.read_bytes()).hexdigest(),
@@ -42,7 +49,7 @@ def main(argv=None):
                   scope="Frozen b model f+Psi b; empirical C1 check, not a global certificate")
     print(json.dumps(summary), flush=True)
     if args.search_iterations:
-        bounds = list(zip(d["x_min"][3:], d["x_max"][3:])) + list(zip(d["a_min"], d["a_max"]))
+        bounds = list(zip(d["x_min"][3:], d["x_max"][3:])) + list(zip(d["b_min"], d["b_max"]))
         def objective(point):
             C1 = ccm_matrices(metric, np.r_[np.zeros(3), point[:6]], point[6:])[1]
             return -np.linalg.eigvalsh((C1+C1.T)/2)[-1]

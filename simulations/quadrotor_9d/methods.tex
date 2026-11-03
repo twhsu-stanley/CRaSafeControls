@@ -68,17 +68,28 @@ The physical plant follows
 \end{equation}
 In the default experiment,
 $(\beta_x,\beta_y,\beta_z)=(0.09,0.23,0.07)~\mathrm{m^{-1}}$,
-$v_{\rm w}^I=(0.08,-0.06,0.02)^\top~\mathrm{m\,s^{-1}}$,
-$\mu=0.11$, and $\varphi_0=0.4$, with
+$\mu=0.11$, and $\varphi_0=0.4$. Wind is held constant on each
+$I_k=[kT_I,(k+1)T_I)$, where $T_I=2~\mathrm s$ by default:
+\begin{equation}
+    v_{\rm w}^I(t)=V_{(k\bmod5)+1,:}^{\top},\qquad
+    V=\begin{bmatrix}
+      0.08&-0.06&0.02\\0.12&-0.03&0.04\\0.05&-0.10&-0.02\\
+      0.10&-0.08&0.03\\0.06&-0.04&0
+    \end{bmatrix}~\mathrm{m\,s^{-1}}.
+\end{equation}
+All four controller cases receive this same prescribed sequence, with a
+$5T_I=10~\mathrm s$ cycle independent of the representation update period $B$.
+The residual amplitude multiplier $s$ is selected by \texttt{--residual-scale}
+and defaults to one, with
 \begin{align}
-    d_{\rm g}(t)&=\begin{bmatrix}
+    d_{\rm g}(t)&=s\begin{bmatrix}
         0.008\sin(0.71t+\varphi_0)\\
         0.008\cos(0.53t+0.3+\varphi_0)\\
         0.006\sin(0.37t+0.2+\varphi_0)
     \end{bmatrix},\\
     w_\eta(x,t)&=\begin{bmatrix}
-        0.04v_{{\rm w},x}+0.003\sin(0.43t+\varphi_0)+0.002\sin\vartheta\\
-        -0.04v_{{\rm w},y}+0.003\cos(0.39t+\varphi_0)+0.002\sin\phi\\
+        0.04v_{{\rm w},x}+s(0.003\sin(0.43t+\varphi_0)+0.002\sin\vartheta)\\
+        -0.04v_{{\rm w},y}+s(0.003\cos(0.39t+\varphi_0)+0.002\sin\phi)\\
         0
     \end{bmatrix}.
 \end{align}
@@ -108,11 +119,23 @@ The nonlinear physical disturbance need not lie exactly in this model class.
 
 \subsection{Online generation of the desired trajectory}
 
-The desired trajectory is generated online from prescribed position
-waypoints $\{p_i^{\rm wp}\}_{i=0}^{K}\subset\mathbb R^3$ at
-$T_i=i|I_k|$, with the common interval duration $|I_k|=2~\mathrm s$.
-A natural cubic spline $\bar p(t)$ interpolates these positions and
-supplies a waypoint-following cost guide. Let
+The desired trajectory is generated online from a position cost guide.
+The default guide repeats an ascending figure eight at a fixed horizontal
+lap duration $T_{\rm lap}=12~\mathrm s$:
+\begin{equation}
+    \bar p(t)=C_px_{d,0}+
+       \begin{bmatrix}
+          0.45\sin(2\pi t/T_{\rm lap})\\
+          0.30\sin(4\pi t/T_{\rm lap})\\
+          0.03t
+       \end{bmatrix}\mathrm m.
+\end{equation}
+Here $t$ is in seconds. Each lap rises $0.36~\mathrm m$; extending
+the mission adds laps without rescaling the horizontal motion.
+Position waypoints $\{p_i^{\rm wp}\}_{i=0}^{K}\subset\mathbb R^3$
+are samples of this guide at $T_i=i|I_k|$, with the common interval
+duration $|I_k|=2~\mathrm s$. For custom waypoints and point missions,
+a natural cubic spline instead supplies the guide. Let
 $C_p=[I_3\;\;0_{3\times6}]$ select the position coordinates.
 The complete initial reference state $x_{d,0}$ is specified separately,
 with $C_px_{d,0}=p_0^{\rm wp}$, whereas intermediate attitudes and
@@ -161,7 +184,10 @@ The representation-update period is $B|I_k|=8~\mathrm s$, with $B=4$;
 hence $B|I_k|/\Delta t_{\rm r}=20\in\mathbb N$.
 Each representation update is installed before replanning at the shared
 boundary. The guide remains at the final waypoint beyond the mission end.
-The default mission lasts $12~\mathrm s$ and starts from $x_{d,0}=0_9$.
+The default mission lasts $40~\mathrm s$ and starts from $x_{d,0}=0_9$.
+Representation updates at $8$, $16$, $24$ and $32~\mathrm s$ affect
+subsequent control; the terminal update at $40~\mathrm s$ is recorded
+without a subsequent control interval.
 
 \subsection{Offline training of the neural contraction metric}
 
@@ -245,12 +271,28 @@ Metric derivatives are evaluated analytically, including the chain rule
 
 \subsection{Adaptive conformal calibration and CRaCCM feedback}
 
-The representation is initialized using $64$ observation intervals;
-a separate $32$-interval dataset calibrates the learned representation
-with $\hat\Theta$ frozen. Each interval contains $100$ samples at
+The representation is initialized using $64$ observation intervals,
+collected and processed sequentially as in the planar example. The latest
+$32$ scores from these same intervals initialize the conformal window;
+there is no separate fixed-representation calibration run. Each interval contains $100$ samples at
 $\Delta t=0.02~\mathrm s$. Observations are collected from the physical
 plant under nominal PD excitation, and the uncertainty samples are
 $w_s=\dot x_s-f(x_s)-g(x_s)u_s$.
+These $64$ intervals span $128~\mathrm s$ of separate pretraining
+simulation and include $16$ representation updates. Each online arm
+then restarts the physical/reference clock at zero with the learned
+representation and CP window; the live states $\hat a$ and $\rho$
+start at zero. The offline CCM weights remain fixed in both stages.
+Pretraining holds the wind constant within each interval and uses
+\begin{equation}
+    v_{{\rm w},k}^{I,\rm pre}=
+      \begin{bmatrix}0.15\sin\alpha_k\\0.15\cos\alpha_k\\
+      0.05\sin(\alpha_k+\pi/4)\end{bmatrix},\qquad
+    \alpha_k=2\pi k/B.
+\end{equation}
+Thus one pretraining wind cycle spans one representation-learning block.
+The fitted parameter and CP score are updated after each interval, whereas
+the live adaptive estimate evolves continuously during online integration.
 For each completed interval, the fitted parameter and conformal score are
 \begin{equation}\label{eq:quad-score}
 \begin{aligned}
@@ -270,16 +312,28 @@ step on the summed fitting losses, treating the fitted parameters as fixed:
       (a_k^{\rm fit})^\top\right].
 \end{equation}
 Here, $\mathcal K_j$ contains the four completed intervals in the block,
-and $\Pi_{\mathcal T}$ clips each matrix entry to its prescribed trust box.
-The box is centered at
+and $\Pi_{\mathcal T}$ clips each matrix entry to a fixed box, independent
+of its initialization. As in the planar example, all entries are initialized
+uniformly within this same box:
 \begin{equation}
-    \Theta_0=\begin{bmatrix}
-      0.22&0&0&0\\0.22&0&0&0\\0&0.22&0&0\\
-      0&0&0.04&0\\0&0&0&0.04
-    \end{bmatrix},
+    (\Theta_0)_{ri}\sim\mathcal U(-h_r,h_r),\qquad
+    \mathcal T=\{\Theta:\ |\Theta_{ri}|\le h_r\},\qquad
+    h=(0.15,0.15,0.15,0.04,0.04)^\top.
 \end{equation}
-with rowwise half-widths $(0.08,0.08,0.06,0.03,0.03)^\top$
-applied to all four columns.
+The default representation seed is $42$, separate from the observation seed;
+both seeds, the initial matrix and the box are saved for reproducibility.
+For the outer projection ball $\|\hat a\|_2\le2.01$, this box gives
+$|(\Theta\hat a)_r|\le2.01\sqrt4\,h_r$, which lies within the physical
+parameter domains of both bundled CCMs. This is a parameter-domain inclusion,
+not an additional certification of the CCM inequalities.
+
+Each score is appended before the blockwise representation update and retains
+the representation used in its own interval; scores are not recomputed using
+the final representation. During pretraining, $\delta$ stays at $0.1$.
+At completion, the initial quantile is computed from the most recent $32$
+scores. Each comparison arm receives a copy of this learner, including its
+representation, score window and update counters. Online representation
+learning continues from these counters rather than restarting them.
 
 Let $Q_k^{\rm cp}$ be the quantile available before interval $I_k$.
 The adaptive miscoverage level is updated by
