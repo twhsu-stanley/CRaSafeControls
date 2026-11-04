@@ -1,0 +1,469 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath,amssymb}
+\usepackage[margin=1in]{geometry}
+\title{Quadrotor Dynamics, Online Reference Generation, and Neural CRaCCM Control}
+\author{}
+\date{}
+\renewcommand{\thesubsection}{\arabic{subsection}}
+
+\begin{document}
+\maketitle
+
+\subsection{Quadrotor dynamics and uncertainty representation}
+
+The state is
+$x=[p_x,p_y,p_z,v_x,v_y,v_z,\phi,\vartheta,\psi]^\top\in\mathbb R^9$,
+where $p=[p_x,p_y,p_z]^\top$ and $v=[v_x,v_y,v_z]^\top$ are
+inertial-frame positions and velocities, and $\phi,\vartheta,\psi$
+are the roll, pitch, and yaw angles. The inputs
+$u=[a_T,\omega_x,\omega_y,\omega_z]^\top\in\mathbb R^4$ are the
+thrust acceleration and commanded body angular rates.
+This is an attitude-rate model, with $a_T=T/m_{\rm nom}$ for total
+thrust $T$ and nominal mass $m_{\rm nom}$.
+Let $g_0=9.81~\mathrm{m\,s^{-2}}$ denote gravitational acceleration,
+$R=R_z(\psi)R_y(\vartheta)R_x(\phi)$ the body-to-inertial rotation,
+and $n=[n_x,n_y,n_z]^\top=Re_3$ the thrust direction.
+The nominal dynamics are
+\begin{align}
+    f(x)&=\begin{bmatrix}
+        v_x\\v_y\\v_z\\0\\0\\-g_0\\0\\0\\0
+    \end{bmatrix},\qquad
+    g(x)=\begin{bmatrix}
+        0&0&0&0\\
+        0&0&0&0\\
+        0&0&0&0\\
+        n_x&0&0&0\\
+        n_y&0&0&0\\
+        n_z&0&0&0\\
+        0&1&\sin\phi\tan\vartheta&\cos\phi\tan\vartheta\\
+        0&0&\cos\phi&-\sin\phi\\
+        0&0&\sin\phi\sec\vartheta&\cos\phi\sec\vartheta
+    \end{bmatrix}.
+\end{align}
+The model is used on an Euler-angle chart with $\cos\vartheta\ne0$.
+
+For inertial-frame wind velocity
+$v_{\rm w}^I(t)=[v_{{\rm w},x}(t),v_{{\rm w},y}(t),v_{{\rm w},z}(t)]^\top$,
+the relative body-frame velocity is
+\begin{equation}
+    v_{\rm rel}(t,x)=R(x)^\top\big(v-v_{\rm w}^I(t)\big).
+\end{equation}
+The aerodynamic acceleration and true uncertainty are
+\begin{align}
+    a_{{\rm w},i}^B(t,x)&=-\beta_i v_{{\rm rel},i}(t,x)
+        |v_{{\rm rel},i}(t,x)|,\qquad i\in\{x,y,z\},\\
+    w(x,t)&=\begin{bmatrix}
+        0_3\\
+        R(x)a_{\rm w}^B(t,x)-g_0\mu n(x)+d_{\rm g}(t)\\
+        w_\eta(x,t)
+    \end{bmatrix},\label{eq:quad-uncertainty}
+\end{align}
+where $\beta_i$ are the drag coefficients divided by nominal mass,
+$\mu$ is the payload coefficient in an additive approximation about
+hover, $d_{\rm g}$ is an unmodeled inertial-frame acceleration disturbance,
+and $w_\eta$ contains unmodeled Euler-angle-rate disturbances.
+The physical plant follows
+\begin{equation}\label{eq:quad-plant}
+    \dot x=f(x)+g(x)u+w(x,t).
+\end{equation}
+In the default experiment,
+$(\beta_x,\beta_y,\beta_z)=(0.09,0.23,0.07)~\mathrm{m^{-1}}$,
+$\mu=0.11$, and $\varphi_0=0.4$. Wind is held constant on each
+$I_k=[kT_I,(k+1)T_I)$, where $T_I=2~\mathrm s$ by default:
+\begin{equation}
+    v_{\rm w}^I(t)=V_{(k\bmod5)+1,:}^{\top},\qquad
+    V=\begin{bmatrix}
+      0.08&-0.06&0.02\\0.12&-0.03&0.04\\0.05&-0.10&-0.02\\
+      0.10&-0.08&0.03\\0.06&-0.04&0
+    \end{bmatrix}~\mathrm{m\,s^{-1}}.
+\end{equation}
+All four controller cases receive this same prescribed sequence, with a
+$5T_I=10~\mathrm s$ cycle independent of the representation update period $B$.
+The residual amplitude multiplier $s$ is selected by \texttt{--residual-scale}
+and defaults to one, with
+\begin{align}
+    d_{\rm g}(t)&=s\begin{bmatrix}
+        0.008\sin(0.71t+\varphi_0)\\
+        0.008\cos(0.53t+0.3+\varphi_0)\\
+        0.006\sin(0.37t+0.2+\varphi_0)
+    \end{bmatrix},\\
+    w_\eta(x,t)&=\begin{bmatrix}
+        0.04v_{{\rm w},x}+s(0.003\sin(0.43t+\varphi_0)+0.002\sin\vartheta)\\
+        -0.04v_{{\rm w},y}+s(0.003\cos(0.39t+\varphi_0)+0.002\sin\phi)\\
+        0
+    \end{bmatrix}.
+\end{align}
+
+The learned uncertainty model is
+\begin{align}
+    Y_\Theta(x)&=\Psi(x)\Theta,\qquad
+        \Theta\in\mathbb R^{5\times4},\quad a\in\mathbb R^4,
+        \label{eq:quad-representation}\\
+    \Psi(x)&=\begin{bmatrix}
+        0&0&0&0&0\\
+        0&0&0&0&0\\
+        0&0&0&0&0\\
+        -v_x&0&-g_0n_x&0&0\\
+        0&-v_y&-g_0n_y&0&0\\
+        0&0&-g_0n_z&0&0\\
+        0&0&0&1&0\\
+        0&0&0&0&1\\
+        0&0&0&0&0
+    \end{bmatrix}.
+\end{align}
+At representation index $j$, the estimated uncertainty is
+$Y_{\hat\Theta_j}(x)\hat a=\Psi(x)b$, where $b=\hat\Theta_j\hat a$.
+Thus, the estimated model captures horizontal linear drag, a
+thrust-direction acceleration bias, and roll/pitch rate biases.
+The nonlinear physical disturbance need not lie exactly in this model class.
+
+\subsection{Online generation of the desired trajectory}
+
+The desired trajectory is generated online from a position cost guide.
+The default guide repeats an ascending figure eight at a fixed horizontal
+lap duration $T_{\rm lap}=12~\mathrm s$:
+\begin{equation}
+    \bar p(t)=C_px_{d,0}+
+       \begin{bmatrix}
+          0.45\sin(2\pi t/T_{\rm lap})\\
+          0.30\sin(4\pi t/T_{\rm lap})\\
+          0.03t
+       \end{bmatrix}\mathrm m.
+\end{equation}
+Here $t$ is in seconds. Each lap rises $0.36~\mathrm m$; extending
+the mission adds laps without rescaling the horizontal motion.
+Position waypoints $\{p_i^{\rm wp}\}_{i=0}^{K}\subset\mathbb R^3$
+are samples of this guide at $T_i=i|I_k|$, with the common interval
+duration $|I_k|=2~\mathrm s$. For custom waypoints and point missions,
+a natural cubic spline instead supplies the guide. Let
+$C_p=[I_3\;\;0_{3\times6}]$ select the position coordinates.
+The complete initial reference state $x_{d,0}$ is specified separately,
+with $C_px_{d,0}=p_0^{\rm wp}$, whereas intermediate attitudes and
+velocities are not prescribed. Initialized at $x_d(0)=x_{d,0}$, the
+desired trajectory follows the certainty-equivalent dynamics
+\begin{equation}\label{eq:quad-reference}
+    \dot x_d(t)=f(x_d(t))+g(x_d(t))u_d(t)
+        +Y_{\hat\Theta_j}(x_d(t))\hat a(t).
+\end{equation}
+At each replanning time $t_\ell=\ell\Delta t_{\rm r}$, the following
+certainty-equivalent MPC problem is solved:
+\begin{equation}\label{eq:quad-mpc}
+\begin{aligned}
+    \min_{\{z_n\}_{n=0}^{N_{\rm p}},\{v_n\}_{n=0}^{N_{\rm p}-1}}\quad&
+    \sum_{n=0}^{N_{\rm p}-1}\left(
+        \|C_pz_n-\bar p(t_{\ell,n})\|_{Q_{\rm p}}^2
+        +\|v_n-u_{\rm hov}\|_{R_{\rm p}}^2\right)\\
+    &+\|C_pz_{N_{\rm p}}-\bar p(t_{\ell,N_{\rm p}})\|_{P_{\rm p}}^2\\
+    \text{s.t.}\quad&z_0=x_d(t_\ell),\\
+    &z_{n+1}=\Phi_{\Delta t_{\rm p}}^{\rm CE}
+      (z_n,v_n;\hat\Theta_{j_\ell},\hat a(t_\ell)),\\
+    &u_{\min}\le v_n\le u_{\max},\qquad n=0,\ldots,N_{\rm p}-1.
+\end{aligned}
+\end{equation}
+Here, $t_{\ell,n}=t_\ell+n\Delta t_{\rm p}$,
+$\|y\|_W^2=y^\top Wy$, $u_{\rm hov}=(g_0,0,0,0)^\top$,
+$u_{\min}=(0,-2,-2,-2)^\top$, and
+$u_{\max}=(20,2,2,2)^\top$. The RK4 map
+$\Phi_{\Delta t_{\rm p}}^{\rm CE}$ freezes both
+$\hat\Theta_{j_\ell}$ and $\hat a(t_\ell)$ during prediction.
+All cost matrices are discrete-time weights, with
+$Q_{\rm p}=8I_3$, $R_{\rm p}=0.03I_4$, $P_{\rm p}=60I_3$, and
+$S_{\rm p}=0_{4\times4}$, disabling the optional input-increment penalty.
+Waypoint following is encouraged through the running and terminal
+position-guide costs, without separate waypoint penalties or intermediate
+waypoint equality constraints.
+
+The current implementation uses $N_{\rm p}=40$,
+$\Delta t_{\rm p}=0.02~\mathrm s$, and
+$\Delta t_{\rm r}=0.4~\mathrm s$, giving a $0.8~\mathrm s$ prediction
+horizon. At each replan, the first twenty optimized reference inputs
+are used successively, each held for $\Delta t_{\rm p}$.
+Between replans, $x_d$ is integrated using the live $\hat a(t)$ and
+current representation, without resetting it to the MPC-predicted states.
+The representation-update period is $B|I_k|=8~\mathrm s$, with $B=4$;
+hence $B|I_k|/\Delta t_{\rm r}=20\in\mathbb N$.
+Each representation update is installed before replanning at the shared
+boundary. The guide remains at the final waypoint beyond the mission end.
+The default mission lasts $40~\mathrm s$ and starts from $x_{d,0}=0_9$.
+Representation updates at $8$, $16$, $24$ and $32~\mathrm s$ affect
+subsequent control; the terminal update at $40~\mathrm s$ is recorded
+without a subsequent control interval.
+
+\subsection{Offline training of the neural contraction metric}
+
+The dual metric is parameterized by a neural network with features
+$(v^\top,\phi,\vartheta,\psi,b^\top)^\top\in\mathbb R^{11}$,
+two hidden layers of width $128$ with hyperbolic-tangent activations,
+and a bias-free linear output layer of dimension $81$.
+Reshaping its output into $L_\zeta(x,b)\in\mathbb R^{9\times9}$ gives
+\begin{equation}\label{eq:quad-neural-metric}
+    W_\zeta(x,b)=L_\zeta(x,b)^\top L_\zeta(x,b)+0.03I_9,
+    \qquad M_\zeta(x,b)=W_\zeta(x,b)^{-1}.
+\end{equation}
+The architecture therefore guarantees $W_\zeta\succeq0.03I_9$.
+The metric is independent of position, but acts on the complete
+nine-dimensional differential state.
+
+Let $F_b(x)=f(x)+\Psi(x)b$,
+$A_b(x)=\partial F_b(x)/\partial x$, and let
+$N(x)\in\mathbb R^{9\times5}$ be an orthonormal basis of
+$\ker g(x)^\top$. For a vector $h$, write $D_xW[h]$ for the
+directional state derivative with $b$ held fixed.
+With contraction rate $\lambda=0.5~\mathrm{s^{-1}}$, define
+\begin{align}
+    C_1(x,b)&=N^\top\left(-D_xW[F_b]+A_bW+WA_b^\top
+        +2\lambda W\right)N,\label{eq:quad-c1}\\
+    K_i(x,b)&=D_xW[g_i]-\frac{\partial g_i}{\partial x}W
+        -W\left(\frac{\partial g_i}{\partial x}\right)^\top,
+        \qquad i=1,\ldots,4,\\
+    C_{2,i}(x,b)&=N^\top K_i(x,b)N.\label{eq:quad-c2}
+\end{align}
+The training objective encourages $C_1\prec0$ and penalizes the
+projected input-direction identities $C_{2,i}=0$.
+For a minibatch $\mathcal B$, it is
+\begin{align}
+    \mathcal L(\zeta)&=1000\mathcal L_1+100\mathcal L_2
+        +10\mathcal L_{\rm anchor},\\
+    \mathcal L_1&=\max_{(x,b)\in\mathcal B}
+        \left[\lambda_{\max}(C_1(x,b))+0.02\right]_+^2,\\
+    \mathcal L_2&=\frac{1}{|\mathcal B|}
+        \sum_{(x,b)\in\mathcal B}\sum_{i=1}^{4}
+        \|C_{2,i}(x,b)\|_F^2,\\
+    \mathcal L_{\rm anchor}&=\frac{1}{81|\mathcal B|}
+        \sum_{(x,b)\in\mathcal B}
+        \|W_\zeta(x,b)-W_{\zeta_0}(x,b)\|_F^2,
+\end{align}
+where $[r]_+=\max(r,0)$ and $\zeta_0$ denotes the supplied pretrained
+neural metric. Thus, the new neural metric is obtained by fine-tuning
+the supplied neural weights.
+
+Training uses $8192$ uniformly sampled points, all $2048$ box corners
+in the eleven active coordinates, and $128$
+additional points near a previously identified counterexample, giving
+$10368$ training points. The domain is
+\begin{equation}
+\begin{gathered}
+    p\in[-5,5]^3,\qquad v\in[-2,2]^3,\qquad
+    |\phi|,|\vartheta|\le0.35,\qquad |\psi|\le0.4,\\
+    |b|\le(0.72,0.72,0.66,0.20,0.20)^\top,
+\end{gathered}
+\end{equation}
+with componentwise inequalities. An independently sampled set of
+$2048$ points is used for validation. Optimization uses Adam for
+$96$ epochs with learning rate $3\times10^{-5}$, batch size $128$,
+double precision, and gradient-norm clipping at $10$.
+Checkpoint selection first prioritizes $C_1$ satisfaction on validation
+and training boundary/counterexample points, then the margin violation,
+and finally the weighted $C_2$/anchor loss; epoch $95$ is retained.
+Closed-loop tracking results are not used for checkpoint selection.
+
+After training, the neural weights are frozen. The original and retrained
+neural metrics are retained as separate choices; the simulation driver
+selects the original metric by default. Online updates of
+$\hat\Theta_j$ and $\hat a$ do not train the neural network.
+Metric derivatives are evaluated analytically, including the chain rule
+\begin{equation}
+    \frac{\partial W_j}{\partial\hat a_i}
+    =\sum_{r=1}^{5}\frac{\partial W_\zeta}{\partial b_r}
+      (\hat\Theta_j)_{ri},\qquad
+    W_j(x,\hat a)=W_\zeta(x,\hat\Theta_j\hat a).
+\end{equation}
+
+\subsection{Adaptive conformal calibration and CRaCCM feedback}
+
+The representation is initialized using $64$ observation intervals,
+collected and processed sequentially as in the planar example. The latest
+$32$ scores from these same intervals initialize the conformal window;
+there is no separate fixed-representation calibration run. Each interval contains $100$ samples at
+$\Delta t=0.02~\mathrm s$. Observations are collected from the physical
+plant under nominal PD excitation, and the uncertainty samples are
+$w_s=\dot x_s-f(x_s)-g(x_s)u_s$.
+These $64$ intervals span $128~\mathrm s$ of separate pretraining
+simulation and include $16$ representation updates. Each online arm
+then restarts the physical/reference clock at zero with the learned
+representation and CP window; the live states $\hat a$ and $\rho$
+start at zero. The offline CCM weights remain fixed in both stages.
+Pretraining holds the wind constant within each interval and uses
+\begin{equation}
+    v_{{\rm w},k}^{I,\rm pre}=
+      \begin{bmatrix}0.15\sin\alpha_k\\0.15\cos\alpha_k\\
+      0.05\sin(\alpha_k+\pi/4)\end{bmatrix},\qquad
+    \alpha_k=2\pi k/B.
+\end{equation}
+Thus one pretraining wind cycle spans one representation-learning block.
+The fitted parameter and CP score are updated after each interval, whereas
+the live adaptive estimate evolves continuously during online integration.
+For each completed interval, the fitted parameter and conformal score are
+\begin{equation}\label{eq:quad-score}
+\begin{aligned}
+    a_k^{\rm fit}&\in\underset{a\in[-1,1]^4}{\arg\min}
+        \sum_{t_s\in I_k}\|Y_{\hat\Theta_{j_k}}(x_s)a-w_s\|_2^2,\\
+    s_k&=\max_{t_s\in I_k}
+        \|Y_{\hat\Theta_{j_k}}(x_s)a_k^{\rm fit}-w_s\|_2.
+\end{aligned}
+\end{equation}
+Every $B=4$ intervals, the representation receives a projected gradient
+step on the summed fitting losses, treating the fitted parameters as fixed:
+\begin{equation}
+    \hat\Theta_{j+1}=\Pi_{\mathcal T}\left[
+      \hat\Theta_j-10^{-4}\sum_{k\in\mathcal K_j}\sum_{t_s\in I_k}
+      2\Psi(x_s)^\top
+      \big(\Psi(x_s)\hat\Theta_j a_k^{\rm fit}-w_s\big)
+      (a_k^{\rm fit})^\top\right].
+\end{equation}
+Here, $\mathcal K_j$ contains the four completed intervals in the block,
+and $\Pi_{\mathcal T}$ clips each matrix entry to a fixed box, independent
+of its initialization. As in the planar example, all entries are initialized
+uniformly within this same box:
+\begin{equation}
+    (\Theta_0)_{ri}\sim\mathcal U(-h_r,h_r),\qquad
+    \mathcal T=\{\Theta:\ |\Theta_{ri}|\le h_r\},\qquad
+    h=(0.15,0.15,0.15,0.04,0.04)^\top.
+\end{equation}
+The default representation seed is $42$, separate from the observation seed;
+both seeds, the initial matrix and the box are saved for reproducibility.
+For the outer projection ball $\|\hat a\|_2\le2.01$, this box gives
+$|(\Theta\hat a)_r|\le2.01\sqrt4\,h_r$, which lies within the physical
+parameter domains of both bundled CCMs. This is a parameter-domain inclusion,
+not an additional certification of the CCM inequalities.
+
+Each score is appended before the blockwise representation update and retains
+the representation used in its own interval; scores are not recomputed using
+the final representation. During pretraining, $\delta$ stays at $0.1$.
+At completion, the initial quantile is computed from the most recent $32$
+scores. Each comparison arm receives a copy of this learner, including its
+representation, score window and update counters. Online representation
+learning continues from these counters rather than restarting them.
+
+Let $Q_k^{\rm cp}$ be the quantile available before interval $I_k$.
+The adaptive miscoverage level is updated by
+\begin{equation}
+    \delta_{k+1}=\delta_k+0.01
+       \left(0.1-\mathbf1\{s_k>Q_k^{\rm cp}\}\right),
+       \qquad\delta_0=0.1.
+\end{equation}
+After appending $s_k$, the next quantile is computed from the latest
+$n\le32$ scores. If their order statistics are
+$s_{(1)}\le\cdots\le s_{(n)}$, the implementation uses
+\begin{equation}
+    r=\min\!\left(n,\max\!\left(1,
+       \left\lceil(1-\delta_{k+1})(n+1)\right\rceil\right)\right),
+       \qquad Q_{k+1}^{\rm cp}=s_{(r)}.
+\end{equation}
+In particular, ranks above $n$ return the largest observed score.
+These scores measure the residual of the interval-wise fitted model;
+they do not directly bound the full error $w-Y_{\hat\Theta_j}\hat a$.
+
+For the selected metric, define $M_j=W_j^{-1}$ and the geodesic energy
+\begin{equation}\label{eq:quad-energy}
+    E_j(x,x_d,\hat a)=\inf_{\substack{\gamma(0)=x_d\\\gamma(1)=x}}
+       \int_0^1\gamma_s(s)^\top M_j(\gamma(s),\hat a)
+           \gamma_s(s)\,ds.
+\end{equation}
+A degree-two Chebyshev path and five Clenshaw--Curtis nodes are used
+in the numerical approximation.
+Using the computed path and its energy, let
+\begin{equation}
+\begin{gathered}
+    \ell_1=\gamma_s(1)^\top M_j(x,\hat a),\qquad
+    \ell_0=\gamma_s(0)^\top M_j(x_d,\hat a),\qquad A=\ell_1g(x),\\
+    c=\ell_1\big(f(x)+g(x)u_d+Y_{\hat\Theta_j}(x)\hat a\big)
+       -\ell_0\big(f(x_d)+g(x_d)u_d
+             +Y_{\hat\Theta_j}(x_d)\hat a\big)+\lambda E_j.
+\end{gathered}
+\end{equation}
+The conformal tightening is scaled smoothly near zero control authority:
+\begin{equation}
+\begin{gathered}
+    r_A=\min\!\left(\frac{\|A\|_2}{0.01},1\right),\qquad
+    \chi(A)=r_A^3(10-15r_A+6r_A^2),\\
+    \Delta_{\rm cp}=\chi(A)\|\ell_1\|_2Q_k^{\rm cp}.
+\end{gathered}
+\end{equation}
+At each control sample, the CRaCCM correction is obtained from
+\begin{equation}\label{eq:quad-craccm-qp}
+\begin{aligned}
+    \min_{\delta u,\,\xi\ge0}\quad&
+       \frac12\delta u^\top g(x)^\top g(x)\delta u
+       +\frac{10^4}{2}\xi^2\\
+    \text{s.t.}\quad&A\delta u+c+\Delta_{\rm cp}\le\xi,
+       \qquad u=u_d+\delta u^\star.
+\end{aligned}
+\end{equation}
+Thus, the QP minimizes the corrective state-rate magnitude and a
+contraction slack. The input bounds in~\eqref{eq:quad-mpc} constrain
+$u_d$; the final corrected input $u$ has no saturation constraint in
+this QP. Setting $\Delta_{\rm cp}=0$ gives the comparison without CP.
+
+The continuous adaptation laws are
+\begin{equation}\label{eq:quad-adaptation}
+\begin{aligned}
+    \dot{\hat a}&=\operatorname{Proj}_{\Gamma}\left(
+       \hat a,\nu(\rho)\Gamma Y_{\hat\Theta_j}(x)^\top\ell_1^\top\right),\\
+    \dot\rho&=-\frac{\nu(\rho)
+       (\partial_{\hat a}E_j)^\top\dot{\hat a}}
+       {\nu'(\rho)(E_j+\eta)},\\
+    \nu(\rho)&=1.5+\frac{0.5\rho}{\sqrt{1+\rho^2}},\qquad
+    \nu'(\rho)=\frac{0.5}{(1+\rho^2)^{3/2}},\qquad\eta=500.
+\end{aligned}
+\end{equation}
+The projection is centered at zero, has outer radius $2.01$, and uses
+a $0.01$ transition layer; its inner radius is $2$, which contains
+$[-1,1]^4$. The initial estimates are $\hat a(0)=0_4$ and $\rho(0)=0$.
+With $\Theta_{\rm c}$ denoting the pretrained representation and
+$d=\Theta_{\rm c}^\top(0,0,1,0,0)^\top$, the fixed adaptation gain is
+\begin{equation}
+    \Gamma=3\times10^{-5}
+        (\Theta_{\rm c}^\top\Theta_{\rm c}+10^{-5}I_4)^{-1}
+        +9.7\times10^{-4}\frac{dd^\top}{(d^\top d)^2}.
+\end{equation}
+The energy derivative with respect to $\hat a$ is evaluated by quadrature
+using $\partial_{\hat a_i}M_j=-M_j(\partial_{\hat a_i}W_j)M_j$.
+The plant, reference, and adaptation states are integrated jointly
+with RK45 over each $0.02~\mathrm s$ control hold; the computed path
+is reused within the hold. In the comparisons without adaptation,
+$\hat a$ and $\rho$ are held at zero and the uncertainty compensation
+is omitted from the reference and feedback equations.
+The interval-wise representation updates remain enabled in all four cases.
+
+To interpret the contraction constraint, consider the ideal continuous-time
+case on an interval with fixed representation and a constant parameter
+$a^\star\in[-1,1]^4$ such that
+$w(x,t)=Y_{\hat\Theta_j}(x)a^\star+\epsilon_j(x,t)$.
+Assume an exact minimizing geodesic and the residual bound
+$\|\epsilon_j(x,t)\|_2\le Q_k^{\rm cp}$ throughout that interval.
+For $\tilde a=a^\star-\hat a$, define
+\begin{equation}
+    \mathcal V_j=\nu(\rho)(E_j+\eta)
+       +\tilde a^\top\Gamma^{-1}\tilde a.
+\end{equation}
+The first variation of the energy, the projection inequality, and
+\eqref{eq:quad-adaptation} then give
+\begin{equation}\label{eq:quad-conditional-decay}
+    \dot{\mathcal V}_j\le
+       -2\lambda\nu(\rho)E_j+2\nu(\rho)\xi
+       +2\nu(\rho)\big(1-\chi(A)\big)
+            \|\ell_1\|_2Q_k^{\rm cp}.
+\end{equation}
+The parameter-error term cancels the modeled uncertainty mismatch,
+while the $\rho$ dynamics cancel the explicit metric-parameter derivative.
+When $\chi=1$ and $\xi=0$, this yields a negative tracking-energy
+term under the stated assumptions.
+
+In the implemented system, metric positivity is structural, whereas
+$C_1\prec0$ and the projected $C_2$ identities are trained and checked
+numerically. The $C_2$ penalty does not impose exact identities, and
+the stronger full-matrix conditions $K_i=0$ are not enforced by the
+neural architecture. The conformal score, finite calibration window,
+online representation changes, and temporal dependence do not establish
+an unconditional residual bound. Equation~\eqref{eq:quad-conditional-decay}
+is therefore a conditional continuous-time interpretation, rather than
+a global certificate for the sampled implementation or representation
+switches. What the implemented controller directly enforces is the
+relaxed, smoothly tightened QP inequality~\eqref{eq:quad-craccm-qp}
+at the control samples. Across the retained twelve simulations, its
+maximum recorded constraint residual is below $1.3\times10^{-14}$;
+this verifies numerical QP feasibility, not zero slack or global
+contraction of the uncertain physical plant.
+
+\end{document}
