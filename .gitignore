@@ -4,6 +4,8 @@ __pycache__/
 **/__pycache__/*.pyc
 
 *.pkl
+*.png
+*.pdf
 
 plot_planar_quad_craccm_olacp_results.py
 plot_toy_craccm_olacp_results.py

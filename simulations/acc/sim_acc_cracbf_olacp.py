@@ -2,7 +2,10 @@
 
 import copy
 import os
+import pickle
 import sys
+from datetime import datetime
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -700,8 +703,10 @@ def run_cracbf_simulation(
     return result
 
 
-def plot_cracbf_results(results):
-    """Plot and compare one or more main CRaCBF simulation results"""
+def plot_cracbf_results(results, file_format="png"):
+    """Compare results and save figures in this example's results folder as PNG or PDF."""
+    if file_format not in ("png", "pdf"):
+        raise ValueError('file_format must be "png" or "pdf"')
     items = (
         list(results.items())
         if isinstance(results, dict)
@@ -745,6 +750,7 @@ def plot_cracbf_results(results):
         ax.grid(True)
         ax.legend()
     fig.suptitle("ACC state comparison")
+    fig.set_label("acc_states")
 
     fig, axs = plt.subplots(1, 1, sharex=True, figsize=(8, 7))
     figures.append(fig)
@@ -760,7 +766,8 @@ def plot_cracbf_results(results):
     axs.set_xlim(0.0, maximum_time)
     axs.grid(True)
     axs.legend()
-    fig.suptitle("ACC control comparison")    
+    fig.suptitle("ACC control comparison")
+    fig.set_label("acc_controls")
 
     fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
     figures.append(fig)
@@ -793,6 +800,7 @@ def plot_cracbf_results(results):
         ax.grid(True)
         ax.legend()
     fig.suptitle("CRaCBF safety comparison")
+    fig.set_label("acc_cbf")
 
     fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
     figures.append(fig)
@@ -832,6 +840,7 @@ def plot_cracbf_results(results):
         ax.grid(True)
         ax.legend()
     fig.suptitle("Algorithm 1 comparison")
+    fig.set_label("acc_olacp")
 
     fig, axs = plt.subplots(ACC.adim, 1, sharex=True, figsize=(8, 7))
     figures.append(fig)
@@ -867,6 +876,7 @@ def plot_cracbf_results(results):
     axs[3].legend()
     axs[-1].set_xlabel("time (s)")
     fig.suptitle("CRaCBF adaptation and OLACP identification comparison")
+    fig.set_label("acc_adaptation")
 
     fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
     figures.append(fig)
@@ -889,32 +899,42 @@ def plot_cracbf_results(results):
         ax.grid(True)
         ax.legend()
     fig.suptitle("Scaling, projection, and prediction-loss comparison")
+    fig.set_label("acc_scaling_prediction_loss")
 
     components = ((1, r"$w_2=d/m$"), (2, r"$w_3=\Delta v_l$"))
-    fig, axs = plt.subplots(2, len(items), squeeze=False, figsize=(6 * len(items), 7))
+    fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
     figures.append(fig)
-    for column, (label, result) in enumerate(items):
-        for row, (component, component_label) in enumerate(components):
-            ax = axs[row, column]
-            ax.plot(result["t"], result["true_uncertainty_hist"][:, component], label="true")
+    for ax, (component, component_label) in zip(axs, components):
+        for label, result in items:
+            ax.plot(
+                result["t"], result["true_uncertainty_hist"][:, component],
+                color=color_map[label], label=f"true: {label}",
+            )
             ax.plot(
                 result["t"],
                 result["fitted_uncertainty_hist"][:, component],
                 "--",
-                label=r"$Y_\Theta(x)a_k$",
+                color=color_map[label],
+                label=rf"$Y_{{\Theta_j}}(x)a_k$: {label}",
             )
-            ax.set_xlim(0.0, float(result["t"][-1]))
-            ax.set_ylabel(component_label)
-            ax.set_title(label)
-            ax.grid(True)
-            ax.legend()
-        axs[-1, column].set_xlabel("time (s)")
-    fig.suptitle(r"Main CRaCBF uncertainty-model comparison")
+        ax.set_xlim(0.0, maximum_time)
+        ax.set_ylabel(component_label)
+        ax.grid(True)
+        ax.legend(fontsize="small")
+    axs[-1].set_xlabel("time (s)")
+    fig.suptitle(r"ACC: $Y_{\Theta_j}(x)a_k$ versus true uncertainty")
+    fig.set_label("acc_uncertainty_fit")
+    results_directory = Path(__file__).resolve().parent / "results"
+    results_directory.mkdir(exist_ok=True)
+    for figure in figures:
+        filename = results_directory / f"{figure.get_label()}.{file_format}"
+        figure.savefig(filename, format=file_format, dpi=300, bbox_inches="tight")
+    print(f"Saved {len(figures)} {file_format.upper()} figures to {results_directory}")
     return figures
 
 
-def main():
-    """Build the shared experiment, run the controller settings, and compare them"""
+def main(plot=False):
+    """Run the controller settings and save results, optionally displaying plots."""
     K_pre = 32
     N_cal = 30
     K = 12
@@ -1042,7 +1062,7 @@ def main():
         representation_loss_gradient=pretrain_system.representation_loss_gradient,
     )
     pretrained_olacp, pretraining_history = run_pretraining(
-        pretrain_system, olacp, config, plot=True
+        pretrain_system, olacp, config, plot=plot
     )
     pretrained_theta = pretrained_olacp.Theta.copy()
     pretrained_a_k = pretrained_olacp.a_k.copy()
@@ -1088,13 +1108,35 @@ def main():
         raise RuntimeError("A main simulation mutated the pretrained interval index")
     if pretrained_olacp.representation_update_index != pretrained_update_index:
         raise RuntimeError("A main simulation mutated the pretrained representation-update index")
+
+    timestamp = datetime.now().strftime("%Y_%m%d_%H%M%S_%f")
+    results_directory = Path(__file__).resolve().parent / "results"
+    results_directory.mkdir(exist_ok=True)
+    results_filename = results_directory / f"sim_acc_cracbf_results_{timestamp}.pkl"
+    with results_filename.open("xb") as stream:
+        pickle.dump(
+            {
+                "config": config,
+                # Omit the runtime-only uncertainty lambda, which pickle cannot serialize.
+                "base_params": {
+                    key: value for key, value in base_acc_params.items() if key != "true_uncertainty"
+                },
+                "pretraining_history": pretraining_history,
+                "results": results,
+            },
+            stream,
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+    print(f"Saved results to {results_filename}")
+
     if results["CP + adaptive"]["safety_violated"]:
         raise RuntimeError("The CP + adaptive run unexpectedly violated safety")
     if not results["No CP + nonadaptive"]["safety_violated"]:
         raise RuntimeError("The no-CP nonadaptive run unexpectedly maintained safety")
 
-    plot_cracbf_results(results)
-    plt.show()
+    if plot:
+        plot_cracbf_results(results)
+        plt.show()
     return pretraining_history, results
 
 

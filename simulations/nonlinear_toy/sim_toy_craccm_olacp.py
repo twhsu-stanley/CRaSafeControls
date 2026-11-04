@@ -231,7 +231,7 @@ def plan_nominal_trajectory(system, config):
         dt=config["dt"],
         Q=config["motion_planner_Q"],
         R=config["motion_planner_R"],
-        Q_f=config["motion_planner_Q_f"],
+        Q_terminal=config["motion_planner_Q_terminal"],
         u_min=np.array([system.params["u_min"]]),
         u_max=np.array([system.params["u_max"]]),
     )
@@ -241,7 +241,7 @@ def plan_nominal_trajectory(system, config):
         config["nominal_goal_state"] - config["nominal_initial_state"]
     )[:, None] * alpha
     u_guess = np.zeros((system.udim, horizon_steps))
-    x_d, u_d = planner.plan(
+    x_d, u_d = planner.plan_nominal_towards_goal(
         config["nominal_initial_state"],
         config["nominal_goal_state"],
         horizon_steps,
@@ -527,13 +527,10 @@ def run_craccm_simulation(
 
     tracking_error = np.linalg.norm(x_hist - x_d_hist, axis=1)
     metrics = {
-        "final_error": float(tracking_error[-1]),
         "rms_error": float(np.sqrt(np.mean(tracking_error ** 2))),
         "max_error": float(np.max(tracking_error)),
         "max_control": float(np.nanmax(np.abs(u_hist))),
         "max_slack": float(np.nanmax(slack_hist)),
-        "a_hat_change": float(np.linalg.norm(a_hat_hist[-1] - a_hat_hist[0])),
-        "rho_range": float(np.ptp(rho_hist)),
     }
     result = {
         "label": run_label,
@@ -578,7 +575,6 @@ def run_craccm_simulation(
     
     print(
         f"{run_label}: status={status}{failure_summary}, "
-        f"final_error={metrics['final_error']:.3e}, "
         f"rms_error={metrics['rms_error']:.3e}, max_error={metrics['max_error']:.3e}, "
         f"max|u|={metrics['max_control']:.3e}, max_slack={metrics['max_slack']:.3e}"
     )
@@ -644,32 +640,32 @@ def plot_craccm_results(results, desired_trajectory):
     axs[-1].set_xlabel("time (s)")
     fig.suptitle("Nonlinear-toy state tracking comparison")
 
+    fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
+    figures.append(fig)
     for label, result in items:
         color = color_map[label]
-        result_end_time = float(result["t"][-1])
-        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
-        figures.append(fig)
-        axs[0].plot(result["t"], result["u_hist"], color=color, label=r"$u$")
+        axs[0].plot(result["t"], result["u_hist"], color=color, label=f"control: {label}")
         axs[0].plot(
             result["t"],
             result["u_d_hist"],
-            "k--",
-            label=r"$u_d$",
+            "--",
+            color=color,
+            label=f"reference: {label}",
         )
         axs[1].semilogy(
             result["t"],
             np.maximum(result["slack_hist"], 1e-12),
             color=color,
-            label="QP slack",
+            label=label,
         )
-        axs[0].set_ylabel("input")
-        axs[1].set_ylabel("QP slack")
-        axs[1].set_xlabel("time (s)")
-        for ax in axs:
-            ax.set_xlim(0.0, result_end_time)
-            ax.grid(True)
-            ax.legend()
-        fig.suptitle(f"{label}: control and QP slack")
+    axs[0].set_ylabel("input")
+    axs[1].set_ylabel("QP slack")
+    axs[1].set_xlabel("time (s)")
+    for ax in axs:
+        ax.set_xlim(0.0, maximum_time)
+        ax.grid(True)
+        ax.legend(fontsize="small")
+    fig.suptitle("Nonlinear-toy control and QP slack comparison")
 
     for label, result in items:
         color = color_map[label]
@@ -795,27 +791,29 @@ def plot_craccm_results(results, desired_trajectory):
         fig.suptitle(f"{label}: true-uncertainty coefficient schedule")
 
     components = ((0, r"$w_1$"), (2, r"$w_3$"))
-    for label, result in items:
-        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
-        figures.append(fig)
-        for ax, (component, component_label) in zip(axs, components):
+    fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
+    figures.append(fig)
+    for ax, (component, component_label) in zip(axs, components):
+        for label, result in items:
             ax.plot(
                 result["t"],
                 result["true_uncertainty_hist"][:, component],
-                label="true uncertainty",
+                color=color_map[label],
+                label=f"true: {label}",
             )
             ax.plot(
                 result["t"],
                 result["fitted_uncertainty_hist"][:, component],
                 "--",
-                label=r"$Y_\Theta(x)a_k$",
+                color=color_map[label],
+                label=rf"$Y_{{\Theta_j}}(x)a_k$: {label}",
             )
-            ax.set_xlim(0.0, float(result["t"][-1]))
-            ax.set_ylabel(component_label)
-            ax.grid(True)
-            ax.legend()
-        axs[-1].set_xlabel("time (s)")
-        fig.suptitle(rf"{label}: $Y_\Theta(x)a_k$ versus true uncertainty")
+        ax.set_xlim(0.0, maximum_time)
+        ax.set_ylabel(component_label)
+        ax.grid(True)
+        ax.legend(fontsize="small")
+    axs[-1].set_xlabel("time (s)")
+    fig.suptitle(r"Nonlinear-toy: $Y_{\Theta_j}(x)a_k$ versus true uncertainty")
 
     plt.tight_layout()
     plt.show()
@@ -862,7 +860,7 @@ def main():
         "nominal_goal_state": np.array([-0.05, 0.0, 0.01]),
         "motion_planner_Q": np.diag([100.0, 1.0, 100.0]),
         "motion_planner_R": 1e-3 * np.eye(NONLINEAR_TOY.udim),
-        "motion_planner_Q_f": np.diag([1000.0, 10.0, 1000.0]),
+        "motion_planner_Q_terminal": np.diag([1000.0, 10.0, 1000.0]),
         "tracking_initial_offset": np.array([0.3, -0.2, 0.4]) * 0.0,
         "x_norm_divergence_threshold": 10.0,
         "rho_divergence_threshold": 1e10,

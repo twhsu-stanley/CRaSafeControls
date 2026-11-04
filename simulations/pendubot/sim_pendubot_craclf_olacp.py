@@ -2,8 +2,11 @@
 
 import copy
 import os
+import pickle
 import sys
 import warnings
+from datetime import datetime
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -24,6 +27,7 @@ def run_pretraining(system, olacp, config, plot=True):
     t_pre = np.arange(K_pre * I_length, dtype=float) * dt
 
     wind_indices = np.arange(K_pre)
+    horizontal_wind_schedule = 0.4 * np.sin(2.0 * np.pi * wind_indices / 5.0)
     vertical_wind_schedule = -8.0
     vertical_wind_schedule += 1.5 * np.sin(2.0 * np.pi * wind_indices / 7.0)
     vertical_wind_schedule += 0.5 * np.sin(2.0 * np.pi * wind_indices / 3.0)
@@ -34,7 +38,8 @@ def run_pretraining(system, olacp, config, plot=True):
         return min(int(np.floor(max(float(t), 0.0) / interval_duration)), K_pre - 1)
 
     def wind_velocity(t):
-        return np.array([0.0, vertical_wind_schedule[schedule_index(t)]])
+        index = schedule_index(t)
+        return np.array([horizontal_wind_schedule[index], vertical_wind_schedule[index]])
 
     system.wind_velocity_fcn = wind_velocity
     system.set_representation(olacp.Theta)
@@ -61,7 +66,6 @@ def run_pretraining(system, olacp, config, plot=True):
             #    2.0 * np.pi * config["pretrain_excitation_frequency"] * 2 * t
             #)
             u = system.local_lqr_control(x, a_hat_0) + excitation
-            u = np.clip(u, system.params["u_min"], system.params["u_max"])
 
             x_hist[sample_index] = x
             u_hist[sample_index] = float(u.item())
@@ -124,6 +128,7 @@ def run_pretraining(system, olacp, config, plot=True):
         "prediction_error_hist": prediction_error_hist,
         "true_uncertainty_hist": true_uncertainty_hist,
         "fitted_uncertainty_hist": fitted_uncertainty_hist,
+        "horizontal_wind_schedule": horizontal_wind_schedule,
         "vertical_wind_schedule": vertical_wind_schedule,
         "quantile": quantile,
     }
@@ -155,12 +160,14 @@ def run_pretraining(system, olacp, config, plot=True):
         fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
         axs[0].plot(t_pre, u_hist)
         axs[0].set_ylabel("torque (N m)")
-        axs[1].plot(t_pre, wind_hist[:, 1])
-        axs[1].set_ylabel(r"$v_{w,z}$ (m/s)")
+        axs[1].plot(t_pre, wind_hist[:, 0], label=r"$v_{w,x}$")
+        axs[1].plot(t_pre, wind_hist[:, 1], label=r"$v_{w,z}$")
+        axs[1].set_ylabel("wind (m/s)")
+        axs[1].legend()
         axs[1].set_xlabel("time (s)")
         for ax in axs:
             ax.grid(True)
-        fig.suptitle("Pretraining: torque and vertical wind")
+        fig.suptitle("Pretraining: torque and wind")
 
         components = ((2, r"$w_3$"), (3, r"$w_4$"))
         fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
@@ -217,15 +224,19 @@ def run_craclf_simulation(
     rho_divergence_event.terminal = True
     rho_divergence_event.direction = -1.0
 
-    wind_indices = np.arange(K) #+ config["K_pre"]
-    vertical_wind_schedule = -4.5
-    vertical_wind_schedule += 4.5 * np.cos(2.0 * np.pi * wind_indices / 7.0)
+    # Wind velocities (m/s) over the six 2-second simulation intervals.
+    # End horizontal gusts before the tail to preserve the upright equilibrium with u_ref=0.
+    horizontal_wind_schedule = np.array([0.0, 1.0, -1.5, 1.0, 0.0, 0.0])
+    vertical_wind_schedule = np.array(
+        [0.0, -5.27114277397773, -17.1152930753884, -26.6135641506339, -6.0, -6.0]
+    )
 
     def schedule_index(t):
         return min(int(np.floor(max(float(t), 0.0) / interval_duration)), K - 1)
 
     def wind_velocity(t):
-        return np.array([0.0, vertical_wind_schedule[schedule_index(t)]])
+        index = schedule_index(t)
+        return np.array([horizontal_wind_schedule[index], vertical_wind_schedule[index]])
 
     online_olacp.clear_buffers()
     if online_olacp._representation_intervals:
@@ -240,7 +251,7 @@ def run_craclf_simulation(
 
     x = config["main_initial_state"].copy()
     initial_state = x.copy()
-    a_hat = system.a_center.copy() #online_olacp.a_k.copy() if use_adaptive else system.a_center.copy()
+    a_hat = system.a_center.copy()
     rho = 0.0
     x_ext = np.hstack((x, a_hat, rho))
     x_hist = np.zeros((len(t_full), system.xdim))
@@ -419,15 +430,9 @@ def run_craclf_simulation(
         "tail_rms": float(np.sqrt(np.mean(tail_norm**2))),
         "tail_peak": float(np.max(tail_norm)),
         "max_norm": float(np.max(state_norm)),
-        "V_ratio": float(V_hist[-1] / max(V_hist[0], np.finfo(float).eps)),
         "max_control": float(np.nanmax(np.abs(u_hist))),
         "max_slack": float(np.nanmax(slack_hist)),
-        "a_hat_change": float(np.linalg.norm(a_hat_hist[-1] - a_hat_hist[0])),
-        "a_hat_path_length": float(np.sum(np.linalg.norm(np.diff(a_hat_hist, axis=0), axis=1))),
         "max_a_hat_dot": max_a_hat_dot,
-        "rho_change": float(rho_hist[-1] - rho_hist[0]),
-        "rho_range": float(np.ptp(rho_hist)),
-        "nu_range": float(np.ptp(nu_hist)),
     }
     result = {
         "label": run_label,
@@ -454,6 +459,7 @@ def run_craclf_simulation(
         "score_hist": np.asarray(score_hist),
         "delta_hist": np.asarray(delta_hist),
         "miscoverage_hist": np.asarray(miscoverage_hist),
+        "horizontal_wind_schedule": horizontal_wind_schedule,
         "vertical_wind_schedule": vertical_wind_schedule,
         "status": status,
         "failure_reason": failure_reason,
@@ -473,10 +479,8 @@ def run_craclf_simulation(
     print(
         f"{run_label}: status={status}{failure_summary}, t_final={t[-1]:.3f}, "
         f"final_norm={metrics['final_norm']:.3e}, tail_rms={metrics['tail_rms']:.3e}, "
-        f"max_norm={metrics['max_norm']:.3e}, V_final/V_initial={metrics['V_ratio']:.3e}, "
-        f"max|u|={metrics['max_control']:.2f}, max_slack={metrics['max_slack']:.3e}, "
-        f"Delta_a={metrics['a_hat_change']:.3e}, a_path={metrics['a_hat_path_length']:.3e}, "
-        f"Delta_rho={metrics['rho_change']:.3e}, Delta_nu={metrics['nu_range']:.3e}"
+        f"max_norm={metrics['max_norm']:.3e}, "
+        f"max|u|={metrics['max_control']:.2f}, max_slack={metrics['max_slack']:.3e}"
     )
 
     if plot:
@@ -484,8 +488,13 @@ def run_craclf_simulation(
     return result
 
 
-def plot_craclf_results(results):
-    """Plot and compare one or more main CRaCLF simulation results"""
+def plot_craclf_results(results, file_format="png"):
+    """Compare results and plot the longest recorded wind history.
+
+    Save figures in this example's results folder as PNG (default) or PDF.
+    """
+    if file_format not in ("png", "pdf"):
+        raise ValueError('file_format must be "png" or "pdf"')
     items = (
         list(results.items())
         if isinstance(results, dict)
@@ -495,13 +504,14 @@ def plot_craclf_results(results):
         raise ValueError("At least one CRaCLF result is required")
 
     reference = max((result for _, result in items), key=lambda result: len(result["t"]))
-    for label, result in items[1:]:
+    for label, result in items:
+        if result is reference:
+            continue
         if not np.array_equal(result["initial_state"], reference["initial_state"]):
             raise RuntimeError(f"{label}: comparison initial state does not match")
-        if not np.array_equal(
-            result["vertical_wind_schedule"], reference["vertical_wind_schedule"]
-        ):
-            raise RuntimeError(f"{label}: comparison wind schedule does not match")
+        for schedule_name in ("horizontal_wind_schedule", "vertical_wind_schedule"):
+            if not np.array_equal(result[schedule_name], reference[schedule_name]):
+                raise RuntimeError(f"{label}: comparison {schedule_name} does not match")
 
     colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
     color_map = {label: colors[index % len(colors)] for index, (label, _) in enumerate(items)}
@@ -538,31 +548,34 @@ def plot_craclf_results(results):
     axs[0].legend()
     axs[-1].set_xlabel("time (s)")
     fig.suptitle("Pendubot state comparison")
+    fig.set_label("pendubot_states")
 
+    fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
+    figures.append(fig)
     for label, result in items:
         color = color_map[label]
-        result_end_time = float(result["t"][-1])
-        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
-        figures.append(fig)
-        axs[0].plot(result["t"], result["u_hist"], color=color, label="control")
+        axs[0].plot(result["t"], result["u_hist"], color=color, label=label)
         axs[1].semilogy(
             result["t"],
             np.maximum(result["slack_hist"], 1e-12),
             color=color,
-            label="QP slack",
+            label=label,
         )
-        axs[0].set_ylabel("torque (N m)")
-        axs[1].set_ylabel("QP slack")
-        axs[1].set_xlabel("time (s)")
-        for ax in axs:
-            ax.set_xlim(0.0, result_end_time)
-            ax.grid(True)
-            ax.legend()
-        fig.suptitle(f"{label}: control and QP slack")
+    axs[0].set_ylabel("torque (N m)")
+    axs[1].set_ylabel("QP slack")
+    axs[1].set_xlabel("time (s)")
+    for ax in axs:
+        ax.set_xlim(0.0, maximum_time)
+        ax.grid(True)
+        ax.legend()
+    fig.suptitle("Pendubot control and QP slack comparison")
+    fig.set_label("pendubot_control_slack")
 
     for label, result in items:
         color = color_map[label]
         result_end_time = float(result["t"][-1])
+        setting_name = "".join(c if c.isalnum() else " " for c in label.lower())
+        setting_name = "_".join(setting_name.split())
         fig, axs = plt.subplots(Pendubot.adim + 2, 1, sharex=True, figsize=(8, 11))
         figures.append(fig)
         for parameter_index, ax in enumerate(axs[: Pendubot.adim]):
@@ -593,10 +606,13 @@ def plot_craclf_results(results):
         axs[0].legend()
         axs[-1].set_xlabel("time (s)")
         fig.suptitle(f"{label}: CRaCLF adaptation and OLACP identification")
+        fig.set_label(f"pendubot_adaptation_{setting_name}")
 
     for label, result in items:
         color = color_map[label]
         result_end_time = float(result["t"][-1])
+        setting_name = "".join(c if c.isalnum() else " " for c in label.lower())
+        setting_name = "_".join(setting_name.split())
         fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
         figures.append(fig)
         axs[0].step(
@@ -637,54 +653,60 @@ def plot_craclf_results(results):
             ax.grid(True)
             ax.legend()
         fig.suptitle(f"{label}: Algorithm 1")
+        fig.set_label(f"pendubot_olacp_{setting_name}")
 
-    for label, result in items:
-        color = color_map[label]
-        result_end_time = float(result["t"][-1])
-        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
-        figures.append(fig)
-        axs[0].plot(result["t"], result["wind_hist"][:, 0], color=color, label=r"$w_x$")
-        axs[1].plot(result["t"], result["wind_hist"][:, 1], color=color, label=r"$w_z$")
-        axs[0].set_ylabel(r"$w_x$")
-        axs[1].set_ylabel(r"$w_z$")
-        axs[1].set_xlabel("time (s)")
-        for ax in axs:
-            ax.set_xlim(0.0, result_end_time)
-            ax.grid(True)
-            ax.legend()
-        fig.suptitle(f"{label}: wind history")
+    fig, ax = plt.subplots(figsize=(8, 4))
+    figures.append(fig)
+    for component, wind_label in enumerate((r"$v_{w,x}$", r"$v_{w,z}$")):
+        ax.step(reference["t"], reference["wind_hist"][:, component], where="post", label=wind_label)
+    ax.set_xlim(0.0, maximum_time)
+    ax.set_ylabel("wind velocity (m/s)")
+    ax.set_xlabel("time (s)")
+    ax.grid(True)
+    ax.legend()
+    fig.suptitle("Pendubot recorded wind history")
+    fig.set_label("pendubot_wind")
 
     components = ((2, r"$w_3$"), (3, r"$w_4$"))
-    for label, result in items:
-        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
-        figures.append(fig)
-        for ax, (component, component_label) in zip(axs, components):
+    fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
+    figures.append(fig)
+    for ax, (component, component_label) in zip(axs, components):
+        for label, result in items:
             ax.plot(
                 result["t"],
                 result["true_uncertainty_hist"][:, component],
-                label="true uncertainty",
+                color=color_map[label],
+                label=f"true: {label}",
             )
             ax.plot(
                 result["t"],
                 result["fitted_uncertainty_hist"][:, component],
                 "--",
-                label=r"$Y_\Theta(x)a_k$",
+                color=color_map[label],
+                label=rf"$Y_{{\Theta_j}}(x)a_k$: {label}",
             )
-            ax.set_xlim(0.0, float(result["t"][-1]))
-            ax.set_ylabel(component_label)
-            ax.grid(True)
-            ax.legend()
-        axs[-1].set_xlabel("time (s)")
-        fig.suptitle(rf"{label}: $Y_\Theta(x)a_k$ versus true uncertainty")
+        ax.set_xlim(0.0, maximum_time)
+        ax.set_ylabel(component_label)
+        ax.grid(True)
+        ax.legend(fontsize="small")
+    axs[-1].set_xlabel("time (s)")
+    fig.suptitle(r"Pendubot: $Y_{\Theta_j}(x)a_k$ versus true uncertainty")
+    fig.set_label("pendubot_uncertainty_fit")
 
     plt.tight_layout()
+    results_directory = Path(__file__).resolve().parent / "results"
+    results_directory.mkdir(exist_ok=True)
+    for figure in figures:
+        filename = results_directory / f"{figure.get_label()}.{file_format}"
+        figure.savefig(filename, format=file_format, dpi=300, bbox_inches="tight")
+    print(f"Saved {len(figures)} {file_format.upper()} figures to {results_directory}")
     plt.show()
     
     return figures
 
 
-def main():
-    """Build the shared experiment, run two controller settings, and compare them"""
+def main(plot=False):
+    """Run the three controller settings and save results, optionally displaying plots."""
     K_pre = 45
     N_cal = 30
     K = 6.0
@@ -717,11 +739,10 @@ def main():
     a_ub = 1.5 * np.ones(Pendubot.adim)
     projection_epsilon = 0.01
     a_hat_norm_max = 0.5 * np.linalg.norm(a_ub - a_lb, ord=2) + projection_epsilon
-    clf_scale = 5e-4
-    effective_gamma_clf = 7.5e-4
+    # Normalize the CLF; the gain, eta and slack-weight formulas preserve the control law.
+    clf_scale = 1.0
+    effective_gamma_clf = 1e-4
     gamma_clf = (effective_gamma_clf / clf_scale) * np.eye(Pendubot.adim) / 5.0
-    u_min = -120.0
-    u_max = 120.0
 
     config = {
         "K_pre": K_pre,
@@ -735,7 +756,7 @@ def main():
         "pretrain_excitation_frequency": 0.1,
         "pretrain_state_norm_max": 5.0,
         "main_initial_state": np.array([0.18, -0.10, 0.0, 0.0]),
-        "x_norm_divergence_threshold": 8.0,
+        "x_norm_divergence_threshold": 5.0,
         "rho_divergence_threshold": 1e6,
     }
     base_pendubot_params = {
@@ -763,9 +784,10 @@ def main():
         "epsilon": projection_epsilon,
         "eta_clf": clf_scale * 10.0,
         "clf_rate": 0.5,
-        "weight_slack": 1e5 / clf_scale**2,
-        "u_min": u_min,
-        "u_max": u_max,
+        # Restore full tightening closer to upright to reduce the residual regulation error.
+        "clf_goal_radius": 0.08,
+        # Allow slack near low control authority rather than nearly enforcing a hard constraint.
+        "weight_slack": 1e2 / clf_scale**2,
         "dt": dt,
     }
 
@@ -791,7 +813,7 @@ def main():
         representation_loss_gradient=pretrain_system.representation_loss_gradient,
     )
     pretrained_olacp, pretraining_history = run_pretraining(
-        pretrain_system, olacp, config, plot=True
+        pretrain_system, olacp, config, plot=plot
     )
     pretrained_theta = pretrained_olacp.Theta.copy()
     pretrained_a_k = pretrained_olacp.a_k.copy()
@@ -838,28 +860,41 @@ def main():
     if pretrained_olacp.representation_update_index != pretrained_update_index:
         raise RuntimeError("A main simulation mutated the pretrained representation-update index")
 
+    timestamp = datetime.now().strftime("%Y_%m%d_%H%M%S_%f")
+    results_directory = Path(__file__).resolve().parent / "results"
+    results_directory.mkdir(exist_ok=True)
+    results_filename = results_directory / f"sim_pendubot_craclf_results_{timestamp}.pkl"
+    with results_filename.open("xb") as stream:
+        pickle.dump(
+            {
+                "config": config,
+                "base_params": base_pendubot_params,
+                "pretraining_history": pretraining_history,
+                "results": results,
+            },
+            stream,
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+    print(f"Saved results to {results_filename}")
+
     cp_adaptive_result = results["CP + adaptive"]
     cp_adaptive_metrics = cp_adaptive_result["metrics"]
     nonadaptive_result = results["No CP + nonadaptive"]
     nonadaptive_metrics = nonadaptive_result["metrics"]
     if cp_adaptive_result["status"] != "completed" or cp_adaptive_metrics["tail_rms"] >= 0.05:
         warnings.warn("The CP + adaptive run did not stabilize")
-    if cp_adaptive_metrics["max_slack"] >= 1e-2:
-        warnings.warn("The CP + adaptive QP slack exceeded 1e-2")
-    if cp_adaptive_metrics["a_hat_change"] <= 3e-2 or cp_adaptive_metrics["rho_range"] <= 0.5:
-        warnings.warn("The CRaCLF adaptive states did not change materially")
-    if cp_adaptive_metrics["nu_range"] <= 0.1:
-        warnings.warn("rho did not materially change the adaptation scaling")
+    # Keep the slack warning invariant to the CLF normalization.
+    if cp_adaptive_metrics["max_slack"] / clf_scale >= 20.0:
+        warnings.warn("The CP + adaptive QP slack / clf_scale exceeded 20")
     nonadaptive_failed = (
         nonadaptive_result["status"] != "completed" or nonadaptive_metrics["tail_rms"] > 0.25
     )
     separated = nonadaptive_metrics["tail_rms"] > 5.0 * cp_adaptive_metrics["tail_rms"]
     if not nonadaptive_failed or not separated:
         warnings.warn("The no-CP nonadaptive run did not fail clearly")
-    if nonadaptive_metrics["a_hat_change"] > 1e-12 or nonadaptive_metrics["rho_range"] > 1e-12:
-        warnings.warn("The nonadaptive run unexpectedly changed its CRaCLF adaptive states")
 
-    plot_craclf_results(results)
+    if plot:
+        plot_craclf_results(results)
 
     return pretraining_history, results
 

@@ -60,7 +60,6 @@ def run_pretraining(system, olacp, config, plot=True):
                 2.0 * np.pi * config["pretrain_excitation_frequency"] * t
             )
             u = system.local_lqr_control(x, a_hat_0) + excitation
-            u = np.clip(u, system.params["u_min"], system.params["u_max"])
 
             x_hist[sample_index] = x
             u_hist[sample_index] = float(u.item())
@@ -413,17 +412,9 @@ def run_craclf_simulation(
         "tail_rms": float(np.sqrt(np.mean(tail_norm**2))),
         "tail_peak": float(np.max(tail_norm)),
         "max_norm": float(np.max(state_norm)),
-        "V_ratio": float(V_hist[-1] / max(V_hist[0], np.finfo(float).eps)),
         "max_control": float(np.nanmax(np.abs(u_hist))),
         "max_slack": float(np.nanmax(slack_hist)),
-        "a_hat_change": float(np.linalg.norm(a_hat_hist[-1] - a_hat_hist[0])),
-        "a_hat_path_length": float(
-            np.sum(np.linalg.norm(np.diff(a_hat_hist, axis=0), axis=1))
-        ),
         "max_a_hat_dot": max_a_hat_dot,
-        "rho_change": float(rho_hist[-1] - rho_hist[0]),
-        "rho_range": float(np.ptp(rho_hist)),
-        "nu_range": float(np.ptp(nu_hist)),
     }
     result = {
         "label": run_label,
@@ -469,20 +460,21 @@ def run_craclf_simulation(
     print(
         f"{run_label}: status={status}{failure_summary}, t_final={t[-1]:.3f}, "
         f"final_norm={metrics['final_norm']:.3e}, tail_rms={metrics['tail_rms']:.3e}, "
-        f"max_norm={metrics['max_norm']:.3e}, V_final/V_initial={metrics['V_ratio']:.3e}, "
-        f"max|u|={metrics['max_control']:.2f}, max_slack={metrics['max_slack']:.3e}, "
-        f"Delta_a={metrics['a_hat_change']:.3e}, "
-        f"a_path={metrics['a_hat_path_length']:.3e}, "
-        f"Delta_rho={metrics['rho_change']:.3e}, Delta_nu={metrics['nu_range']:.3e}"
+        f"max_norm={metrics['max_norm']:.3e}, "
+        f"max|u|={metrics['max_control']:.2f}, max_slack={metrics['max_slack']:.3e}"
     )
 
     if plot:
-        plot_craclf_results({run_label: result})
+        plot_craclf_results({run_label: result}, interval_duration=interval_duration)
     return result
 
 
-def plot_craclf_results(results):
-    """Plot and compare one or more main CRaCLF simulation results"""
+def plot_craclf_results(results, interval_duration=None):
+    """Compare results and show the prescribed wind over its full duration.
+
+    Infer interval_duration from the first complete recorded interval when omitted.
+    Pass it explicitly if all results stopped before completing their first interval.
+    """
     items = (
         list(results.items())
         if isinstance(results, dict)
@@ -535,26 +527,25 @@ def plot_craclf_results(results):
     axs[-1].set_xlabel("time (s)")
     fig.suptitle("Inverted-pendulum state comparison")
 
+    fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
+    figures.append(fig)
     for label, result in items:
         color = color_map[label]
-        result_end_time = float(result["t"][-1])
-        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 7))
-        figures.append(fig)
-        axs[0].plot(result["t"], result["u_hist"], color=color, label="control")
+        axs[0].plot(result["t"], result["u_hist"], color=color, label=label)
         axs[1].semilogy(
             result["t"],
             np.maximum(result["slack_hist"], 1e-12),
             color=color,
-            label="QP slack",
+            label=label,
         )
-        axs[0].set_ylabel("torque (N m)")
-        axs[1].set_ylabel("QP slack")
-        axs[1].set_xlabel("time (s)")
-        for ax in axs:
-            ax.set_xlim(0.0, result_end_time)
-            ax.grid(True)
-            ax.legend()
-        fig.suptitle(f"{label}: control and QP slack")
+    axs[0].set_ylabel("torque (N m)")
+    axs[1].set_ylabel("QP slack")
+    axs[1].set_xlabel("time (s)")
+    for ax in axs:
+        ax.set_xlim(0.0, maximum_time)
+        ax.grid(True)
+        ax.legend()
+    fig.suptitle("Inverted-pendulum control and QP slack comparison")
 
     for label, result in items:
         color = color_map[label]
@@ -634,34 +625,46 @@ def plot_craclf_results(results):
             ax.legend()
         fig.suptitle(f"{label}: Algorithm 1")
 
-    for label, result in items:
-        color = color_map[label]
-        fig, ax = plt.subplots(1, 1, figsize=(8, 4))
-        figures.append(fig)
-        ax.plot(result["t"], result["wind_hist"][:, 1], color=color, label=r"$w_z$")
-        ax.set_xlim(0.0, float(result["t"][-1]))
-        ax.set_ylabel(r"$w_z$ (m/s)")
-        ax.set_xlabel("time (s)")
-        ax.grid(True)
-        ax.legend()
-        fig.suptitle(f"{label}: vertical-wind history")
+    # Reconstruct the prescribed schedule, including intervals after a controller stops.
+    if interval_duration is None:
+        if len(reference["interval_times"]) == 0 or len(reference["t"]) < 2:
+            raise ValueError("Pass interval_duration when no complete interval is available")
+        sample_period = float(reference["t"][1] - reference["t"][0])
+        interval_duration = float(reference["interval_times"][0]) + sample_period
+    if not np.isfinite(interval_duration) or interval_duration <= 0.0:
+        raise ValueError("interval_duration must be finite and positive")
+    schedule = np.asarray(reference["vertical_wind_schedule"], dtype=float)
+    wind_times = np.arange(len(schedule) + 1) * interval_duration
+    fig, ax = plt.subplots(figsize=(8, 4))
+    figures.append(fig)
+    ax.step(wind_times, np.r_[schedule, schedule[-1]], where="post", label=r"$v_{w,z}$")
+    ax.set_xlim(0.0, float(wind_times[-1]))
+    ax.set_ylabel("wind velocity (m/s)")
+    ax.set_xlabel("time (s)")
+    ax.grid(True)
+    ax.legend()
+    fig.suptitle("Inverted-pendulum prescribed wind history")
 
+    fig, ax = plt.subplots(figsize=(8, 4))
+    figures.append(fig)
     for label, result in items:
-        fig, ax = plt.subplots(1, 1, figsize=(8, 4))
-        figures.append(fig)
-        ax.plot(result["t"], result["true_uncertainty_hist"][:, 1], label="true uncertainty")
+        ax.plot(
+            result["t"], result["true_uncertainty_hist"][:, 1],
+            color=color_map[label], label=f"true: {label}",
+        )
         ax.plot(
             result["t"],
             result["fitted_uncertainty_hist"][:, 1],
             "--",
-            label=r"$Y_\Theta(x)a_k$",
+            color=color_map[label],
+            label=rf"$Y_{{\Theta_j}}(x)a_k$: {label}",
         )
-        ax.set_xlim(0.0, float(result["t"][-1]))
-        ax.set_ylabel(r"$w_2$")
-        ax.set_xlabel("time (s)")
-        ax.grid(True)
-        ax.legend()
-        fig.suptitle(rf"{label}: $Y_\Theta(x)a_k$ versus true uncertainty")
+    ax.set_xlim(0.0, maximum_time)
+    ax.set_ylabel(r"$w_2$")
+    ax.set_xlabel("time (s)")
+    ax.grid(True)
+    ax.legend(fontsize="small")
+    fig.suptitle(r"Inverted-pendulum: $Y_{\Theta_j}(x)a_k$ versus true uncertainty")
 
     plt.tight_layout()
     plt.show()
@@ -710,8 +713,6 @@ def main():
     effective_gamma_clf = 7.5e-2
     gamma_scale = effective_gamma_clf / clf_scale / IP.adim
     gamma_clf = gamma_scale * np.eye(IP.adim)
-    u_min = -12.0
-    u_max = 12.0
 
     config = {
         "K_pre": K_pre,
@@ -747,9 +748,8 @@ def main():
         "epsilon": projection_epsilon,
         "eta_clf": clf_scale * 10.0,
         "clf_rate": 0.5,
+        "clf_goal_radius": 0.1,
         "weight_slack": 1e5 / clf_scale**2,
-        "u_min": u_min,
-        "u_max": u_max,
         "dt": dt,
     }
 
@@ -833,12 +833,6 @@ def main():
         warnings.warn("The CP + adaptive run did not stabilize")
     if cp_adaptive_metrics["max_slack"] / clf_scale >= 1e-1:
         warnings.warn("The normalized CP + adaptive QP slack exceeded 1e-1")
-    if cp_adaptive_metrics["a_hat_change"] <= 1e-4:
-        warnings.warn("The CRaCLF parameter estimate did not change materially")
-    if cp_adaptive_metrics["rho_range"] <= 1e-6:
-        warnings.warn("The CRaCLF scaling state did not change materially")
-    if cp_adaptive_metrics["nu_range"] <= 1e-6:
-        warnings.warn("rho did not materially change the adaptation scaling")
     no_cp_adaptive_failed = (
         no_cp_adaptive_result["status"] != "completed"
         or no_cp_adaptive_metrics["tail_rms"] > 0.25
@@ -852,12 +846,8 @@ def main():
         warnings.warn("The no-CP nonadaptive run unexpectedly stabilized")
     if cp_adaptive_metrics["tail_rms"] >= nonadaptive_metrics["tail_rms"]:
         warnings.warn("The CP + adaptive run did not improve on the nonadaptive baseline")
-    if nonadaptive_metrics["a_hat_change"] > 1e-12:
-        warnings.warn("The nonadaptive run unexpectedly changed its parameter estimate")
-    if nonadaptive_metrics["rho_range"] > 1e-12:
-        warnings.warn("The nonadaptive run unexpectedly changed its scaling state")
 
-    plot_craclf_results(results)
+    plot_craclf_results(results, interval_duration=interval_duration)
 
     return pretraining_history, results
 

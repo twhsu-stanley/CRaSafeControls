@@ -5,11 +5,13 @@ import os
 import pickle
 import sys
 import time
+from datetime import datetime
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.integrate import solve_ivp
-from scipy.interpolate import interp1d
+from scipy.interpolate import CubicSpline, interp1d
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
@@ -271,11 +273,14 @@ def plan_nominal_trajectory(system, config, plot=True):
         raise ValueError("K and I_length must be positive")
 
     waypoints = np.asarray(config["nominal_waypoints"], dtype=float)
-    expected_shape = (interval_count + 1, system.xdim)
+    expected_shape = (interval_count + 1, 2)
     if waypoints.shape != expected_shape:
         raise ValueError(f"nominal_waypoints must have shape {expected_shape}")
     if not np.all(np.isfinite(waypoints)):
         raise ValueError("nominal_waypoints must be finite")
+    x_init = np.asarray(config["reference_initial_state"], dtype=float).reshape(system.xdim)
+    if not np.all(np.isfinite(x_init)) or not np.allclose(x_init[:2], waypoints[0]):
+        raise ValueError("reference_initial_state must be finite and start at the first waypoint")
 
     horizon_steps = interval_count * interval_steps
     planner = MotionPlanner(
@@ -283,43 +288,30 @@ def plan_nominal_trajectory(system, config, plot=True):
         dt=config["dt"],
         Q=config["motion_planner_Q"],
         R=config["motion_planner_R"],
-        Q_f=config["motion_planner_Q_f"],
+        Q_terminal=config["motion_planner_Q_terminal"],
         u_min=np.asarray(system.params["u_min"], dtype=float).reshape(system.udim),
         u_max=np.asarray(system.params["u_max"], dtype=float).reshape(system.udim),
+        output_matrix=np.eye(2, system.xdim),
     )
-    
-    # x_guess should be straight-line segments connecting the waypoints
-    for waypoint_index in range(interval_count):
-        x_guess_segment = waypoints[waypoint_index, :, None] + (
-            waypoints[waypoint_index + 1, :, None] - waypoints[waypoint_index, :, None]
-        ) * np.linspace(0.0, 1.0, interval_steps + 1)[:, None].T
-
-        if waypoint_index < interval_count - 1:
-            x_guess_segment = x_guess_segment[:, :-1]  # exclude the last point to avoid duplication
-        else:
-            x_guess_segment = x_guess_segment  # include the last point for the final segment
-
-        if waypoint_index == 0:
-            x_guess = x_guess_segment
-        else:
-            x_guess = np.hstack((x_guess, x_guess_segment))
-
     hover_input = 0.5 * system.mass * system.grav * np.ones(system.udim)
     u_guess = np.repeat(hover_input[:, None], horizon_steps, axis=1)
+    t_x = config["dt"] * np.arange(horizon_steps + 1)
+    x_guess = np.repeat(x_init[:, None], horizon_steps + 1, axis=1)
+    waypoint_cost_guide = build_waypoint_cost_guide(waypoints, config["interval_duration"])
+    x_guess[:2] = waypoint_cost_guide(t_x)
 
-    x_d, u_d = planner.plan_through_waypoints(
+    x_d, u_d = planner.plan_nominal_through_waypoints(
         waypoints,
         interval_steps,
         x_guess,
         u_guess,
         hover_input,
+        x_init=x_init,
+        output_reference=waypoint_cost_guide,
     )
     
-    t_x = config["dt"] * np.arange(horizon_steps + 1)
     t_u = t_x[:-1]
     waypoint_indices = interval_steps * np.arange(interval_count + 1)
-    waypoint_error = x_d[:, waypoint_indices].T - waypoints
-    maximum_waypoint_error = float(np.max(np.abs(waypoint_error)))
     regressor_norm = np.asarray(
         [
             np.linalg.norm(system.Y(x_d[:, index]), ord="fro")
@@ -327,17 +319,15 @@ def plan_nominal_trajectory(system, config, plot=True):
         ]
     )
     maximum_regressor_norm = float(np.max(regressor_norm))
-    print(
-        f"Nominal plan complete: max waypoint error={maximum_waypoint_error:.3e}, "
-        f"max ||Y_Theta(x_d)||_F={maximum_regressor_norm:.3e}"
-    )
+    print(f"Nominal plan complete: max ||Y_Theta(x_d)||_F={maximum_regressor_norm:.3e}")
 
     if plot:
         fig, axs = plt.subplots(3, 2, sharex=True, figsize=(8, 6))
         waypoint_times = config["interval_duration"] * np.arange(interval_count + 1)
         for state_index, ax in enumerate(axs.flat):
             ax.plot(t_x, x_d[state_index])
-            ax.plot(waypoint_times, waypoints[:, state_index], "o")
+            if state_index < 2:
+                ax.plot(waypoint_times, waypoints[:, state_index], "o")
             ax.set_ylabel(rf"$x_{state_index + 1}$")
             ax.grid(True)
         axs[-1, 0].set_xlabel("time (s)")
@@ -368,15 +358,26 @@ def plan_nominal_trajectory(system, config, plot=True):
 
 
 
-def run_craccm_simulation(
-    system,
-    online_olacp,
-    desired_trajectory,
-    config,
-    use_cp,
-    use_adaptive,
-    label=None,
-):
+def build_waypoint_cost_guide(waypoints, interval_duration):
+    """Interpolate position waypoints without prescribing attitude or waypoint velocities."""
+    waypoints = np.asarray(waypoints, dtype=float)
+    if waypoints.ndim != 2 or waypoints.shape[1] != 2 or len(waypoints) < 2:
+        raise ValueError("waypoints must have shape (K + 1, 2), with K >= 1")
+    if not np.all(np.isfinite(waypoints)):
+        raise ValueError("waypoints must be finite")
+    if not np.isfinite(interval_duration) or interval_duration <= 0.0:
+        raise ValueError("interval_duration must be finite and positive")
+    waypoint_times = interval_duration * np.arange(len(waypoints))
+    position_curve = CubicSpline(waypoint_times, waypoints, bc_type="natural")
+
+    def position_reference(times):
+        times = np.clip(np.atleast_1d(times), waypoint_times[0], waypoint_times[-1])
+        return position_curve(times).T
+
+    return position_reference
+
+
+def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, label=None):
     """Run one planar-quadrotor CRaCCM experiment"""
     if bool(system.use_cp) != bool(use_cp) or bool(system.use_adaptive) != bool(use_adaptive):
         raise ValueError("The system must be constructed with the requested controller flags")
@@ -408,22 +409,66 @@ def run_craccm_simulation(
     I_length = config["I_length"]
     dt = config["dt"]
     t_full = np.arange(K * I_length, dtype=float) * dt
-    t_hist = t_full.copy()
+    t_hist = np.arange(len(t_full) + 1, dtype=float) * dt
     run_label = label or f"CP={bool(use_cp)}, adaptive={bool(use_adaptive)}"
+    waypoints = np.asarray(config["nominal_waypoints"], dtype=float)
+    if waypoints.shape != (K + 1, 2) or not np.all(np.isfinite(waypoints)):
+        raise ValueError(f"nominal_waypoints must be finite with shape {(K + 1, 2)}")
+    x_d = np.asarray(config["reference_initial_state"], dtype=float).reshape(system.xdim).copy()
+    if not np.all(np.isfinite(x_d)) or not np.allclose(x_d[:2], waypoints[0]):
+        raise ValueError("reference_initial_state must be finite and start at the first waypoint")
+    if K < 1 or I_length < 1 or not np.isclose(I_length * dt, interval_duration):
+        raise ValueError("K and I_length must be positive and match interval_duration / dt")
+    mpc_horizon = float(config.get("mpc_horizon", 4.0))
+    mpc_dt = float(config.get("mpc_dt", 0.05))
+    replan_interval = float(config.get("mpc_replan_interval", 0.2))
+    if not np.isfinite(replan_interval) or not 0.1 <= replan_interval <= 0.5:
+        raise ValueError("mpc_replan_interval must lie between 0.1 and 0.5 seconds")
+    if not np.isfinite(mpc_dt) or mpc_dt < dt:
+        raise ValueError("mpc_dt must be finite and at least the simulation dt")
+    if not np.isfinite(mpc_horizon) or mpc_horizon < replan_interval:
+        raise ValueError("mpc_horizon must cover at least one replan interval")
+    replan_steps = int(round(replan_interval / dt))
+    if not np.isclose(int(round(mpc_dt / dt)) * dt, mpc_dt):
+        raise ValueError("mpc_dt must be an integer multiple of simulation dt")
+    if (
+        not np.isclose(replan_steps * dt, replan_interval)
+        or replan_steps % int(round(mpc_dt / dt))
+    ):
+        raise ValueError("mpc_replan_interval must be an integer multiple of mpc_dt")
+    # Align representation updates with the existing replanning grid.
+    if (online_olacp.representation_period * I_length) % replan_steps:
+        raise ValueError(
+            "The representation update period must be an integer multiple of mpc_replan_interval"
+        )
+    waypoint_cost_guide = build_waypoint_cost_guide(waypoints, interval_duration)
+    planner = MotionPlanner(
+        system=system,
+        dt=dt,
+        Q=config["motion_planner_Q"],
+        R=config["motion_planner_R"],
+        u_min=np.asarray(system.params["u_min"], dtype=float).reshape(system.udim),
+        u_max=np.asarray(system.params["u_max"], dtype=float).reshape(system.udim),
+        output_matrix=np.eye(2, system.xdim),
+        Q_terminal=config["motion_planner_Q_terminal"],
+    )
+    hover_input = 0.5 * system.mass * system.grav * np.ones(system.udim)
+    rho_index = system.xdim + system.adim
+    adaptive_state_size = rho_index + 1
     rho_divergence_threshold = config["rho_divergence_threshold"]
     if not np.isfinite(rho_divergence_threshold) or rho_divergence_threshold <= 0.0:
         raise ValueError("rho_divergence_threshold must be finite and positive")
 
     def rho_divergence_event(_time, state):
-        return rho_divergence_threshold - abs(float(state[-1]))
+        return rho_divergence_threshold - abs(float(state[rho_index]))
 
     rho_divergence_event.terminal = True
     rho_divergence_event.direction = -1.0
 
-    x = desired_trajectory["x_d"][:, 0] + config["tracking_initial_offset"]
+    x = x_d + config["tracking_initial_offset"]
     a_hat = system.a_center.copy()
     rho = 0.0
-    x_ext = np.hstack((x, a_hat, rho))
+    x_ext = np.hstack((x, a_hat, rho, x_d))
     geodesic_solver = GeodesicSolver(
         system.xdim,
         config["geodesic_degree"],
@@ -433,7 +478,8 @@ def run_craccm_simulation(
         system.dW_dai_fcn,
     )
 
-    sample_count = len(t_full)
+    control_sample_count = len(t_full)
+    sample_count = control_sample_count + 1  # Leave space for an early-stop terminal sample.
     x_hist = np.zeros((sample_count, system.xdim))
     x_d_hist = np.zeros_like(x_hist)
     u_hist = np.full((sample_count, system.udim), np.nan)
@@ -448,6 +494,13 @@ def run_craccm_simulation(
     theta_hist = np.zeros((sample_count,) + online_olacp.Theta.shape)
     true_uncertainty_hist = np.full((sample_count, system.xdim), np.nan)
     fitted_uncertainty_hist = np.full((sample_count, system.xdim), np.nan)
+    mpc_solve_time_hist = np.zeros(sample_count)
+    mpc_replan_hist = np.zeros(sample_count, dtype=bool)
+    mpc_iterations_hist = np.full(sample_count, np.nan)
+    mpc_horizon_steps_hist = np.full(sample_count, np.nan)
+    reference_times = [0.0]
+    reference_states = [x_d.copy()]
+    reference_inputs = []
     interval_times = []
     score_hist = []
     delta_hist = []
@@ -461,8 +514,8 @@ def run_craccm_simulation(
     def record_terminal_sample(index, sample_time, state, held_u, held_u_d, held_slack):
         terminal_x = state[: system.xdim]
         terminal_a_hat = state[system.xdim : system.xdim + system.adim]
-        terminal_rho = float(state[-1])
-        terminal_x_d = np.asarray(desired_trajectory["interp_x_d"](sample_time), dtype=float)
+        terminal_rho = float(state[rho_index])
+        terminal_x_d = state[adaptive_state_size:]
         t_hist[index] = sample_time
         x_hist[index] = terminal_x
         x_d_hist[index] = terminal_x_d.reshape(system.xdim)
@@ -477,12 +530,43 @@ def run_craccm_simulation(
         theta_hist[index] = system.Theta_hat
         if np.all(np.isfinite(terminal_x)):
             true_uncertainty_hist[index] = system.true_uncertainty(terminal_x, sample_time)
-        return terminal_x, terminal_a_hat, terminal_rho
+        return terminal_x, terminal_a_hat, terminal_rho, terminal_x_d
 
+    def dynamics_with_reference(tau, state, held_u, held_u_d):
+        desired_state = state[adaptive_state_size:]
+        model_a_hat = state[system.xdim:rho_index] if use_adaptive else np.zeros(system.adim)
+        adaptive_derivative = system.dynamics_extended(
+            state[:adaptive_state_size], desired_state, held_u, geodesic_solver, tau
+        )
+        desired_derivative = system.dynamics_certainty_equivalent(
+            desired_state, held_u_d, model_a_hat
+        )
+        return np.hstack((adaptive_derivative, desired_derivative))
+
+    predicted_inputs = None
+    u_d = hover_input.copy()
+    plan_start_step = 0
     for sample_index, t in enumerate(t_full):
         last_sample_index = sample_index
-        x_d = np.asarray(desired_trajectory["interp_x_d"](t), dtype=float).reshape(system.xdim)
-        u_d = np.asarray(desired_trajectory["interp_u_d"](t), dtype=float).reshape(system.udim)
+        model_a_hat = a_hat if use_adaptive else np.zeros(system.adim)
+        if sample_index % replan_steps == 0:
+            planning_start = time.perf_counter()
+            try:
+                _, predicted_inputs = planner.plan_certainty_equivalent_through_waypoints(
+                    x_d, waypoints, I_length, sample_index, system.Theta_hat, model_a_hat,
+                    hover_input, mpc_horizon=mpc_horizon, mpc_dt=mpc_dt,
+                    output_reference=waypoint_cost_guide, u_previous=u_d,
+                )
+            except RuntimeError as error:
+                raise RuntimeError(f"{run_label}: waypoint MPC failed at t={t:.3f}") from error
+            plan_start_step = sample_index
+            mpc_solve_time_hist[sample_index] = time.perf_counter() - planning_start
+            mpc_iterations_hist[sample_index] = planner.last_mpc_stats["iterations"]
+            mpc_replan_hist[sample_index] = True
+        mpc_horizon_steps_hist[sample_index] = planner.last_mpc_stats["horizon_steps"]
+        input_index = (sample_index - plan_start_step) // int(round(mpc_dt / dt))
+        u_d = predicted_inputs[:, input_index].copy()
+        reference_inputs.append(u_d.copy())
         x_hist[sample_index] = x
         x_d_hist[sample_index] = x_d
         a_hat_hist[sample_index] = a_hat
@@ -508,44 +592,48 @@ def run_craccm_simulation(
         xdot = system.dynamics(x, u, t)
         online_olacp.add_data_to_buffers(x, system.dynamics_nominal(x, u), xdot=xdot)
 
-        if sample_index < sample_count - 1:
-            solution = solve_ivp(
-                lambda tau, state: system.dynamics_extended(state, x_d, u, geodesic_solver, tau),
-                (t_full[sample_index], t_full[sample_index + 1]),
-                x_ext,
-                method="RK45",
-                rtol=1e-7,
-                atol=1e-9,
-                t_eval=[t_full[sample_index + 1]],
-                events=rho_divergence_event if use_adaptive else None,
+        next_time = (sample_index + 1) * dt
+        solution = solve_ivp(
+            lambda tau, state: dynamics_with_reference(tau, state, u, u_d),
+            (t, next_time),
+            x_ext,
+            method="RK45",
+            rtol=1e-7,
+            atol=1e-9,
+            t_eval=[next_time],
+            events=rho_divergence_event if use_adaptive else None,
+        )
+        if use_adaptive and solution.t_events[0].size:
+            x_ext = solution.y_events[0][-1]
+            status = "diverged"
+            failure_reason = "rho_divergence"
+            failure_time = float(solution.t_events[0][-1])
+            failure_rho = float(x_ext[rho_index])
+            last_sample_index = sample_index + 1
+            x, a_hat, rho, x_d = record_terminal_sample(
+                last_sample_index, failure_time, x_ext, u, u_d, slack
             )
-            if use_adaptive and solution.t_events[0].size:
-                event_state = solution.y_events[0][-1]
-                status = "diverged"
-                failure_reason = "rho_divergence"
-                failure_time = float(solution.t_events[0][-1])
-                failure_rho = float(event_state[-1])
-                last_sample_index = sample_index + 1
-                x_ext = event_state
-                x, a_hat, rho = record_terminal_sample(
-                    last_sample_index, failure_time, x_ext, u, u_d, slack
-                )
-                break
-            if not solution.success:
-                raise RuntimeError(
-                    f"{run_label}: extended dynamics failed at t={t:.3f}: {solution.message}"
-                )
-            x_ext = solution.y[:, -1]
-            x = x_ext[: system.xdim]
-            a_hat = x_ext[system.xdim : system.xdim + system.adim]
-            rho = float(x_ext[-1])
+            reference_times.append(failure_time)
+            reference_states.append(x_d.copy())
+            break
+        if not solution.success:
+            raise RuntimeError(
+                f"{run_label}: extended dynamics failed at t={t:.3f}: {solution.message}"
+            )
+        x_ext = solution.y[:, -1]
+        x = x_ext[:system.xdim]
+        a_hat = x_ext[system.xdim:rho_index]
+        rho = float(x_ext[rho_index])
+        x_d = x_ext[adaptive_state_size:]
+        reference_times.append(next_time)
+        reference_states.append(x_d.copy())
 
         rho_diverged = not np.isfinite(rho) or abs(rho) >= rho_divergence_threshold
         state_is_finite = np.all(np.isfinite(x_ext))
         state_norm_diverged = np.linalg.norm(x) > config["x_norm_divergence_threshold"]
         if rho_diverged or not state_is_finite or state_norm_diverged:
             status = "diverged"
-            failure_time = float(t_full[min(sample_index + 1, sample_count - 1)])
+            failure_time = next_time
             failure_rho = rho
             if rho_diverged:
                 failure_reason = "rho_divergence"
@@ -553,11 +641,10 @@ def run_craccm_simulation(
                 failure_reason = "nonfinite_extended_state"
             else:
                 failure_reason = "state_norm"
-            if sample_index < sample_count - 1:
-                last_sample_index = sample_index + 1
-                x, a_hat, rho = record_terminal_sample(
-                    last_sample_index, failure_time, x_ext, u, u_d, slack
-                )
+            last_sample_index = sample_index + 1
+            x, a_hat, rho, x_d = record_terminal_sample(
+                last_sample_index, failure_time, x_ext, u, u_d, slack
+            )
             break
 
         if (sample_index + 1) % I_length == 0:
@@ -600,16 +687,37 @@ def run_craccm_simulation(
     theta_hist = theta_hist[used_slice]
     true_uncertainty_hist = true_uncertainty_hist[used_slice]
     fitted_uncertainty_hist = fitted_uncertainty_hist[used_slice]
+    mpc_solve_time_hist = mpc_solve_time_hist[used_slice]
+    mpc_replan_hist = mpc_replan_hist[used_slice]
+    mpc_iterations_hist = mpc_iterations_hist[used_slice]
+    mpc_horizon_steps_hist = mpc_horizon_steps_hist[used_slice]
+
+    reference_times = np.asarray(reference_times)
+    reference_states = np.asarray(reference_states).T
+    reference_inputs = np.asarray(reference_inputs).T
+    waypoint_times = interval_duration * np.arange(K + 1)
+    desired_trajectory = {
+        "mode": "certainty_equivalent_dynamics_mpc",
+        "t_x": reference_times,
+        "t_u": reference_times[:-1],
+        "x_d": reference_states,
+        "u_d": reference_inputs,
+        "waypoints": waypoints.copy(),
+        "waypoint_times": waypoint_times,
+        "mpc_horizon": mpc_horizon,
+        "mpc_dt": mpc_dt,
+        "mpc_replan_interval": replan_interval,
+    }
 
     tracking_error = np.linalg.norm(x_hist - x_d_hist, axis=1)
     metrics = {
-        "final_error": float(tracking_error[-1]),
         "rms_error": float(np.sqrt(np.mean(tracking_error ** 2))),
         "max_error": float(np.max(tracking_error)),
         "max_control": float(np.nanmax(np.linalg.norm(u_hist, axis=1))),
         "max_slack": float(np.nanmax(slack_hist)),
-        "a_hat_change": float(np.linalg.norm(a_hat_hist[-1] - a_hat_hist[0])),
-        "rho_range": float(np.ptp(rho_hist)),
+        "total_mpc_solve_time": float(np.nansum(mpc_solve_time_hist)),
+        "mpc_replan_count": int(np.count_nonzero(mpc_replan_hist)),
+        "mean_mpc_solve_time": float(np.mean(mpc_solve_time_hist[mpc_replan_hist])),
     }
     result = {
         "label": run_label,
@@ -618,6 +726,11 @@ def run_craccm_simulation(
         "t": t,
         "x_hist": x_hist,
         "x_d_hist": x_d_hist,
+        "desired_trajectory": desired_trajectory,
+        "mpc_solve_time_hist": mpc_solve_time_hist,
+        "mpc_replan_hist": mpc_replan_hist,
+        "mpc_iterations_hist": mpc_iterations_hist,
+        "mpc_horizon_steps_hist": mpc_horizon_steps_hist,
         "tracking_error": tracking_error,
         "u_hist": u_hist,
         "u_d_hist": u_d_hist,
@@ -653,15 +766,19 @@ def run_craccm_simulation(
         )
     print(
         f"{run_label}: status={status}{failure_summary}, "
-        f"final_error={metrics['final_error']:.3e}, rms_error={metrics['rms_error']:.3e}, "
+        f"rms_error={metrics['rms_error']:.3e}, "
         f"max_error={metrics['max_error']:.3e}, max|u|={metrics['max_control']:.3e}, "
-        f"max_slack={metrics['max_slack']:.3e}"
+        f"max_slack={metrics['max_slack']:.3e}, "
+        f"mpc_solves={metrics['mpc_replan_count']}, "
+        f"mpc_time={metrics['total_mpc_solve_time']:.2f}s"
     )
     return result
 
 
-def plot_craccm_results(results, desired_trajectory):
-    """Plot and compare one or more planar-quadrotor simulations"""
+def plot_craccm_results(results, desired_trajectory=None, file_format="png"):
+    """Compare each run against its reference and save figures in results as PNG or PDF."""
+    if file_format not in ("png", "pdf"):
+        raise ValueError('file_format must be "png" or "pdf"')
     items = (
         list(results.items())
         if isinstance(results, dict)
@@ -669,6 +786,17 @@ def plot_craccm_results(results, desired_trajectory):
     )
     if not items:
         raise ValueError("At least one result is required")
+    trajectories = {}
+    for label, result in items:
+        trajectory = result.get("desired_trajectory")
+        if trajectory is None and desired_trajectory is not None:
+            if "x_d" in desired_trajectory:
+                trajectory = desired_trajectory
+            else:
+                trajectory = desired_trajectory[label]
+        if trajectory is None:
+            raise ValueError(f"{label}: no desired trajectory is available")
+        trajectories[label] = trajectory
     reference = max((result for _, result in items), key=lambda result: len(result["t"]))
     for label, result in items:
         if result is reference:
@@ -686,55 +814,95 @@ def plot_craccm_results(results, desired_trajectory):
     figures = []
     state_labels = ("x (m)", "z (m)", r"$\phi$ (rad)", r"$v_x$", r"$v_z$", r"$\dot\phi$")
 
-    fig, axs = plt.subplots(3, 2, sharex=True, figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(8, 6))
     figures.append(fig)
-    for state_index, ax in enumerate(axs.flat):
-        ax.plot(
-            desired_trajectory["t_x"],
-            desired_trajectory["x_d"][state_index],
-            "k--",
-            label="desired" if state_index == 0 else None,
-        )
-        for label, result in items:
-            ax.plot(result["t"], result["x_hist"][:, state_index], color=color_map[label], label=label)
-            if result["status"] != "completed":
-                ax.plot(result["t"][-1], result["x_hist"][-1, state_index], "x", markersize=9)
-        ax.set_ylabel(state_labels[state_index])
-        ax.set_xlim(0.0, maximum_time)
-        ax.grid(True)
-    axs[0, 0].legend()
-    axs[-1, 0].set_xlabel("time (s)")
-    axs[-1, 1].set_xlabel("time (s)")
-    fig.suptitle("Planar-quadrotor state tracking comparison")
-
-    fig, ax = plt.subplots(1, 1, sharex=True, figsize=(8, 6))
-    figures.append(fig)
-    ax.plot(desired_trajectory["x_d"][0], desired_trajectory["x_d"][1], "k--", label="desired")
     for label, result in items:
-        ax.plot(result["x_hist"][:, 0], result["x_hist"][:, 1], color=color_map[label], label=label)
+        x_d_hist = result.get("x_d_hist")
+        if x_d_hist is None:
+            trajectory = trajectories[label]
+            x_d_hist = np.column_stack(
+                [np.interp(result["t"], trajectory["t_x"], state) for state in trajectory["x_d"]]
+            )
+        tracking_error = np.linalg.norm(result["x_hist"] - x_d_hist, axis=1)
+        ax.plot(result["t"], tracking_error, color=color_map[label], label=label)
         if result["status"] != "completed":
-                ax.plot(result["x_hist"][-1, 0], result["x_hist"][-1, 1], "x", markersize=9)
-    ax.set_xlabel(state_labels[0])
-    ax.set_ylabel(state_labels[1])
+            ax.plot(result["t"][-1], tracking_error[-1], "x", color=color_map[label], markersize=9)
+    ax.set_xlabel("time (s)")
+    ax.set_ylabel(r"$\|x(t)-x_d(t)\|_2$")
+    ax.set_xlim(0.0, maximum_time)
     ax.grid(True)
     ax.legend()
-    fig.suptitle("Planar-quadrotor x-z position tracking comparison")
+    fig.suptitle("Planar-quadrotor tracking error comparison")
+    fig.set_label("planar_quad_tracking_error")
+
+    fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
+    figures.append(fig)
+    for label, result in items:
+        color = color_map[label]
+        for input_index, ax in enumerate(axs[:2]):
+            ax.plot(
+                result["t"], result["u_hist"][:, input_index],
+                color=color, label=f"control: {label}",
+            )
+            ax.plot(
+                result["t"], result["u_d_hist"][:, input_index], "--",
+                color=color, label=f"reference: {label}",
+            )
+        axs[2].semilogy(
+            result["t"], np.maximum(result["slack_hist"], 1e-12), color=color, label=label
+        )
+    for input_index, ax in enumerate(axs[:2]):
+        ax.set_ylabel(rf"$u_{input_index + 1}$")
+    axs[2].set_ylabel("QP slack")
+    axs[2].set_xlabel("time (s)")
+    for ax in axs:
+        ax.set_xlim(0.0, maximum_time)
+        ax.grid(True)
+        ax.legend(fontsize="small")
+    fig.suptitle("Planar-quadrotor controls and QP slack comparison")
+    fig.set_label("planar_quad_control_slack")
 
     for label, result in items:
         color = color_map[label]
-        fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
+        trajectory = trajectories[label]
+        setting_name = "".join(c if c.isalnum() else " " for c in label.lower())
+        setting_name = "_".join(setting_name.split())
+        fig, axs = plt.subplots(3, 2, sharex=True, figsize=(8, 6))
         figures.append(fig)
-        for input_index, ax in enumerate(axs[:2]):
-            ax.plot(result["t"], result["u_hist"][:, input_index], color=color, label="CRaCCM")
-            ax.plot(result["t"], result["u_d_hist"][:, input_index], "k--", label="nominal")
-            ax.set_ylabel(rf"$u_{input_index + 1}$")
+        for state_index, ax in enumerate(axs.flat):
+            ax.plot(trajectory["t_x"], trajectory["x_d"][state_index], "k--", label="desired")
+            ax.plot(result["t"], result["x_hist"][:, state_index], color=color, label="actual")
+            if result["status"] != "completed":
+                ax.plot(
+                    result["t"][-1], result["x_hist"][-1, state_index], "x",
+                    color=color, markersize=9,
+                )
+            ax.set_ylabel(state_labels[state_index])
+            ax.set_xlim(0.0, float(result["t"][-1]))
             ax.grid(True)
-            ax.legend()
-        axs[2].semilogy(result["t"], np.maximum(result["slack_hist"], 1e-12), color=color)
-        axs[2].set_ylabel("QP slack")
-        axs[2].set_xlabel("time (s)")
-        axs[2].grid(True)
-        fig.suptitle(f"{label}: controls and slack")
+        axs[0, 0].legend()
+        axs[-1, 0].set_xlabel("time (s)")
+        axs[-1, 1].set_xlabel("time (s)")
+        fig.suptitle(f"{label}: Planar-quadrotor state tracking comparison")
+        fig.set_label(f"planar_quad_states_{setting_name}")
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+        figures.append(fig)
+        ax.plot(trajectory["x_d"][0], trajectory["x_d"][1], "k--", label="desired")
+        waypoints = trajectory.get("waypoints")
+        if waypoints is not None:
+            ax.plot(waypoints[:, 0], waypoints[:, 1], "ko", markersize=3, label="waypoints")
+        ax.plot(result["x_hist"][:, 0], result["x_hist"][:, 1], color=color, label="actual")
+        if result["status"] != "completed":
+            ax.plot(
+                result["x_hist"][-1, 0], result["x_hist"][-1, 1], "x", color=color, markersize=9
+            )
+        ax.set_xlabel(state_labels[0])
+        ax.set_ylabel(state_labels[1])
+        ax.grid(True)
+        ax.legend()
+        fig.suptitle(f"{label}: Planar-quadrotor x-z position tracking comparison")
+        fig.set_label(f"planar_quad_trajectory_{setting_name}")
 
         fig, axs = plt.subplots(4, 1, sharex=True, figsize=(8, 8))
         figures.append(fig)
@@ -751,6 +919,7 @@ def plot_craccm_results(results, desired_trajectory):
         axs[2].grid(True)
         axs[3].grid(True)
         fig.suptitle(f"{label}: CRaCCM adaptation and OLACP identification")
+        fig.set_label(f"planar_quad_adaptation_{setting_name}")
 
         fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
         figures.append(fig)
@@ -766,31 +935,45 @@ def plot_craccm_results(results, desired_trajectory):
             ax.grid(True)
         axs[0].legend()
         fig.suptitle(f"{label}: Algorithm 1")
+        fig.set_label(f"planar_quad_olacp_{setting_name}")
 
-        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 6))
-        figures.append(fig)
-        for ax, component in zip(axs, (3, 4)):
-            ax.plot(result["t"], result["true_uncertainty_hist"][:, component], label="true")
+    fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 6))
+    figures.append(fig)
+    for ax, component in zip(axs, (3, 4)):
+        for label, result in items:
+            ax.plot(
+                result["t"], result["true_uncertainty_hist"][:, component],
+                color=color_map[label], label=f"true: {label}",
+            )
             ax.plot(
                 result["t"],
                 result["fitted_uncertainty_hist"][:, component],
                 "--",
-                label="fitted",
+                color=color_map[label],
+                label=rf"$Y_{{\Theta_j}}(x)a_k$: {label}",
             )
-            ax.set_ylabel(rf"$w_{component + 1}$")
-            ax.grid(True)
-            ax.legend()
-        axs[-1].set_xlabel("time (s)")
-        fig.suptitle(rf"{label}: $Y_\Theta(x)a_k$ versus true uncertainty")
+        ax.set_xlim(0.0, maximum_time)
+        ax.set_ylabel(rf"$w_{component + 1}$")
+        ax.grid(True)
+        ax.legend(fontsize="small")
+    axs[-1].set_xlabel("time (s)")
+    fig.suptitle(r"Planar-quadrotor: $Y_{\Theta_j}(x)a_k$ versus true uncertainty")
+    fig.set_label("planar_quad_uncertainty_fit")
 
     plt.tight_layout()
+    results_directory = Path(__file__).resolve().parent / "results"
+    results_directory.mkdir(exist_ok=True)
+    for figure in figures:
+        filename = results_directory / f"{figure.get_label()}.{file_format}"
+        figure.savefig(filename, format=file_format, dpi=300, bbox_inches="tight")
+    print(f"Saved {len(figures)} {file_format.upper()} figures to {results_directory}")
     plt.show()
 
     return figures
 
 
 def main():
-    """Pretrain Algorithm 1, plan the desired trajectory, and compare three controllers"""
+    """Pretrain Algorithm 1 and compare three controllers with online waypoint references."""
     K_pre = 200
     N_cal = 80
     K = 20
@@ -820,27 +1003,27 @@ def main():
 
     nominal_waypoints = np.array(
         [
-            [0.00, 5.00, -0.030, 0.00, 0.00, 0.00],
-            [0.57, 5.45, -0.025, 0.54, 0.40, 0.00],
-            [2.07, 6.18, -0.01, 0.90, 0.25, 0.00],
-            [3.93, 6.18, 0.00, 0.90, -0.25, 0.00],
-            [5.43, 5.45, 0.010, 0.54, -0.40, 0.00],
-            [6.00, 5.00, 0.017 , 0.00, 0.00, 0.00],
-            [5.43 + 1.0, 5.45, 0.025, -0.54, 0.40, 0.00],
-            [3.93 + 1.0, 6.18, 0.01, -0.90, 0.25, 0.00],
-            [2.07 + 1.0, 6.18, -0.01, -0.90, -0.25, 0.00],
-            [0.57 + 1.0, 5.45, -0.025, -0.54, -0.40, 0.00],
-            [0.00, 5.00, -0.03, 0.00, 0.00, 0.00],
-            [0.57, 5.45, -0.025, 0.54, 0.40, 0.00],
-            [2.07, 6.18, -0.01, 0.90, 0.25, 0.00],
-            [3.93, 6.18, 0.00, 0.90, -0.25, 0.00],
-            [5.43, 5.45, 0.010, 0.54, -0.40, 0.00],
-            [6.00, 5.00, 0.017, 0.00, 0.00, 0.00],
-            [5.43 + 1.0, 5.45, 0.025, -0.54, 0.40, 0.00],
-            [3.93 + 1.0, 6.18, 0.01, -0.90, 0.25, 0.00],
-            [2.07 + 1.0, 6.18, -0.01, -0.90, -0.25, 0.00],
-            [0.57 + 1.0, 5.45, -0.025, -0.54, -0.40, 0.0],
-            [0.00, 5.00, -0.030, 0.00, 0.00, 0.00],
+            [0.00, 5.00],
+            [0.57, 5.45],
+            [2.07, 6.18],
+            [3.93, 6.18],
+            [5.43, 5.45],
+            [6.00, 5.00],
+            [6.43, 5.45],
+            [4.93, 6.18],
+            [3.07, 6.18],
+            [1.57, 5.45],
+            [0.00, 5.00],
+            [0.57, 5.45],
+            [2.07, 6.18],
+            [3.93, 6.18],
+            [5.43, 5.45],
+            [6.00, 5.00],
+            [6.43, 5.45],
+            [4.93, 6.18],
+            [3.07, 6.18],
+            [1.57, 5.45],
+            [0.00, 5.00],
         ]
     )
 
@@ -857,9 +1040,13 @@ def main():
         "pretrain_altitude": 5.0,
         "pretrain_initial_state": np.array([0.0, 5.0, 0.0, 0.0, 0.0, 0.0]),
         "nominal_waypoints": nominal_waypoints,
-        "motion_planner_Q": np.diag([1.0, 10.0, 1.0, 1.0, 1.0, 100.0]),
-        "motion_planner_R": 10.0 * np.eye(PLANAR_QUAD.udim),
-        "motion_planner_Q_f": np.diag([1500.0, 2500.0, 750.0, 250.0, 250.0, 1500.0]),
+        "reference_initial_state": np.array([0.0, 5.0, -0.03, 0.0, 0.0, 0.0]),
+        "motion_planner_Q": np.diag([5.0, 50.0]),
+        "motion_planner_R": 50.0 * np.eye(PLANAR_QUAD.udim),
+        "motion_planner_Q_terminal": np.diag([1.0, 10.0]),
+        "mpc_horizon": 4.0,
+        "mpc_dt": 0.05,
+        "mpc_replan_interval": 0.2,
         "tracking_initial_offset": np.zeros(PLANAR_QUAD.xdim),
         "x_norm_divergence_threshold": 10.0,
         "rho_divergence_threshold": 1e6,
@@ -885,7 +1072,8 @@ def main():
         "epsilon": projection_epsilon,
         "eta_ccm": 500.0,
         "ccm_rate": 0.2,
-        "weight_slack": 1e5,
+        "weight_slack": 2000.0 / 3.0,  # w_xi after normalizing the input weight to one
+        "ccm_authority_threshold": 0.01,
         "u_min": np.zeros(PLANAR_QUAD.udim),
         "u_max": 6.0 * np.ones(PLANAR_QUAD.udim),
         "dt": dt,
@@ -903,7 +1091,7 @@ def main():
         N_cal=N_cal,
         acp_lr=0.1,
         delta_target=0.1,
-        delta_init=0.1,
+        delta_init=0.15,
         buffer_maxlen=I_length,
         Theta_init=theta_init,
         representation_period=B,
@@ -918,8 +1106,6 @@ def main():
         pretrain_system, olacp, config, plot=True
     )
     
-    desired_trajectory = plan_nominal_trajectory(pretrain_system, config)
-
     pretrained_theta = pretrained_olacp.Theta.copy()
     pretrained_a_k = pretrained_olacp.a_k.copy()
     pretrained_scores = np.asarray(pretrained_olacp.S_cal).copy()
@@ -944,7 +1130,6 @@ def main():
         results[label] = run_craccm_simulation(
             run_system,
             run_olacp,
-            desired_trajectory,
             config,
             use_cp,
             use_adaptive,
@@ -961,24 +1146,28 @@ def main():
     if pretrained_olacp.delta != pretrained_delta:
         raise RuntimeError("A main simulation mutated the pretrained adaptive delta")
 
+    desired_trajectories = {label: result["desired_trajectory"] for label, result in results.items()}
+
     # Save results to a file
-    timestamp = time.strftime("%Y_%m%d_%H%M")
-    results_filename = f"./simulations/planar_quad/sim_planar_quad_craccm_results_{timestamp}.pkl"
-    with open(results_filename, "wb") as f:
+    timestamp = datetime.now().strftime("%Y_%m%d_%H%M%S_%f")
+    results_directory = Path(__file__).resolve().parent / "results"
+    results_directory.mkdir(exist_ok=True)
+    results_filename = results_directory / f"sim_planar_quad_craccm_results_{timestamp}.pkl"
+    with results_filename.open("xb") as f:
         pickle.dump(
             {
                 "config": config,
                 "base_params": base_params,
-                "desired_trajectory": desired_trajectory,
+                "desired_trajectories": desired_trajectories,
                 "results": results,
             },
             f,
         )
 
     # Plot the results
-    plot_craccm_results(results, desired_trajectory)
+    plot_craccm_results(results, desired_trajectories)
 
-    return pretraining_history, desired_trajectory, results
+    return pretraining_history, desired_trajectories, results
 
 
 if __name__ == "__main__":

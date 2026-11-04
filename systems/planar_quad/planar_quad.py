@@ -57,25 +57,21 @@ class PLANAR_QUAD(ControlAffineSystem):
 
     def g(self, x):
         """Return the two-rotor input matrix"""
-        rows = (
-            np.array([[0.0, 0.0]]),
-            np.array([[0.0, 0.0]]),
-            np.array([[0.0, 0.0]]),
-            np.array([[0.0, 0.0]]),
-            np.array([[1.0 / self.mass, 1.0 / self.mass]]),
-            np.array([[self.length / self.inertia, -self.length / self.inertia]]),
+        return np.array(
+            [
+                [0.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+                [1.0 / self.mass, 1.0 / self.mass],
+                [self.length / self.inertia, -self.length / self.inertia],
+            ]
         )
-        is_symbolic = type(x[0]).__module__.startswith("casadi")
-        if is_symbolic:
-            output = np.empty(self.xdim, dtype=object)
-            output[:] = rows
-            return output
-        return np.vstack(rows)
 
     @staticmethod
     def psi(x):
         """Return the fixed feature matrix for force and drag uncertainty"""
-        _, _, phi, vx, vz, _ = np.asarray(x, dtype=float).reshape(6)
+        _, _, phi, vx, vz, _ = np.asarray(x).reshape(6)
         return np.array(
             [
                 [0.0, 0.0, 0.0, 0.0],
@@ -91,13 +87,25 @@ class PLANAR_QUAD(ControlAffineSystem):
         return self.Y_Theta(x, self.Theta_hat)
 
     def Y_Theta(self, x, theta):
-        """Evaluate Y_Theta(x) = Psi(x) @ Theta"""
-        theta = np.asarray(theta, dtype=float)
+        """Evaluate Y_Theta(x) for numerical or symbolic scalar-array inputs."""
+        theta = np.asarray(theta)
         if theta.shape != self.theta_shape:
             raise ValueError(f"theta must have shape {self.theta_shape}")
-        if not np.all(np.isfinite(theta)):
-            raise ValueError("theta must be finite")
-        return self._validate_Y_shape(self.psi(x) @ theta)
+        if theta.dtype != object or all(np.isscalar(entry) for entry in theta.flat):
+            theta = np.asarray(theta, dtype=float)
+            if not np.all(np.isfinite(theta)):
+                raise ValueError("theta must be finite")
+        Y_theta = self.psi(x) @ theta
+        if Y_theta.dtype == object:
+            return Y_theta
+        return self._validate_Y_shape(Y_theta)
+
+    def dynamics_certainty_equivalent(self, x, u, a_hat):
+        """Return the certainty-equivalent dynamics f(x) + g(x)u + Y_Theta(x)a_hat."""
+        x = np.asarray(x, dtype=float).reshape(self.xdim)
+        u = np.asarray(u, dtype=float).reshape(self.udim)
+        a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
+        return self.f(x) + self.g(x) @ u + self.Y(x) @ a_hat
 
     def representation_loss_gradient(self, x, theta, a, w):
         """Return grad_Theta ||Y_Theta(x) @ a - w||_2**2"""
