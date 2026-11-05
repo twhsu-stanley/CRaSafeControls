@@ -3,7 +3,7 @@
 State order: x = [px, py, pz, vx, vy, vz, roll, pitch, yaw]. The eleven network
 features are x[3:9] and the five physical coefficients b = Theta @ a_hat.
 The fixed weights define W = M^{-1} = L.T @ L + w_lb I. The controller requests
-W, dW/dx, and dW/db through this class; training is implemented separately.
+W, dW/dx, and dW/db through this class using the saved weights.
 """
 
 from functools import lru_cache
@@ -24,6 +24,8 @@ class NeuralCCMMetric:
         self.checkpoint_path = Path(checkpoint).resolve()
         with np.load(self.checkpoint_path, allow_pickle=False) as data:
             self.metadata = json.loads(str(data["metadata"].item()))
+            if self.metadata.get("architecture", "neural") != "neural":
+                raise ValueError("Expected a neural CCM checkpoint")
             self.weights = tuple(np.array(data[key], dtype=float) for key in WEIGHT_NAMES)
 
         self.parameterization = self.metadata["parameterization"]

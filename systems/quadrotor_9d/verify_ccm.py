@@ -1,7 +1,7 @@
-"""Independent-seed CCM sampling and optional adversarial C1 search.
+"""Independent-seed neural CCM sampling and optional adversarial C1 search.
 
 No auxiliary neural feedback is evaluated. Reported C1 rates are empirical;
-exact-C2 and positivity claims for invariant metrics come from their structure.
+positivity follows from the neural metric's structure, while C2 is approximate.
 """
 
 import argparse
@@ -18,23 +18,20 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from systems.quadrotor_9d.ccm import METRICS, load_metric, metric_checkpoint
+from systems.quadrotor_9d.ccm import DEFAULT_METRIC, load_metric
 from systems.quadrotor_9d.ccm_conditions import ccm_matrices, evaluate
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    selection = parser.add_mutually_exclusive_group()
-    selection.add_argument("--metric", choices=tuple(METRICS), default="neural")
-    selection.add_argument("--checkpoint", type=Path, help="Custom CCM NPZ")
+    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_METRIC,
+                        help="Trained neural CCM NPZ (default: bundled metric)")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--samples", type=int, default=20000)
     parser.add_argument("--seed", type=int, default=20261026)
     parser.add_argument("--search-iterations", type=int, default=80)
     parser.add_argument("--simulation", type=Path)
     args = parser.parse_args(argv)
-    if args.checkpoint is None:
-        args.checkpoint = metric_checkpoint(args.metric)
     if args.output.exists() or args.samples < 1 or args.seed < 0 or args.search_iterations < 0:
         parser.error("Choose a new output folder and valid sample/search settings")
     metric = load_metric(args.checkpoint)

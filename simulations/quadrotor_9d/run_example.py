@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from systems.quadrotor_9d.ccm import METRICS, load_metric, metric_checkpoint
+from systems.quadrotor_9d.ccm import DEFAULT_METRIC, load_metric
 from systems.quadrotor_9d.nonlinear_uncertainty import (
     ONLINE_WIND_PATTERN, WindEnvironment, WindSchedule, pretraining_wind_pattern,
 )
@@ -46,10 +46,8 @@ def parse_args(argv=None):
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source", type=Path,
                         help="Saved summary.json/data_pretraining.npz using the current wind schedule")
-    selection = parser.add_mutually_exclusive_group()
-    selection.add_argument("--metric", choices=tuple(METRICS), default="neural",
-                           help="Saved CCM bundled in systems/quadrotor_9d/NeuralCCM or LMICCM")
-    selection.add_argument("--checkpoint", type=Path, help="Custom CCM NPZ")
+    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_METRIC,
+                        help="Trained neural CCM NPZ (default: bundled metric)")
     # Theta pretraining, CP score-window size and independent random seeds.
     parser.add_argument("--pretrain-intervals", type=int, default=64)
     parser.add_argument("--calibration-intervals", type=int, default=32,
@@ -90,8 +88,6 @@ def parse_args(argv=None):
     )
     args = parser.parse_args(argv)
     # Reject invalid files and timing before creating experiment outputs.
-    if args.checkpoint is None:
-        args.checkpoint = metric_checkpoint(args.metric)
     numeric = [args.sim_time, args.dt, args.physical_gamma, args.payload_physical_boost,
                args.gamma_regularization, args.residual_scale, args.learning_rate,
                args.rho_divergence_threshold, *args.goal, *args.initial_reference]

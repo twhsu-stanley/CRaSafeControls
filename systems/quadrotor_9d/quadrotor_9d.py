@@ -14,7 +14,7 @@ from systems.control_affine_system import ControlAffineSystem
 
 # Fixed entrywise bounds, independent of the sampled initial representation.
 # With a in [-1, 1]^4, |Theta @ a| <= [0.6, 0.6, 0.6, 0.16, 0.16],
-# which fits the physical-parameter domains of the bundled CCMs.
+# which fits the physical-parameter domain of the bundled neural CCM.
 THETA_UPPER = np.broadcast_to(np.array([.15, .15, .15, .04, .04])[:, None], (5, 4)).copy()
 THETA_LOWER = -THETA_UPPER
 
@@ -38,7 +38,7 @@ class QUADROTOR_9D(ControlAffineSystem):
         self.metric = metric
         self.grav = float(params.get("g", 9.81))
         if self.grav != 9.81:
-            raise ValueError("The CCM metrics use g=9.81")
+            raise ValueError("The neural CCM uses g=9.81")
         self.set_representation(params.get("Theta_init", THETA_INITIAL))
         self.true_uncertainty_fcn = params.get("true_uncertainty")
         if self.true_uncertainty_fcn is not None and not callable(self.true_uncertainty_fcn):

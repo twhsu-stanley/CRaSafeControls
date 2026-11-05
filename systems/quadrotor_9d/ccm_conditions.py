@@ -1,6 +1,6 @@
 """CCM conditions for the 9D estimated model F(x, b) = f_nominal(x) + Psi(x)b.
 
-Neural and LMI CCMs share these dynamics and definitions of C1 and C2.
+Neural CCM verification uses these definitions of C1 and C2.
 The five physical coefficients b are held fixed when taking state derivatives.
 This estimated model is distinct from the simulated true plant with extra disturbances.
 """

@@ -1,4 +1,4 @@
-"""Neural CCM runtime; PyTorch is needed only for offline training."""
+"""NumPy runtime and saved neural CCM for the 9D quadrotor."""
 
 from pathlib import Path
 
