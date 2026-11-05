@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from systems.quadrotor_9d.ccm import DEFAULT_METRIC, load_metric
+from systems.quadrotor_9d.quadrotor_9d import QUADROTOR_9D
 from systems.quadrotor_9d.nonlinear_uncertainty import (
     ONLINE_WIND_PATTERN, WindEnvironment, WindSchedule, pretraining_wind_pattern,
 )
@@ -42,12 +42,10 @@ ARMS = (("proposed", "Proposed", True, True),
 def parse_args(argv=None):
     """Return experiment settings; step counts are converted to seconds using dt."""
     parser = argparse.ArgumentParser(description=__doc__)
-    # Output location, optional observation replay and the saved CCM to evaluate.
+    # Output location and optional observation replay.
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source", type=Path,
                         help="Saved summary.json/data_pretraining.npz using the current wind schedule")
-    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_METRIC,
-                        help="Trained neural CCM NPZ (default: bundled metric)")
     # Theta pretraining, CP score-window size and independent random seeds.
     parser.add_argument("--pretrain-intervals", type=int, default=64)
     parser.add_argument("--calibration-intervals", type=int, default=32,
@@ -98,7 +96,7 @@ def parse_args(argv=None):
             or args.mpc_horizon_steps < 2 or args.mpc_replan_steps < 1
             or not np.isclose(args.sim_time/args.dt, round(args.sim_time/args.dt))):
         parser.error("Times, gains, periods, scale and goal must be finite and valid")
-    paths = [args.checkpoint]
+    paths = []
     if args.source is not None:
         paths += [args.source/"summary.json",args.source/"data_pretraining.npz"]
     if args.waypoints is not None:
@@ -120,17 +118,18 @@ def parse_args(argv=None):
     return args
 
 
-def prepare_learning(config, metric):
+def prepare_learning(config, system):
     """Prepare the common initial learner used by all four controller cases.
 
     Return (source folder, metadata, Theta, learner, Gamma). Theta maps adaptive
     parameters to physical coefficients; Gamma controls continuous adaptation.
     """
     source = config.source or config.output/"pretraining"
+    metric_source = system.metric.metadata["source_sha256"]
     if config.source is None:
         # Collect and learn together; the retained interval scores initialize CP.
         print("Collecting observations and learning interval by interval...", flush=True)
-        metadata, learner = learning.prepare_from_scratch(metric, config, source)
+        metadata, learner = learning.prepare_from_scratch(system, config, source)
     else:
         # Replay observations in their original order to reconstruct learner state.
         metadata = json.loads((source/"summary.json").read_text(encoding="utf-8"))
@@ -138,7 +137,7 @@ def prepare_learning(config, metric):
             raise ValueError("Saved observations use a different --interval-steps value")
         if "dt" in metadata and not np.isclose(metadata["dt"], config.dt):
             raise ValueError("Saved observations use a different dt")
-        if metadata.get("metric_source_sha256", metric.metadata["source_sha256"]) != metric.metadata["source_sha256"]:
+        if metadata.get("metric_source_sha256", metric_source) != metric_source:
             raise ValueError("Saved pretraining used a different metric checkpoint")
         if not np.isclose(config.residual_scale, metadata.get("residual_scale", 1.)):
             raise ValueError("Saved pretraining uses a different --residual-scale; omit --source to collect new observations")
@@ -161,7 +160,7 @@ def prepare_learning(config, metric):
         with np.load(source/"data_pretraining.npz", allow_pickle=False) as data:
             training = {key: data[key].copy() for key in data.files}
         print("Replaying interval-wise pretraining from saved observations...", flush=True)
-        learner, _, history = learning.run_pretraining(metric, config, training)
+        learner, _, history = learning.run_pretraining(system, config, training)
         metadata = dict(metadata, schema_version=4,
                         calibration_method="rolling_pretraining_scores",
                         intervals={"pretraining":config.pretrain_intervals,
@@ -201,10 +200,10 @@ def main(argv=None):
     # 1. Read settings and construct the common position cost guide.
     config = parse_args(argv)
     reference = WaypointReference(config)
+    # 2. Each system loads its fixed CCM, then pretraining prepares Theta and CP.
+    pretrain_system = QUADROTOR_9D()
     config.output.mkdir(parents=True, exist_ok=True)
-    # 2. Load fixed CCM weights, then learn Theta and initialize the CP allowance.
-    metric = load_metric(config.checkpoint)
-    source, metadata, theta, learner, gamma = prepare_learning(config, metric)
+    source, metadata, theta, learner, gamma = prepare_learning(config, pretrain_system)
     # The true plant has physical disturbances beyond the learned Psi(x) Theta a.
     environment = WindEnvironment(residual_scale=config.residual_scale)
     # All cases receive the same prescribed wind, changing once per observation interval.
@@ -213,11 +212,13 @@ def main(argv=None):
     histories, intervals, summaries = {}, {}, {}
     for key, label, adaptive, cp in ARMS:
         print(f"Running {label}...", flush=True)
-        data, events, outcome = run_simulation(metric, config, reference, learner, theta, gamma, adaptive, cp, plant)
+        data, events, outcome = run_simulation(
+            config, reference, learner, theta, gamma, adaptive, cp, plant,
+        )
         data["target"] = reference.guide(data["t"]).T  # Cost guide, not x_d.
         data["true_w"] = np.asarray([plant(x, t) for x, t in zip(data["x"], data["t"])])
         data["wind"] = np.asarray([plant.wind(t) for t in data["t"]])
-        summary = results.summarize(data, events, learning.make_system(metric, theta), config.interval_steps)
+        summary = results.summarize(data, events, pretrain_system, config.interval_steps)
         summaries[key] = dict(summary, **outcome, label=label, cp=cp, adaptive=adaptive)
         histories[label], intervals[key] = data, events
         np.savez_compressed(config.output/f"{key}.npz", **data)
@@ -228,7 +229,8 @@ def main(argv=None):
         method="Position cost guide; native CE-MPC; coupled live reference",
         status="completed" if all(arm["status"] == "completed" for arm in summaries.values()) else "controller_failures",
         source=str(source.resolve()), source_mode="reused" if config.source else "generated",
-        pretraining_summary=metadata, metric=metric.metadata, trajectory=config.trajectory,
+        pretraining_summary=metadata, metric=pretrain_system.metric.metadata,
+        trajectory=config.trajectory,
         environment=asdict(environment), wind_schedule=plant.metadata(),
         configuration=vars(config), arms=summaries,
         reference=reference.metadata(),
@@ -236,7 +238,7 @@ def main(argv=None):
         repository=results.repository_state(), core_hashes=hashes,
         changed_core_files_from_local_source=[name for name in hashes if metadata.get("core_hashes", {}).get(name) != hashes[name]],
     )
-    results.dump_json(config.output/"metric.json", metric.metadata)
+    results.dump_json(config.output/"metric.json", pretrain_system.metric.metadata)
     results.dump_json(config.output/"intervals.json", intervals)
     results.dump_json(config.output/"summary.json", report)
     results.save_plot(histories, config.output/"comparison.png")

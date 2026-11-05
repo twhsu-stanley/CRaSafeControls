@@ -19,9 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from olacp import OLACP
-from systems.quadrotor_9d.quadrotor_9d import (
-    QUADROTOR_9D, THETA_LOWER, THETA_UPPER, initial_representation,
-)
+from systems.quadrotor_9d.quadrotor_9d import THETA_LOWER, THETA_UPPER, initial_representation
 from systems.quadrotor_9d.nonlinear_uncertainty import (
     WindEnvironment, WindSchedule, nonlinear_uncertainty, pretraining_wind_pattern,
 )
@@ -61,13 +59,6 @@ def pd_input(system, x, x_d, u_ref):
     eta_dot = system.g(x_d)[6:9, 1:] @ np.asarray(u_ref)[1:]+4*err
     # Convert the desired Euler rates into body-rate commands.
     return np.r_[thrust, np.linalg.solve(system.g(x)[6:9, 1:], eta_dot)]
-
-
-def make_system(metric, theta):
-    """Attach the fixed CCM and the current uncertainty representation."""
-    return QUADROTOR_9D(metric, {
-        "Theta_init": theta, "a_lb": A_LOWER, "a_ub": A_UPPER,
-    })
 
 
 def make_learner(system, args, learning_rate):
@@ -139,7 +130,7 @@ def pretraining_intervals(system, args):
         yield {key: np.asarray(value) for key, value in block.items()}
 
 
-def run_pretraining(metric, args, data=None):
+def run_pretraining(system, args, data=None):
     """Collect, fit, score and learn in interval order, as in planar_quad.
 
     Scores retain the Theta used in their own interval. The most recent N_cal
@@ -152,7 +143,7 @@ def run_pretraining(metric, args, data=None):
         raise ValueError("Pretraining must fill the CP window and complete representation blocks")
     # Initialize within the same fixed box later used to clip Theta updates.
     theta_initial = initial_representation(getattr(args, "theta_seed", 42))
-    system = make_system(metric, theta_initial)
+    system.set_representation(theta_initial)
     learner = make_learner(system, args, args.learning_rate)
     if data is None:
         intervals = pretraining_intervals(system, args)
@@ -194,11 +185,11 @@ def run_pretraining(metric, args, data=None):
             dict(theta=np.asarray(theta_history), score=np.asarray(scores), a_fit=np.asarray(fitted)))
 
 
-def prepare_from_scratch(metric, args, output):
+def prepare_from_scratch(system, args, output):
     """Save streaming observations, learning history and initialization for replay."""
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
-    learner, training, history = run_pretraining(metric, args)
+    learner, training, history = run_pretraining(system, args)
     theta = learner.Theta.copy()
     np.savez_compressed(output/"data_pretraining.npz", **training)
     np.savez_compressed(output/"pretraining_history.npz", **history)
@@ -212,7 +203,7 @@ def prepare_from_scratch(metric, args, output):
         learning_rate=args.learning_rate, theta_initial=history["theta"][0],
         theta_initialization="uniform_fixed_box", theta_lower=THETA_LOWER,
         theta_upper=THETA_UPPER,
-        theta_learned=theta, controller_rate=metric.rate,
+        theta_learned=theta, controller_rate=system.metric.rate,
         seeds={"pretraining":args.seed, "theta":getattr(args, "theta_seed", 42)},
         pretraining_wind_schedule=WindSchedule(
             pretraining_wind_pattern(args.representation_period),
@@ -221,7 +212,7 @@ def prepare_from_scratch(metric, args, output):
         initial_quantile=learner.Q_k,
         residual_scale=args.residual_scale, core_hashes=core_hashes(),
         repository=repository_state(),
-        metric_source_sha256=metric.metadata["source_sha256"],
+        metric_source_sha256=system.metric.metadata["source_sha256"],
         representation_updates=learner.representation_update_index,
         theta_change_norm=float(np.linalg.norm(theta-history["theta"][0])),
     )

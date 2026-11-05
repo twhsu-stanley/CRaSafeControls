@@ -7,9 +7,12 @@ This is an attitude-rate model, not
 a 12-state rigid-body model. Physical plant uncertainty is supplied separately.
 """
 
+from pathlib import Path
+
 import numpy as np
 
 from systems.control_affine_system import ControlAffineSystem
+from .NeuralCCM.neural_metric import NeuralCCMMetric
 
 
 # Fixed entrywise bounds, independent of the sampled initial representation.
@@ -33,9 +36,8 @@ class QUADROTOR_9D(ControlAffineSystem):
     xdim, udim, adim = 9, 4, 4
     theta_shape = (5, 4)
 
-    def __init__(self, metric, params=None):
+    def __init__(self, params=None):
         params = dict(params or {})
-        self.metric = metric
         self.grav = float(params.get("g", 9.81))
         if self.grav != 9.81:
             raise ValueError("The neural CCM uses g=9.81")
@@ -48,8 +50,12 @@ class QUADROTOR_9D(ControlAffineSystem):
         radius = 0.5*np.linalg.norm(np.asarray(params["a_ub"])-params["a_lb"])
         params.setdefault("epsilon", .01)
         params.setdefault("a_hat_norm_max", radius+params["epsilon"])
-        params.setdefault("ccm_rate", metric.rate)
+        params.setdefault("ccm_rate", self.metric.rate)
         super().__init__(params)
+
+        # Load the stored neural CCM 
+        checkpoint = Path(__file__).resolve().parent / "NeuralCCM/metrics/metric.npz"
+        self.metric = NeuralCCMMetric(checkpoint)
 
     def f(self, x):
         """Return position kinematics and free-fall acceleration without input."""

@@ -53,7 +53,7 @@ def compute_control(system, x, a, xd, ud, solver):
     )
 
 
-def run_simulation(metric, config, reference, pretrained, theta, gamma, adaptive, cp, plant):
+def run_simulation(config, reference, pretrained, theta, gamma, adaptive, cp, plant):
     """Run one independent arm using planar_quad's reference/update sequence.
 
     adaptive controls continuous a_hat/rho adaptation; cp controls tightening.
@@ -62,7 +62,7 @@ def run_simulation(metric, config, reference, pretrained, theta, gamma, adaptive
     Return time-history arrays, interval update records and termination status.
     """
     # Set up an independent plant/controller, learner, MPC and geodesic solver.
-    system = QUADROTOR_9D(metric, dict(
+    system = QUADROTOR_9D(dict(
         Theta_init=theta, use_cp=cp, use_adaptive=adaptive, Gamma_ccm=gamma,
         weight_slack=config.slack_weight, eta_ccm=config.eta,
         ccm_rate=config.rate, dt=config.dt, true_uncertainty=plant,
