@@ -50,12 +50,11 @@ class QUADROTOR_9D(ControlAffineSystem):
         radius = 0.5*np.linalg.norm(np.asarray(params["a_ub"])-params["a_lb"])
         params.setdefault("epsilon", .01)
         params.setdefault("a_hat_norm_max", radius+params["epsilon"])
-        params.setdefault("ccm_rate", self.metric.rate)
-        super().__init__(params)
-
-        # Load the stored neural CCM 
+        # Load the stored neural CCM before using its contraction rate.
         checkpoint = Path(__file__).resolve().parent / "NeuralCCM/metrics/metric.npz"
         self.metric = NeuralCCMMetric(checkpoint)
+        params.setdefault("ccm_rate", self.metric.rate)
+        super().__init__(params)
 
     def f(self, x):
         """Return position kinematics and free-fall acceleration without input."""
