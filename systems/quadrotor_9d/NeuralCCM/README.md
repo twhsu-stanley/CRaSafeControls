@@ -8,7 +8,6 @@ trained neural NPZ supplied with `--checkpoint`.
 | --- | --- |
 | `neural_metric.py` | NumPy evaluation of W and exact state/parameter derivatives |
 | `metrics/metric.npz` | Fixed network weights, domain, rate, provenance and validation results |
-| `__init__.py` | Public runtime class and default-model path |
 | `requirements.txt` | NumPy dependency for metric evaluation |
 | `.gitignore` | Exclude caches and local output folders |
 | `README.md` | Runtime usage and model scope |
@@ -43,9 +42,6 @@ Run from the repository root:
 ```bash
 python simulations/quadrotor_9d/run_example.py --output outputs/quad9d_neural
 ```
-
-The optional `systems/quadrotor_9d/verify_ccm.py` checks the saved metric's CCM
-conditions without modifying its weights.
 
 The bundled checkpoint has rate 0.5 and domain limits position +/-5, velocity
 +/-2, roll/pitch +/-0.35 rad, yaw +/-0.4 rad, and physical coefficients

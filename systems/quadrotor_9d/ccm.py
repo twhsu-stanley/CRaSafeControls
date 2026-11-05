@@ -3,7 +3,12 @@
 Metric evaluation and its analytic derivatives need only NumPy.
 """
 
-from .NeuralCCM import DEFAULT_METRIC, NeuralCCMMetric
+from pathlib import Path
+
+from .NeuralCCM.neural_metric import NeuralCCMMetric
+
+
+DEFAULT_METRIC = Path(__file__).resolve().parent / "NeuralCCM" / "metrics" / "metric.npz"
 
 
 def load_metric(checkpoint=None):
