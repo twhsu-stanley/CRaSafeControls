@@ -1,26 +1,18 @@
-"""Algorithm 1 and CRaCCM for the nine-state quadrotor.
-
-Edit the experiment setup in main(), run the simulation, then select its pickle
-in plot_quadrotor_9d_craccm_olacp_results.py to generate PNG or PDF figures.
-"""
+"""Algorithm 1 and CRaCCM for the nine-state quadrotor."""
 
 import copy
-from dataclasses import asdict
-from datetime import datetime
-import hashlib
-from pathlib import Path
-import subprocess
+import pickle
 import sys
 import time
+from datetime import datetime
+from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.interpolate import CubicSpline
-import pickle
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from geodesic_solver import GeodesicSolver
 from motion_planner import MotionPlanner
@@ -40,159 +32,15 @@ from systems.quadrotor_9d.nonlinear_uncertainty import (
 )
 
 
-def validate_experiment(config, base_params):
-    """Validate the experiment before collecting observations or running control."""
-    numeric = [
-        config["dt"],
-        config["interval_duration"],
-        config["physical_gamma"],
-        config["payload_physical_boost"],
-        config["gamma_regularization"],
-        config["residual_scale"],
-        config["representation_lr"],
-        config["rho_divergence_threshold"],
-        *config["reference_initial_state"],
-    ]
-    positive = [
-        config["dt"],
-        config["interval_duration"],
-        config["physical_gamma"],
-        config["gamma_regularization"],
-        config["residual_scale"],
-        config["representation_lr"],
-        config["rho_divergence_threshold"],
-    ]
-    if not np.all(np.isfinite(numeric)) or min(positive) <= 0:
-        raise ValueError("Times, gains, noise scale and initial reference must be finite and valid")
-    if config["K"] < 1 or config["B"] < 1 or config["payload_physical_boost"] < 0:
-        raise ValueError("K and B must be positive and the payload boost must be nonnegative")
-    if (
-        config["N_cal"] < 30
-        or config["I_length"] < 10
-        or config["K_pre"] < config["N_cal"]
-        or config["K_pre"] % config["B"]
-        or min(config["pretraining_seed"], config["theta_seed"]) < 0
-    ):
-        raise ValueError("Pretraining must fill the CP window and contain complete blocks")
-    if not np.isclose(config["I_length"] * config["dt"], config["interval_duration"]):
-        raise ValueError("interval_duration must be an integer multiple of dt")
-    if base_params["ccm_rate"] <= 0 or not np.isfinite(base_params["ccm_rate"]):
-        raise ValueError("ccm_rate must be finite and positive")
-    validate_timing(config)
-
-
-def validate_timing(config):
-    """Align simulation steps, MPC input holds, replans and representation updates."""
-    dt = config["dt"]
-    mpc_dt, replan, horizon = (
-        config["mpc_dt"],
-        config["mpc_replan_interval"],
-        config["mpc_horizon"],
-    )
-    if not np.all(np.isfinite([mpc_dt, replan, horizon])) or min(mpc_dt, replan, horizon) <= 0:
-        raise ValueError("MPC times must be finite and positive")
-    hold_steps, replan_steps = int(round(mpc_dt / dt)), int(round(replan / dt))
-    horizon_steps = int(round(horizon / mpc_dt))
-    if (
-        hold_steps < 1
-        or replan_steps < 1
-        or horizon_steps < 2
-        or not np.isclose(hold_steps * dt, mpc_dt)
-        or not np.isclose(replan_steps * dt, replan)
-        or not np.isclose(horizon_steps * mpc_dt, horizon)
-        or replan_steps % hold_steps
-        or horizon_steps * hold_steps < replan_steps
-    ):
-        raise ValueError("MPC times must use whole simulation steps and input holds")
-    if config["B"] * config["I_length"] % replan_steps:
-        raise ValueError("Representation updates must align with the MPC replanning grid")
-
-
-def ascending_figure_eight(times, config):
-    """Return the original analytic position guide at a fixed lap and climb rate."""
-    times = np.atleast_1d(np.asarray(times, dtype=float))
-    phase = 2 * np.pi * times / config["spatial_period"]
-    amplitude = config["spatial_amplitude"]
-    return np.column_stack(
-        (
-            amplitude[0] * np.sin(phase),
-            amplitude[1] * np.sin(2 * phase),
-            config["spatial_climb_rate"] * times,
-        )
-    )
-
-
-class WaypointReference:
-    """Keep the position cost guide separate from the integrated full reference state."""
-
-    def __init__(self, config):
-        validate_timing(config)
-        self.config = config
-        self.interval_duration = config["interval_duration"]
-        self.times = self.interval_duration * np.arange(config["K"] + 1)
-        self.initial_state = (
-            np.asarray(config["reference_initial_state"], dtype=float).reshape(9).copy()
-        )
-        self.positions = np.asarray(config["nominal_waypoints"], dtype=float).copy()
-        if (
-            self.positions.shape != (config["K"] + 1, 3)
-            or not np.all(np.isfinite(self.positions))
-            or not np.all(np.isfinite(self.initial_state))
-            or not np.allclose(self.positions[0], self.initial_state[:3])
-        ):
-            raise ValueError(
-                "nominal_waypoints must be finite (K+1,3) positions starting at x_d(0)"
-            )
-        if config["position_guide"] == "ascending_figure_eight":
-            expected = ascending_figure_eight(self.times, config) + self.initial_state[:3]
-            if not np.allclose(self.positions, expected):
-                raise ValueError("Use position_guide='natural_cubic' for custom position waypoints")
-            self.spline = None
-        elif config["position_guide"] == "natural_cubic":
-            self.spline = CubicSpline(self.times, self.positions, axis=0, bc_type="natural")
-        else:
-            raise ValueError("position_guide must be 'ascending_figure_eight' or 'natural_cubic'")
-        self.mpc_dt = config["mpc_dt"]
-        self.horizon = config["mpc_horizon"]
-        self.replan_interval = config["mpc_replan_interval"]
-
-    def guide(self, times):
-        times = np.clip(np.atleast_1d(times), self.times[0], self.times[-1])
-        if self.spline is None:
-            return (ascending_figure_eight(times, self.config) + self.initial_state[:3]).T
-        return self.spline(times).T
-
-
-def make_planner(system, config):
-    """Build the unchanged position-error and hover-input certainty-equivalent MPC."""
-    return MotionPlanner(
-        system,
-        config["dt"],
-        config["motion_planner_Q"],
-        config["motion_planner_R"],
-        Q_terminal=config["motion_planner_Q_terminal"],
-        output_matrix=np.eye(3, 9),
-        S=np.zeros((4, 4)),
-        u_min=system.params["u_min"],
-        u_max=system.params["u_max"],
-    )
-
-
-def rk4_step(system, x, u, dt, t=0.0):
-    """Advance the physical plant with one held control input."""
-
-    def dynamics(state, tau):
-        return system.dynamics(state, u, tau)
-
-    k1 = dynamics(x, t)
-    k2 = dynamics(x + dt * k1 / 2, t + dt / 2)
-    k3 = dynamics(x + dt * k2 / 2, t + dt / 2)
-    k4 = dynamics(x + dt * k3, t + dt)
-    return x + dt * (k1 + 2 * k2 + 2 * k3 + k4) / 6
-
-
-def pd_input(system, x, x_d, u_ref):
+def pretraining_control(system, x, t, config):
     """Use nominal position, velocity and attitude feedback to excite the plant."""
+    amplitude = config["pretrain_excitation_amplitude"]
+    frequency = config["pretrain_angular_frequency"]
+    phases = config["pretrain_phases"]
+    x_d = np.zeros(system.xdim)
+    x_d[:3] = amplitude * np.sin(frequency * t + phases)
+    x_d[3:6] = amplitude * frequency * np.cos(frequency * t + phases)
+    u_ref = [system.grav, 0, 0, 0]
     # Position/velocity errors determine the requested inertial acceleration.
     acc = system.dynamics_nominal(x_d, u_ref)[3:6]
     acc += 3 * (x_d[:3] - x[:3]) + 2.5 * (x_d[3:6] - x[3:6])
@@ -211,732 +59,830 @@ def pd_input(system, x, x_d, u_ref):
     return np.r_[thrust, np.linalg.solve(system.g(x)[6:9, 1:], eta_dot)]
 
 
-def put_interval(learner, system, block, dt):
-    """Load one interval and recover w = measured xdot - nominal xdot.
+def run_pretraining(system, olacp, config, plot=True):
+    """Pretrain the representation and fill the OLACP calibration window"""
+    K_pre = config["K_pre"]
+    B = config["B"]
+    I_length = config["I_length"]
+    dt = config["dt"]
+    interval_duration = config["interval_duration"]
+    t_pre = np.arange(K_pre * I_length, dtype=float) * dt
 
-    x, nominal and xdot each have shape (interval_steps, 9). Y(x) uses the
-    current Theta so that a_k and its score belong to the same representation.
-    """
-    learner.clear_buffers()
-    for x, nominal, measured in zip(block["x"], block["nominal"], block["xdot"]):
-        learner.add_data_to_buffers(x, nominal, system.Y(x), xdot=measured)
-    learner.estimate_uncertainty(dt)
-
-
-def pretraining_intervals(system, config):
-    """Yield physical observations one interval at a time under nominal PD.
-
-    The caller learns before requesting the next interval. PD excitation does
-    not depend on Theta; measured derivatives come from the physical plant.
-    """
     rng = np.random.default_rng(config["pretraining_seed"])
-    phases = rng.uniform(0, 2 * np.pi, 3)
-    amplitude, frequency = (
-        config["pretrain_excitation_amplitude"],
-        config["pretrain_angular_frequency"],
-    )
-    winds = pretraining_wind_pattern(config["B"])
+    pretrain_config = dict(config, pretrain_phases=rng.uniform(0, 2 * np.pi, 3))
+    winds = pretraining_wind_pattern(B)
+    schedule_values = np.asarray([winds[k % len(winds)] for k in range(K_pre)]).T
+    system.set_representation(olacp.Theta)
     x = config["pretrain_initial_state"].copy()
-    for interval in range(config["K_pre"]):
-        wind = winds[interval % len(winds)]
-        env = WindEnvironment(
+    x_hist = np.zeros((len(t_pre), system.xdim))
+    u_hist = np.zeros((len(t_pre), system.udim))
+    a_k_hist = np.full((len(t_pre), system.adim), np.nan)
+    theta_hist = np.zeros((K_pre + 1,) + olacp.Theta.shape)
+    theta_hist[0] = olacp.Theta
+    score_hist = np.zeros(K_pre)
+    prediction_error_hist = np.full(len(t_pre), np.nan)
+    true_uncertainty_hist = np.full((len(t_pre), system.xdim), np.nan)
+    fitted_uncertainty_hist = np.full((len(t_pre), system.xdim), np.nan)
+
+    for interval_index in range(K_pre):
+        wind = schedule_values[:, interval_index]
+        environment = WindEnvironment(
             *wind,
             payload=rng.uniform(*config["pretrain_payload_range"]),
             phase=rng.uniform(0, 2 * np.pi),
             residual_scale=config["residual_scale"],
         )
-        system.true_uncertainty_fcn = lambda state, t, e=env: nonlinear_uncertainty(state, t, e)
-        block = {key: [] for key in ("x", "u", "nominal", "xdot", "t")}
-        for step in range(config["I_length"]):
-            t = (interval * config["I_length"] + step) * config["dt"]
-            desired = np.zeros(9)
-            desired[:3] = amplitude * np.sin(frequency * t + phases)
-            desired[3:6] = amplitude * frequency * np.cos(frequency * t + phases)
-            u = np.clip(
-                pd_input(system, x, desired, [9.81, 0, 0, 0]),
-                system.params["u_min"],
-                system.params["u_max"],
-            )
-            nominal = system.dynamics_nominal(x, u)
-            measured = system.dynamics(x, u, t)
-            for key, value in {
-                "x": x.copy(),
-                "u": u,
-                "nominal": nominal,
-                "xdot": measured,
-                "t": t,
-            }.items():
-                block[key].append(value)
-            x = rk4_step(system, x, u, config["dt"], t)
-            if not np.all(np.isfinite(x)) or np.linalg.norm(x) > 100:
-                raise RuntimeError(f"Data collection diverged at t={t + config['dt']}")
-        block["environment"] = list(asdict(env).values())
-        yield {key: np.asarray(value) for key, value in block.items()}
-
-
-def run_pretraining(system, olacp, config, data=None):
-    """Collect, fit, score and learn in interval order, as in planar_quad.
-
-    Scores retain the Theta used in their own interval. The most recent N_cal
-    scores initialize CP; they are never rescored with the final Theta. Saved
-    observations can replay the same sequence without collecting a new run.
-    Return the learner and a pickle-ready history containing all observations.
-    """
-    if config["K_pre"] < config["N_cal"] or config["K_pre"] % config["B"]:
-        raise ValueError("Pretraining must fill the CP window and complete representation blocks")
-    learner = olacp
-    system.set_representation(learner.Theta)
-    if data is None:
-        intervals = pretraining_intervals(system, config)
-    else:
-        if any((len(values) != config["K_pre"] for values in data.values())):
-            raise ValueError("Saved pretraining arrays must contain all pretraining intervals")
-        intervals = (
-            {key: values[index] for key, values in data.items()} for index in range(config["K_pre"])
+        system.true_uncertainty_fcn = lambda state, tau, env=environment: nonlinear_uncertainty(
+            state, tau, env
         )
-    observations = {}
-    theta_history, scores, fitted = ([learner.Theta.copy()], [], [])
-    for block in intervals:
-        for key in ("x", "nominal", "xdot"):
-            values = block[key]
-            if values.shape != (config["I_length"], 9) or not np.isfinite(values).all():
-                raise ValueError(
-                    f"Pretraining {key} must be finite with shape ({config['I_length']}, 9)"
-                )
-        put_interval(learner, system, block, config["dt"])
-        score = float(learner.compute_score(system.a_ub, system.a_lb))
-        scores.append(score)
-        fitted.append(learner.a_k.copy())
-        learner.append_score(score)
-        update = learner.update_representation()
-        if update is not None:
-            system.set_representation(update["Theta"])
-        theta_history.append(learner.Theta.copy())
-        learner.clear_buffers()
-        for key, values in block.items():
-            observations.setdefault(key, []).append(values)
-    if learner._representation_intervals:
-        raise RuntimeError("Pretraining must end on a complete representation block")
-    if len(scores) != config["K_pre"] or len(learner.S_cal) != config["N_cal"]:
+        for interval_sample_index in range(I_length):
+            sample_index = interval_index * I_length + interval_sample_index
+            t = float(t_pre[sample_index])
+            u = pretraining_control(system, x, t, pretrain_config)
+            u = np.clip(u, system.params["u_min"], system.params["u_max"])
+            x_hist[sample_index] = x
+            u_hist[sample_index] = u
+            xdot = system.dynamics(x, u, t)
+            olacp.add_data_to_buffers(x, system.dynamics_nominal(x, u), xdot=xdot)
+
+            # Preserve the existing four-stage physical integration during pretraining.
+            k1 = system.dynamics(x, u, t)
+            k2 = system.dynamics(x + dt * k1 / 2, u, t + dt / 2)
+            k3 = system.dynamics(x + dt * k2 / 2, u, t + dt / 2)
+            k4 = system.dynamics(x + dt * k3, u, t + dt)
+            x = x + dt * (k1 + 2 * k2 + 2 * k3 + k4) / 6
+            if not np.all(np.isfinite(x)) or np.linalg.norm(x) > 100:
+                raise RuntimeError(f"Data collection diverged at t={t + dt}")
+
+        olacp.estimate_uncertainty(dt)
+        score = float(olacp.compute_score(system.a_ub, system.a_lb))
+        interval_true = np.asarray(olacp._w_buffer, dtype=float)
+        interval_fitted = np.asarray([Y_t @ olacp.a_k for Y_t in olacp._Y_buffer])
+        interval_error = np.sum((interval_fitted - interval_true) ** 2, axis=1)
+        olacp.append_score(score)
+        representation_update = olacp.update_representation()
+        if representation_update is not None:
+            system.set_representation(representation_update["Theta"])
+
+        interval_start = interval_index * I_length
+        interval_slice = slice(interval_start, interval_start + I_length)
+        a_k_hist[interval_slice] = olacp.a_k
+        prediction_error_hist[interval_slice] = interval_error
+        true_uncertainty_hist[interval_slice] = interval_true
+        fitted_uncertainty_hist[interval_slice] = interval_fitted
+        score_hist[interval_index] = score
+        theta_hist[interval_index + 1] = olacp.Theta
+        olacp.clear_buffers()
+
+    if len(olacp.S_cal) != config["N_cal"]:
         raise RuntimeError("Pretraining did not fill the calibration window")
-    learner.compute_quantile()
+    if olacp._representation_intervals:
+        raise RuntimeError("Pretraining left an incomplete representation block")
+    if not np.allclose(system.Theta_hat, olacp.Theta):
+        raise RuntimeError(
+            "The trained representation was not installed in the nine-state quadrotor"
+        )
+
+    quantile = olacp.compute_quantile()
     history = {
-        "observations": {key: np.asarray(value) for key, value in observations.items()},
-        "theta_hist": np.asarray(theta_history),
-        "score_hist": np.asarray(scores),
-        "a_k_hist": np.asarray(fitted),
-        "quantile": learner.Q_k,
-        "calibration_scores": np.asarray(learner.S_cal).copy(),
-        "delta": float(learner.delta),
-        "interval_index": learner.interval_index,
-        "representation_update_index": learner.representation_update_index,
-        "theta_lower": np.asarray(learner.Theta_lb).copy(),
-        "theta_upper": np.asarray(learner.Theta_ub).copy(),
-        "metric_source_sha256": system.metric.metadata["source_sha256"],
-        "metric": system.metric.metadata,
-        "wind_schedule": WindSchedule(
-            pretraining_wind_pattern(config["B"]), config["interval_duration"]
-        ).metadata(),
-        "core_hashes": core_hashes(),
-        "repository": repository_state(),
+        "t": t_pre,
+        "x_hist": x_hist,
+        "u_hist": u_hist,
+        "a_k_hist": a_k_hist,
+        "theta_hist": theta_hist,
+        "score_hist": score_hist,
+        "prediction_error_hist": prediction_error_hist,
+        "true_uncertainty_hist": true_uncertainty_hist,
+        "fitted_uncertainty_hist": fitted_uncertainty_hist,
+        "uncertainty_schedule_values": schedule_values,
+        "quantile": quantile,
     }
-    print(f"Pretraining complete: Q_0={learner.Q_k:.6g}")
-    return (learner, history)
+    print(f"Pretraining complete: quantile Q_k={quantile:.3e}; final fitted a_k={olacp.a_k}")
+
+    if plot:
+        fig, axs = plt.subplots(3, 3, sharex=True, figsize=(10, 8))
+        for state_index, ax in enumerate(axs.flat):
+            ax.plot(t_pre, x_hist[:, state_index])
+            ax.set_ylabel(rf"$x_{state_index + 1}$")
+            ax.grid(True)
+        axs[-1, 0].set_xlabel("time (s)")
+        axs[-1, 1].set_xlabel("time (s)")
+        axs[-1, 2].set_xlabel("time (s)")
+        fig.suptitle("Pretraining: states")
+
+        fig, axs = plt.subplots(system.udim, 1, sharex=True, figsize=(8, 8))
+        for input_index, ax in enumerate(np.atleast_1d(axs)):
+            ax.plot(t_pre, u_hist[:, input_index])
+            ax.set_ylabel(rf"$u_{input_index + 1}$")
+            ax.grid(True)
+        np.atleast_1d(axs)[-1].set_xlabel("time (s)")
+        fig.suptitle("Pretraining: control inputs")
+
+        fig, axs = plt.subplots(
+            system.theta_shape[0], system.theta_shape[1], sharex=True, figsize=(12, 10)
+        )
+        for i in range(system.theta_shape[0]):
+            for j in range(system.theta_shape[1]):
+                ax = axs[i, j]
+                ax.plot(np.arange(K_pre + 1) * interval_duration, theta_hist[:, i, j])
+                ax.set_ylabel(rf"$\Theta_{{{i + 1},{j + 1}}}$")
+                ax.grid(True)
+        axs[-1, 0].set_xlabel("time (s)")
+        fig.suptitle("Pretraining: representation parameters (Theta)")
+
+        fig, axs = plt.subplots(system.adim, 1, sharex=True, figsize=(8, 6))
+        for i, ax in enumerate(np.atleast_1d(axs)):
+            ax.plot(t_pre, a_k_hist[:, i])
+            ax.set_ylabel(rf"$a_{{k,{i + 1}}}$")
+            ax.grid(True)
+        np.atleast_1d(axs)[-1].set_xlabel("time (s)")
+        fig.suptitle("Pretraining: fitted parameters (a_k)")
+
+        fig, axs = plt.subplots(5, 1, sharex=True, figsize=(8, 10))
+        for ax, component in zip(axs, (3, 4, 5, 6, 7)):
+            ax.plot(t_pre, true_uncertainty_hist[:, component], label="true uncertainty")
+            ax.plot(t_pre, fitted_uncertainty_hist[:, component], "--", label=r"$Y_\Theta a_k$")
+            ax.set_ylabel(rf"$w_{component + 1}$")
+            ax.grid(True)
+            ax.legend()
+        axs[-1].set_xlabel("time (s)")
+        fig.suptitle(r"Pretraining: $Y_\Theta(x)a_k$ versus true uncertainty")
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.semilogy(t_pre, np.maximum(prediction_error_hist, 1e-16))
+        ax.set_xlabel("time (s)")
+        ax.set_ylabel("squared prediction error")
+        ax.grid(True)
+
+        plt.show()
+
+    return olacp, history
 
 
-def normalized_gamma(theta, physical_gain, regularization):
-    """Build Gamma_0 = gain * (Theta.T @ Theta + regularization * I)^(-1).
-
-    This reduces scaling differences in the map b = Theta @ a_hat. The
-    regularizer keeps the inverse well-defined for nearly dependent columns.
-    """
-    gram = np.asarray(theta).T @ np.asarray(theta) + regularization * np.eye(4)
-    gamma = physical_gain * np.linalg.inv(gram)
-    gamma = 0.5 * (gamma + gamma.T)
-    np.linalg.cholesky(gamma)
-    return gamma
-
-
-def payload_boosted_gamma(theta, physical_gain, regularization, boost):
-    """Add gain along the a_hat direction that changes payload coefficient b[2].
-
-    With d = theta[2], the rank-one addition is boost * d d.T / ||d||^4,
-    increasing d.T @ Gamma @ d by exactly boost. This is a tuning choice.
-    """
-    if boost < 0:
-        raise ValueError("payload boost must be nonnegative")
-    gamma = normalized_gamma(theta, physical_gain, regularization)
-    direction = np.asarray(theta)[2]
-    norm_squared = float(direction @ direction)
-    if norm_squared <= np.finfo(float).eps:
-        raise ValueError("Theta has no payload direction")
-    gamma += boost * np.outer(direction, direction) / norm_squared**2
-    gamma = 0.5 * (gamma + gamma.T)
-    np.linalg.cholesky(gamma)
-    return gamma
-
-
-def finish_interval(learner, system, config):
-    """Finish one online interval and return its score/update record.
-
-    Order: fit a_k -> assess coverage -> append score -> possibly update Theta
-    -> compute the next quantile. a_k is separate from the live adaptive a_hat.
-    """
-    learner.estimate_uncertainty(config["dt"])
-    score = float(learner.compute_score(system.a_ub, system.a_lb))
-    previous_quantile = learner.Q_k
-    missed = learner.update_delta(score)
-    learner.append_score(score)
-    update = learner.update_representation() if config.get("online_theta", True) else None
-    if update is not None:
-        system.set_representation(update["Theta"])
-    system.cp_quantile = learner.compute_quantile()
-    event = dict(
-        score=score,
-        previous_quantile=previous_quantile,
-        next_quantile=system.cp_quantile,
-        miscoverage=missed,
-        delta=float(learner.delta),
-        a_fit=learner.a_k.copy(),
-        representation_updated=update is not None,
-    )
-    learner.clear_buffers()
-    return event
-
-
-def clone_learner(pretrained, system):
-    """Keep Theta, scores, delta and counters independent in each comparison arm.
-
-    Rebind callbacks to the new system instead of copying the old model/metric.
-    Only sample buffers are cleared; the pretraining state is preserved.
-    """
-    learner = copy.copy(pretrained)
-    learner.__dict__ = copy.deepcopy(
-        {
-            key: value
-            for key, value in vars(pretrained).items()
-            if key not in ("Y_Theta", "representation_loss_gradient")
-        }
-    )
-    learner.clear_buffers()
-    if learner._representation_intervals:
-        raise ValueError("Pretraining must end at a complete representation block")
-    learner.Y_Theta = system.Y_Theta
-    learner.representation_loss_gradient = system.representation_loss_gradient
-    if learner.Theta is not None:
-        system.set_representation(learner.Theta)
-    system.cp_quantile = learner.compute_quantile()
-    return learner
-
-
-def compute_control(system, x, a, xd, ud, solver):
-    """Return actual input u(4), scalar slack and a dictionary of diagnostics.
-
-    The shared ctrl_craccm() solves the feedback QP. Remaining calculations
-    record its energy, CP allowance, constraint residual and correction u - ud.
-    """
-    ud = np.asarray(ud).reshape(system.udim)
-    u, slack = system.ctrl_craccm(x, a, xd, ud, solver, use_qpsolvers=True, use_slack=True)
-    u = np.asarray(u).reshape(system.udim)
-    # W = M^-1. Endpoint geodesic tangents give the tracking-energy variation.
-    end = np.linalg.solve(system.W_fcn(x, a), system.gamma_s[:, -1])
-    start = np.linalg.solve(system.W_fcn(xd, a), system.gamma_s[:, 0])
-    Yx = system.Y(x) @ a if system.use_adaptive else np.zeros(system.xdim)
-    Yd = system.Y(xd) @ a if system.use_adaptive else np.zeros(system.xdim)
-    authority = end @ system.g(x)
-    authority_norm = float(np.linalg.norm(authority))
-    # Match the shared controller's CP attenuation near vanishing input authority.
-    ratio = min(authority_norm / system.ccm_authority_threshold, 1.0)
-    scale = ratio**3 * (10.0 - 15.0 * ratio + 6.0 * ratio**2)
-    if system.use_cp:
-        tightening = float(scale * np.linalg.norm(end) * system.cp_quantile)
+def build_waypoint_cost_guide(waypoints, interval_duration, config=None):
+    """Build the position-only spline or the existing analytic ascending guide."""
+    waypoints = np.asarray(waypoints, dtype=float)
+    if waypoints.ndim != 2 or waypoints.shape[1] != 3 or len(waypoints) < 2:
+        raise ValueError("waypoints must have shape (K + 1, 3), with K >= 1")
+    if not np.all(np.isfinite(waypoints)):
+        raise ValueError("waypoints must be finite")
+    if not np.isfinite(interval_duration) or interval_duration <= 0:
+        raise ValueError("interval_duration must be finite and positive")
+    waypoint_times = interval_duration * np.arange(len(waypoints))
+    guide_type = "natural_cubic" if config is None else config["position_guide"]
+    if guide_type == "natural_cubic":
+        position_curve = CubicSpline(waypoint_times, waypoints, bc_type="natural")
+    elif guide_type == "ascending_figure_eight":
+        phase = 2 * np.pi * waypoint_times / config["spatial_period"]
+        amplitude = config["spatial_amplitude"]
+        expected = (
+            np.column_stack(
+                (
+                    amplitude[0] * np.sin(phase),
+                    amplitude[1] * np.sin(2 * phase),
+                    config["spatial_climb_rate"] * waypoint_times,
+                )
+            )
+            + waypoints[0]
+        )
+        if not np.allclose(waypoints, expected):
+            raise ValueError("Use position_guide='natural_cubic' for custom waypoints")
+        position_curve = None
     else:
-        tightening = 0.0
-    residual = (
-        end @ (system.dynamics_nominal(x, u) + Yx)
-        - start @ (system.dynamics_nominal(xd, ud) + Yd)
-        + system.ccm_rate * system.Erem
-        + tightening
-        - slack
-    )
-    return (
-        u,
-        float(slack),
-        dict(
-            energy=system.Erem,
-            tightening=tightening,
-            constraint_residual=float(residual),
-            correction_norm=float(np.linalg.norm(u - ud)),
-            qp_correction=(u - ud).copy(),
-        ),
-    )
+        raise ValueError("Unknown position_guide")
+
+    def position_reference(times):
+        times = np.clip(np.atleast_1d(times), waypoint_times[0], waypoint_times[-1])
+        if position_curve is None:
+            phase = 2 * np.pi * times / config["spatial_period"]
+            amplitude = config["spatial_amplitude"]
+            return (
+                np.column_stack(
+                    (
+                        amplitude[0] * np.sin(phase),
+                        amplitude[1] * np.sin(2 * phase),
+                        config["spatial_climb_rate"] * times,
+                    )
+                )
+                + waypoints[0]
+            ).T
+        return position_curve(times).T
+
+    return position_reference
 
 
 def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, label=None):
-    """Run one independent arm using planar_quad's reference/update sequence.
-
-    adaptive controls continuous a_hat/rho adaptation; cp controls tightening.
-    Online Theta learning is independently controlled by config['online_theta'].
-    Gamma is fixed from pretraining even while online Theta changes.
-    Return a result dictionary containing histories, diagnostics and termination status.
-    """
+    """Run one nine-state-quadrotor CRaCCM experiment"""
     if bool(system.use_cp) != bool(use_cp) or bool(system.use_adaptive) != bool(use_adaptive):
-        raise ValueError("The system must have the requested CP and adaptation flags")
-    adaptive = use_adaptive
-    reference = WaypointReference(config)
+        raise ValueError("The system must be constructed with the requested controller flags")
+
+    K = config["K"]
+    interval_duration = config["interval_duration"]
+
     plant = WindSchedule(
         ONLINE_WIND_PATTERN,
-        config["interval_duration"],
+        interval_duration,
         WindEnvironment(residual_scale=config["residual_scale"]),
     )
+    schedule_values = np.asarray([plant.wind(k * interval_duration) for k in range(K)]).T
     system.true_uncertainty_fcn = plant
-    learner = online_olacp
-    planner = make_planner(system, config)
-    geodesic = GeodesicSolver(
-        9,
+    online_olacp.clear_buffers()
+    if online_olacp._representation_intervals:
+        raise RuntimeError("The pretrained OLACP contains an incomplete representation block")
+    online_olacp.Y_Theta = system.Y_Theta
+    online_olacp.representation_loss_gradient = system.representation_loss_gradient
+    system.set_representation(online_olacp.Theta)
+    system.cp_quantile = online_olacp.compute_quantile()
+    if np.shares_memory(system.Theta_hat, online_olacp.Theta):
+        raise RuntimeError("The system and OLACP must own independent Theta arrays")
+
+    I_length = config["I_length"]
+    dt = config["dt"]
+    t_full = np.arange(K * I_length, dtype=float) * dt
+    t_hist = np.arange(len(t_full) + 1, dtype=float) * dt
+    run_label = label or f"CP={bool(use_cp)}, adaptive={bool(use_adaptive)}"
+    waypoints = np.asarray(config["nominal_waypoints"], dtype=float)
+    if waypoints.shape != (K + 1, 3) or not np.all(np.isfinite(waypoints)):
+        raise ValueError(f"nominal_waypoints must be finite with shape {(K + 1, 3)}")
+    x_d = np.asarray(config["reference_initial_state"], dtype=float).reshape(system.xdim).copy()
+    if not np.all(np.isfinite(x_d)) or not np.allclose(x_d[:3], waypoints[0]):
+        raise ValueError("reference_initial_state must be finite and start at the first waypoint")
+    if K < 1 or I_length < 1 or not np.isclose(I_length * dt, interval_duration):
+        raise ValueError("K and I_length must be positive and match interval_duration / dt")
+    mpc_horizon = float(config.get("mpc_horizon", 0.8))
+    mpc_dt = float(config.get("mpc_dt", 0.02))
+    replan_interval = float(config.get("mpc_replan_interval", 0.4))
+    if not np.isfinite(replan_interval) or not 0.1 <= replan_interval <= 0.5:
+        raise ValueError("mpc_replan_interval must lie between 0.1 and 0.5 seconds")
+    if not np.isfinite(mpc_dt) or mpc_dt < dt:
+        raise ValueError("mpc_dt must be finite and at least the simulation dt")
+    if not np.isfinite(mpc_horizon) or mpc_horizon < replan_interval:
+        raise ValueError("mpc_horizon must cover at least one replan interval")
+    replan_steps = int(round(replan_interval / dt))
+    if not np.isclose(int(round(mpc_dt / dt)) * dt, mpc_dt):
+        raise ValueError("mpc_dt must be an integer multiple of simulation dt")
+    if not np.isclose(replan_steps * dt, replan_interval) or replan_steps % int(round(mpc_dt / dt)):
+        raise ValueError("mpc_replan_interval must be an integer multiple of mpc_dt")
+    # Align representation updates with the existing replanning grid.
+    if (online_olacp.representation_period * I_length) % replan_steps:
+        raise ValueError(
+            "The representation update period must be an integer multiple of mpc_replan_interval"
+        )
+    waypoint_cost_guide = build_waypoint_cost_guide(waypoints, interval_duration, config)
+    planner = MotionPlanner(
+        system=system,
+        dt=dt,
+        Q=config["motion_planner_Q"],
+        R=config["motion_planner_R"],
+        u_min=np.asarray(system.params["u_min"], dtype=float).reshape(system.udim),
+        u_max=np.asarray(system.params["u_max"], dtype=float).reshape(system.udim),
+        output_matrix=np.eye(3, system.xdim),
+        Q_terminal=config["motion_planner_Q_terminal"],
+    )
+    hover_input = np.array([system.grav, 0, 0, 0])
+    rho_index = system.xdim + system.adim
+    adaptive_state_size = rho_index + 1
+    rho_divergence_threshold = config["rho_divergence_threshold"]
+    if not np.isfinite(rho_divergence_threshold) or rho_divergence_threshold <= 0.0:
+        raise ValueError("rho_divergence_threshold must be finite and positive")
+
+    def rho_divergence_event(_time, state):
+        return rho_divergence_threshold - abs(float(state[rho_index]))
+
+    rho_divergence_event.terminal = True
+    rho_divergence_event.direction = -1.0
+
+    x = x_d + config["tracking_initial_offset"]
+    a_hat = system.a_center.copy()
+    rho = 0.0
+    x_ext = np.hstack((x, a_hat, rho, x_d))
+    geodesic_solver = GeodesicSolver(
+        system.xdim,
         config["geodesic_degree"],
         config["geodesic_nodes"],
         system.W_fcn,
         system.dW_dxi_fcn,
         system.dW_dai_fcn,
     )
-    times = (
-        np.arange(round(config["K"] * config["interval_duration"] / config["dt"]) + 1)
-        * config["dt"]
-    )
 
-    def rho_event(t, state):
-        """Stop this case when the adaptive scaling state reaches its magnitude limit."""
-        return config["rho_divergence_threshold"] - abs(float(state[13]))
+    control_sample_count = len(t_full)
+    sample_count = control_sample_count + 1  # Leave space for an early-stop terminal sample.
+    x_hist = np.zeros((sample_count, system.xdim))
+    x_d_hist = np.zeros_like(x_hist)
+    u_hist = np.full((sample_count, system.udim), np.nan)
+    u_d_hist = np.full_like(u_hist, np.nan)
+    energy_hist = np.full(sample_count, np.nan)
+    slack_hist = np.full(sample_count, np.nan)
+    a_hat_hist = np.zeros((sample_count, system.adim))
+    a_k_hist = np.full((sample_count, system.adim), np.nan)
+    rho_hist = np.zeros(sample_count)
+    nu_hist = np.zeros(sample_count)
+    quantile_hist = np.zeros(sample_count)
+    theta_hist = np.zeros((sample_count,) + online_olacp.Theta.shape)
+    true_uncertainty_hist = np.full((sample_count, system.xdim), np.nan)
+    fitted_uncertainty_hist = np.full((sample_count, system.xdim), np.nan)
+    mpc_solve_time_hist = np.zeros(sample_count)
+    mpc_replan_hist = np.zeros(sample_count, dtype=bool)
+    mpc_iterations_hist = np.full(sample_count, np.nan)
+    mpc_horizon_steps_hist = np.full(sample_count, np.nan)
+    reference_times = [0.0]
+    reference_states = [x_d.copy()]
+    reference_inputs = []
+    interval_times = []
+    score_hist = []
+    delta_hist = []
+    miscoverage_hist = []
+    status = "completed"
+    failure_reason = None
+    failure_time = None
+    failure_rho = None
+    last_sample_index = -1
 
-    rho_event.terminal, rho_event.direction = (True, -1.0)
-    state = np.r_[
-        reference.initial_state + config["tracking_initial_offset"],
-        system.a_center,
-        0.0,
-        reference.initial_state,
-    ]
-    ud = np.array([system.grav, 0, 0, 0])
-    controls, plan_start_step, solve_seconds = (None, 0, [])
-    rows, events, outcome = ([], [], dict(status="completed"))
-    begin = time.perf_counter()
-    for k, t in enumerate(times):
-        x, a, rho, xd = (state[:9], state[9:13], float(state[13]), state[14:])
-        reference_a = a.copy() if adaptive else np.zeros(4)
-        replanned = False
-        if k < len(times) - 1:
-            if k % int(round(config["mpc_replan_interval"] / config["dt"])) == 0:
-                start = time.perf_counter()
-                _, controls = planner.plan_certainty_equivalent_through_waypoints(
-                    xd,
-                    reference.positions,
-                    config["I_length"],
-                    k,
+    def record_terminal_sample(index, sample_time, state, held_u, held_u_d, held_slack):
+        terminal_x = state[: system.xdim]
+        terminal_a_hat = state[system.xdim : system.xdim + system.adim]
+        terminal_rho = float(state[rho_index])
+        terminal_x_d = state[adaptive_state_size:]
+        t_hist[index] = sample_time
+        x_hist[index] = terminal_x
+        x_d_hist[index] = terminal_x_d.reshape(system.xdim)
+        u_hist[index] = np.asarray(held_u, dtype=float).reshape(system.udim)
+        u_d_hist[index] = np.asarray(held_u_d, dtype=float).reshape(system.udim)
+        energy_hist[index] = float(system.Erem)
+        slack_hist[index] = float(held_slack)
+        a_hat_hist[index] = terminal_a_hat
+        rho_hist[index] = terminal_rho
+        nu_hist[index] = system.nu_ccm(terminal_rho)
+        quantile_hist[index] = system.cp_quantile
+        theta_hist[index] = system.Theta_hat
+        if np.all(np.isfinite(terminal_x)):
+            true_uncertainty_hist[index] = system.true_uncertainty(terminal_x, sample_time)
+        return terminal_x, terminal_a_hat, terminal_rho, terminal_x_d
+
+    def dynamics_with_reference(tau, state, held_u, held_u_d):
+        desired_state = state[adaptive_state_size:]
+        model_a_hat = state[system.xdim : rho_index] if use_adaptive else np.zeros(system.adim)
+        adaptive_derivative = system.dynamics_extended(
+            state[:adaptive_state_size], desired_state, held_u, geodesic_solver, tau
+        )
+        desired_derivative = system.dynamics_certainty_equivalent(
+            desired_state, held_u_d, model_a_hat
+        )
+        return np.hstack((adaptive_derivative, desired_derivative))
+
+    predicted_inputs = None
+    u_d = hover_input.copy()
+    plan_start_step = 0
+    for sample_index, t in enumerate(t_full):
+        last_sample_index = sample_index
+        model_a_hat = a_hat if use_adaptive else np.zeros(system.adim)
+        if sample_index % replan_steps == 0:
+            planning_start = time.perf_counter()
+            try:
+                _, predicted_inputs = planner.plan_certainty_equivalent_through_waypoints(
+                    x_d,
+                    waypoints,
+                    I_length,
+                    sample_index,
                     system.Theta_hat,
-                    reference_a,
-                    np.r_[system.grav, np.zeros(3)],
-                    mpc_horizon=reference.horizon,
-                    mpc_dt=reference.mpc_dt,
-                    output_reference=reference.guide,
-                    u_previous=ud,
+                    model_a_hat,
+                    hover_input,
+                    mpc_horizon=mpc_horizon,
+                    mpc_dt=mpc_dt,
+                    output_reference=waypoint_cost_guide,
+                    u_previous=u_d,
                 )
-                solve_seconds.append(time.perf_counter() - start)
-                plan_start_step, replanned = (k, True)
-            index = (k - plan_start_step) // int(round(config["mpc_dt"] / config["dt"]))
-            ud = controls[:, index].copy()
-        u, slack, diagnostics = compute_control(system, x, a, xd, ud, geodesic)
-        domain = [system.metric_in_training_domain(node, a) for node in system.gamma.T]
-        rows.append(
-            dict(
-                t=t,
-                x=x.copy(),
-                a=a.copy(),
-                rho=rho,
-                x_d=xd.copy(),
-                u=u.copy(),
-                u_d=ud.copy(),
-                b=system.Theta_hat @ a,
-                theta=system.Theta_hat.copy(),
-                reference_a=reference_a,
-                quantile=system.cp_quantile,
-                slack=slack,
-                mpc_replanned=replanned,
-                in_domain=(
-                    np.nan if any((value is None for value in domain)) else float(all(domain))
-                ),
-                **diagnostics,
-            )
-        )
-        if k == len(times) - 1:
-            break
-        learner.add_data_to_buffers(
-            x, system.dynamics_nominal(x, u), system.Y(x), xdot=system.dynamics(x, u, t)
-        )
+            except RuntimeError as error:
+                raise RuntimeError(f"{run_label}: waypoint MPC failed at t={t:.3f}") from error
+            plan_start_step = sample_index
+            mpc_solve_time_hist[sample_index] = time.perf_counter() - planning_start
+            mpc_iterations_hist[sample_index] = planner.last_mpc_stats["iterations"]
+            mpc_replan_hist[sample_index] = True
+        mpc_horizon_steps_hist[sample_index] = planner.last_mpc_stats["horizon_steps"]
+        input_index = (sample_index - plan_start_step) // int(round(mpc_dt / dt))
+        u_d = predicted_inputs[:, input_index].copy()
+        reference_inputs.append(u_d.copy())
+        x_hist[sample_index] = x
+        x_d_hist[sample_index] = x_d
+        a_hat_hist[sample_index] = a_hat
+        rho_hist[sample_index] = rho
+        nu_hist[sample_index] = system.nu_ccm(rho)
+        quantile_hist[sample_index] = system.cp_quantile
+        theta_hist[sample_index] = system.Theta_hat
 
-        def dynamics(tau, current):
-            """Return derivatives of the 23 coupled states for the RK45 integrator."""
-            adaptive_state, desired = (current[:14], current[14:])
-            model_a = adaptive_state[9:13] if adaptive else np.zeros(4)
-            return np.r_[
-                system.dynamics_extended(adaptive_state, desired, u, geodesic, tau),
-                system.dynamics_certainty_equivalent(desired, ud, model_a),
-            ]
+        u, slack = system.ctrl_craccm(
+            x,
+            a_hat,
+            x_d,
+            u_d,
+            geodesic_solver,
+            use_qpsolvers=config["use_qpsolvers"],
+            use_slack=True,
+            verify_geodesic=config["verify_geodesic"],
+        )
+        u_hist[sample_index] = np.asarray(u).reshape(system.udim)
+        u_d_hist[sample_index] = u_d
+        energy_hist[sample_index] = system.Erem
+        slack_hist[sample_index] = float(slack)
+        xdot = system.dynamics(x, u, t)
+        online_olacp.add_data_to_buffers(x, system.dynamics_nominal(x, u), xdot=xdot)
 
+        next_time = (sample_index + 1) * dt
         solution = solve_ivp(
-            dynamics,
-            (t, times[k + 1]),
-            state,
+            lambda tau, state: dynamics_with_reference(tau, state, u, u_d),
+            (t, next_time),
+            x_ext,
             method="RK45",
-            rtol=1e-07,
-            atol=1e-09,
-            t_eval=[times[k + 1]],
-            events=rho_event if adaptive else None,
+            rtol=1e-7,
+            atol=1e-9,
+            t_eval=[next_time],
+            events=rho_divergence_event if use_adaptive else None,
         )
-        if adaptive and len(solution.t_events[0]):
-            outcome = dict(
-                status="diverged",
-                failure_reason="rho_divergence",
-                failure_time=float(solution.t_events[0][-1]),
-                failure_state=solution.y_events[0][-1].copy(),
+        if use_adaptive and solution.t_events[0].size:
+            x_ext = solution.y_events[0][-1]
+            status = "diverged"
+            failure_reason = "rho_divergence"
+            failure_time = float(solution.t_events[0][-1])
+            failure_rho = float(x_ext[rho_index])
+            last_sample_index = sample_index + 1
+            x, a_hat, rho, x_d = record_terminal_sample(
+                last_sample_index, failure_time, x_ext, u, u_d, slack
             )
+            reference_times.append(failure_time)
+            reference_states.append(x_d.copy())
             break
         if not solution.success:
-            outcome = dict(
-                status="failed",
-                failure_reason="integration_failure",
-                failure_time=float(t),
-                failure_message=solution.message,
+            raise RuntimeError(
+                f"{run_label}: extended dynamics failed at t={t:.3f}: {solution.message}"
+            )
+        x_ext = solution.y[:, -1]
+        x = x_ext[: system.xdim]
+        a_hat = x_ext[system.xdim : rho_index]
+        rho = float(x_ext[rho_index])
+        x_d = x_ext[adaptive_state_size:]
+        reference_times.append(next_time)
+        reference_states.append(x_d.copy())
+
+        rho_diverged = not np.isfinite(rho) or abs(rho) >= rho_divergence_threshold
+        state_is_finite = np.all(np.isfinite(x_ext))
+        state_norm_diverged = np.linalg.norm(x) > config["x_norm_divergence_threshold"]
+        if rho_diverged or not state_is_finite or state_norm_diverged:
+            status = "diverged"
+            failure_time = next_time
+            failure_rho = rho
+            if rho_diverged:
+                failure_reason = "rho_divergence"
+            elif not state_is_finite:
+                failure_reason = "nonfinite_extended_state"
+            else:
+                failure_reason = "state_norm"
+            last_sample_index = sample_index + 1
+            x, a_hat, rho, x_d = record_terminal_sample(
+                last_sample_index, failure_time, x_ext, u, u_d, slack
             )
             break
-        state = solution.y[:, -1]
-        if (
-            not np.all(np.isfinite(state))
-            or abs(state[13]) > 1000000.0
-            or np.linalg.norm(state[:9]) > 100
-        ):
-            outcome = dict(
-                status="diverged",
-                failure_reason="state_divergence",
-                failure_time=float(times[k + 1]),
-                failure_state=state.copy(),
-            )
-            break
-        if (k + 1) % config["I_length"] == 0:
-            event = finish_interval(learner, system, config)
-            events.append(dict(event, time=float(times[k + 1])))
-        if not config["quiet"] and (k + 1) % max(1, round(0.5 / config["dt"])) == 0:
-            print(
-                f"t={times[k + 1]:.2f}, reference error={np.linalg.norm(state[:3] - state[14:17]):.4f}",
-                flush=True,
-            )
-    result = {key: np.asarray([row[key] for row in rows]) for key in rows[0]}
-    outcome.update(mpc_replans=len(solve_seconds), wall_seconds=time.perf_counter() - begin)
-    result["target"] = reference.guide(result["t"]).T
-    result["true_w"] = np.asarray([plant(x, t) for x, t in zip(result["x"], result["t"])])
-    result["wind"] = np.asarray([plant.wind(t) for t in result["t"]])
-    metrics = dict(
-        summarize(result, events, system, config["I_length"]),
-        **outcome,
-        label=label,
-        cp=bool(use_cp),
-        adaptive=bool(use_adaptive),
-    )
+
+        if (sample_index + 1) % I_length == 0:
+            online_olacp.estimate_uncertainty(dt)
+            score = float(online_olacp.compute_score(system.a_ub, system.a_lb))
+            interval_true = np.asarray(online_olacp._w_buffer, dtype=float)
+            interval_fitted = np.asarray([Y_t @ online_olacp.a_k for Y_t in online_olacp._Y_buffer])
+            miscoverage = online_olacp.update_delta(score)
+            online_olacp.append_score(score)
+            representation_update = online_olacp.update_representation()
+            interval_start = sample_index - I_length + 1
+            interval_slice = slice(interval_start, sample_index + 1)
+            a_k_hist[interval_slice] = online_olacp.a_k
+            true_uncertainty_hist[interval_slice] = interval_true
+            fitted_uncertainty_hist[interval_slice] = interval_fitted
+            interval_times.append(t)
+            score_hist.append(score)
+            delta_hist.append(online_olacp.delta)
+            miscoverage_hist.append(miscoverage)
+            if representation_update is not None:
+                system.set_representation(representation_update["Theta"])
+            system.cp_quantile = online_olacp.compute_quantile()
+            online_olacp.clear_buffers()
+
+    used_slice = slice(0, last_sample_index + 1)
+    t = t_hist[used_slice]
+    x_hist = x_hist[used_slice]
+    x_d_hist = x_d_hist[used_slice]
+    u_hist = u_hist[used_slice]
+    u_d_hist = u_d_hist[used_slice]
+    energy_hist = energy_hist[used_slice]
+    slack_hist = slack_hist[used_slice]
+    a_hat_hist = a_hat_hist[used_slice]
+    a_k_hist = a_k_hist[used_slice]
+    rho_hist = rho_hist[used_slice]
+    nu_hist = nu_hist[used_slice]
+    quantile_hist = quantile_hist[used_slice]
+    theta_hist = theta_hist[used_slice]
+    true_uncertainty_hist = true_uncertainty_hist[used_slice]
+    fitted_uncertainty_hist = fitted_uncertainty_hist[used_slice]
+    mpc_solve_time_hist = mpc_solve_time_hist[used_slice]
+    mpc_replan_hist = mpc_replan_hist[used_slice]
+    mpc_iterations_hist = mpc_iterations_hist[used_slice]
+    mpc_horizon_steps_hist = mpc_horizon_steps_hist[used_slice]
+
+    reference_times = np.asarray(reference_times)
+    reference_states = np.asarray(reference_states).T
+    reference_inputs = np.asarray(reference_inputs).T
+    waypoint_times = interval_duration * np.arange(K + 1)
     desired_trajectory = {
         "mode": "certainty_equivalent_dynamics_mpc",
-        "t_x": result["t"].copy(),
-        "t_u": result["t"][:-1].copy(),
-        "x_d": result["x_d"].T.copy(),
-        "u_d": result["u_d"][:-1].T.copy(),
-        "waypoints": reference.positions.copy(),
-        "waypoint_times": reference.times.copy(),
-        "mpc_horizon": reference.horizon,
-        "mpc_dt": reference.mpc_dt,
-        "mpc_replan_interval": reference.replan_interval,
+        "t_x": reference_times,
+        "t_u": reference_times[:-1],
+        "x_d": reference_states,
+        "u_d": reference_inputs,
+        "waypoints": waypoints.copy(),
+        "waypoint_times": waypoint_times,
+        "mpc_horizon": mpc_horizon,
+        "mpc_dt": mpc_dt,
+        "mpc_replan_interval": replan_interval,
     }
-    history = {
-        "label": label,
+
+    tracking_error = np.linalg.norm(x_hist - x_d_hist, axis=1)
+    metrics = {
+        "rms_error": float(np.sqrt(np.mean(tracking_error**2))),
+        "max_error": float(np.max(tracking_error)),
+        "max_control": float(np.nanmax(np.linalg.norm(u_hist, axis=1))),
+        "max_slack": float(np.nanmax(slack_hist)),
+        "total_mpc_solve_time": float(np.nansum(mpc_solve_time_hist)),
+        "mpc_replan_count": int(np.count_nonzero(mpc_replan_hist)),
+        "mean_mpc_solve_time": float(np.mean(mpc_solve_time_hist[mpc_replan_hist])),
+    }
+    result = {
+        "label": run_label,
         "use_cp": bool(use_cp),
         "use_adaptive": bool(use_adaptive),
-        "t": result["t"],
-        "x_hist": result["x"],
-        "x_d_hist": result["x_d"],
-        "u_hist": result["u"],
-        "u_d_hist": result["u_d"],
-        "a_hat_hist": result["a"],
-        "rho_hist": result["rho"],
-        "theta_hist": result["theta"],
-        "b_hist": result["b"],
-        "reference_a_hist": result["reference_a"],
-        "quantile_hist": result["quantile"],
-        "slack_hist": result["slack"],
-        "energy_hist": result["energy"],
-        "tightening_hist": result["tightening"],
-        "constraint_residual_hist": result["constraint_residual"],
-        "correction_norm_hist": result["correction_norm"],
-        "qp_correction_hist": result["qp_correction"],
-        "mpc_replan_hist": result["mpc_replanned"],
-        "in_domain_hist": result["in_domain"],
-        "position_guide_hist": result["target"],
-        "true_uncertainty_hist": result["true_w"],
-        "wind_hist": result["wind"],
-        "a_k_hist": result["a_k"],
-        "fitted_uncertainty_hist": result["fitted_uncertainty"],
-        "interval_events": events,
-        "interval_times": np.asarray([event["time"] for event in events]),
-        "score_hist": np.asarray([event["score"] for event in events]),
-        "delta_hist": np.asarray([event["delta"] for event in events]),
-        "miscoverage_hist": np.asarray([event["miscoverage"] for event in events]),
+        "t": t,
+        "x_hist": x_hist,
+        "x_d_hist": x_d_hist,
         "desired_trajectory": desired_trajectory,
-        "uncertainty_schedule_values": plant.values.T.copy(),
+        "mpc_solve_time_hist": mpc_solve_time_hist,
+        "mpc_replan_hist": mpc_replan_hist,
+        "mpc_iterations_hist": mpc_iterations_hist,
+        "mpc_horizon_steps_hist": mpc_horizon_steps_hist,
+        "tracking_error": tracking_error,
+        "u_hist": u_hist,
+        "u_d_hist": u_d_hist,
+        "energy_hist": energy_hist,
+        "slack_hist": slack_hist,
+        "a_hat_hist": a_hat_hist,
+        "a_k_hist": a_k_hist,
+        "rho_hist": rho_hist,
+        "nu_hist": nu_hist,
+        "quantile_hist": quantile_hist,
+        "theta_hist": theta_hist,
+        "true_uncertainty_hist": true_uncertainty_hist,
+        "fitted_uncertainty_hist": fitted_uncertainty_hist,
+        "interval_times": np.asarray(interval_times),
+        "score_hist": np.asarray(score_hist),
+        "delta_hist": np.asarray(delta_hist),
+        "miscoverage_hist": np.asarray(miscoverage_hist),
+        "uncertainty_schedule_values": schedule_values,
+        "status": status,
+        "failure_reason": failure_reason,
+        "failure_time": failure_time,
+        "failure_rho": failure_rho,
+        "rho_divergence_threshold": rho_divergence_threshold,
         "metrics": metrics,
-        "final_theta": learner.Theta.copy(),
-        **outcome,
+        "final_theta": online_olacp.Theta.copy(),
     }
+
+    failure_summary = ""
+    if failure_reason is not None:
+        failure_summary = (
+            f", failure_reason={failure_reason}, failure_time={failure_time:.6f}, "
+            f"failure_rho={failure_rho:.3e}"
+        )
     print(
-        f"{label}: status={outcome['status']}, position RMS={metrics['position_rmse']:.6g}, max slack={metrics['max_slack']:.6g}, MPC solves={outcome['mpc_replans']}"
+        f"{run_label}: status={status}{failure_summary}, "
+        f"rms_error={metrics['rms_error']:.3e}, "
+        f"max_error={metrics['max_error']:.3e}, max|u|={metrics['max_control']:.3e}, "
+        f"max_slack={metrics['max_slack']:.3e}, "
+        f"mpc_solves={metrics['mpc_replan_count']}, "
+        f"mpc_time={metrics['total_mpc_solve_time']:.2f}s"
     )
-    return history
+    return result
 
 
-def core_hashes():
-    """Fingerprint shared controller, learning, planning and geodesic source files."""
-    names = [
-        "systems/control_affine_system.py",
-        "olacp.py",
-        "motion_planner.py",
-        "geodesic_solver.py",
-    ]
-    return {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in names}
-
-
-def repository_state():
-    """Record the local Git branch and commit, or None when Git is unavailable."""
-
-    def git(*args):
-        """Read one property of the local repository."""
-        return subprocess.check_output(
-            ["git", "-C", str(ROOT), *args], text=True, stderr=subprocess.DEVNULL
-        ).strip()
-
-    try:
-        return dict(branch=git("branch", "--show-current"), commit=git("rev-parse", "HEAD"))
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return dict(branch=None, commit=None)  # Source ZIPs need no Git installation.
-
-
-def interval_diagnostics(result, events, system, interval_steps):
-    """Reconstruct interval fits and compare both estimates with true uncertainty.
-
-    Return fitted arrays, residual RMSEs and the fraction of interval scores
-    covered by the quantile that was available before each interval ended.
-    """
-    fitted = np.full_like(result["true_w"], np.nan)
-    a_k = np.full((len(result["t"]), system.adim), np.nan)
-    fit_errors = []
-    for index, event in enumerate(events):
-        first = index * interval_steps
-        last = min(first + interval_steps, len(result["t"]) - 1)
-        parameter = np.asarray(event["a_fit"])
-        for k in range(first, last):
-            # Use the Theta active at this sample, not the final learned matrix.
-            estimate = system.Y_Theta(result["x"][k], result["theta"][k]) @ parameter
-            fitted[k], a_k[k] = estimate, parameter
-            fit_errors.append(np.linalg.norm(estimate - result["true_w"][k]))
-    scores = np.asarray([event["score"] for event in events])
-    quantiles = np.asarray([event["previous_quantile"] for event in events])
-    # a_fit minimizes an interval loss; result['a'] is the live adaptive estimate.
-    controller_fit = np.asarray(
-        [
-            system.Y_Theta(x, theta) @ a
-            for x, theta, a in zip(result["x"], result["theta"], result["a"])
-        ]
-    )
-    return {
-        "a_k": a_k,
-        "fitted_uncertainty": fitted,
-        "interval_coverage": float(np.mean(scores <= quantiles)) if len(scores) else None,
-        "fit_residual_rmse": float(np.sqrt(np.mean(np.square(fit_errors)))) if fit_errors else None,
-        "controller_residual_rmse": float(
-            np.sqrt(np.mean(np.linalg.norm(controller_fit - result["true_w"], axis=1) ** 2))
-        ),
-    }
-
-
-def summarize(result, events, system, interval_steps):
-    """Add fitted arrays to result and return scalar metrics for one case."""
-    # Measure both tracking of the integrated x_d and error against the common guide.
-    reference_error = np.linalg.norm(result["x"][:, :3] - result["x_d"][:, :3], axis=1)
-    target_error = np.linalg.norm(result["x"][:, :3] - result["target"][:, :3], axis=1)
-    fits = interval_diagnostics(result, events, system, interval_steps)
-    result["a_k"] = fits.pop("a_k")
-    result["fitted_uncertainty"] = fits.pop("fitted_uncertainty")
-    return dict(
-        reference_model="estimated_mpc",
-        reference_integration="coupled_RK45_live_estimate",
-        controller="ControlAffineSystem.ctrl_craccm",
-        qp_backend="quadprog",
-        replanning=True,
-        controller_input_bounds=False,
-        recorded_duration=float(result["t"][-1]),
-        sample_count=len(result["t"]),
-        position_rmse=float(np.sqrt(np.mean(reference_error**2))),
-        final_position_error=float(reference_error[-1]),
-        target_rmse=float(np.sqrt(np.mean(target_error**2))),
-        final_target_error=float(target_error[-1]),
-        max_slack=float(result["slack"].max()),
-        max_abs_rho=float(np.abs(result["rho"]).max()),
-        max_constraint_residual=float(result["constraint_residual"].max()),
-        training_domain_fraction=(
-            float(result["in_domain"].mean()) if np.isfinite(result["in_domain"]).all() else None
-        ),
-        completed_intervals=len(events),
-        representation_updates=sum(event["representation_updated"] for event in events),
-        **fits,
-    )
-
-
-def common_prefix_comparison(results):
-    """Compare the shared time prefix when some arms terminate early."""
-    count = min((len(result["t"]) for result in results.values()))
-    comparison = dict(
-        sample_count=count, end_time=float(next(iter(results.values()))["t"][count - 1])
-    )
-    for name, reference in (
-        ("position_rmse", "x_d_hist"),
-        ("target_position_rmse", "position_guide_hist"),
-    ):
-        comparison[name] = {
-            label: float(
-                np.sqrt(
-                    np.mean(
-                        np.sum(
-                            (result["x_hist"][:count, :3] - result[reference][:count, :3]) ** 2,
-                            axis=1,
-                        )
-                    )
-                )
-            )
-            for label, result in results.items()
-        }
-    return comparison
-
-
-def plot_craccm_results(
-    results, desired_trajectory=None, file_format="png", results_directory=None
-):
-    """Plot saved histories without rerunning MPC, learning or the controller."""
+def plot_craccm_results(results, desired_trajectory=None, file_format="png"):
+    """Compare each run against its reference and save figures in results as PNG or PDF."""
     if file_format not in ("png", "pdf"):
         raise ValueError('file_format must be "png" or "pdf"')
-    if not results:
-        raise ValueError("At least one controller result is required")
-    first_result = max(results.values(), key=lambda result: len(result["t"]))
-    if desired_trajectory is None:
-        trajectory = first_result["desired_trajectory"]
-    elif "x_d" in desired_trajectory:
-        trajectory = desired_trajectory
-    else:
-        trajectory = desired_trajectory[first_result["label"]]
-    reference = {"times": trajectory["waypoint_times"], "positions": trajectory["waypoints"]}
-    results_directory = (
-        Path(__file__).resolve().parent / "results"
-        if results_directory is None
-        else Path(results_directory)
+    items = (
+        list(results.items())
+        if isinstance(results, dict)
+        else [(result["label"], result) for result in results]
     )
-    results_directory.mkdir(parents=True, exist_ok=True)
-    import matplotlib
+    if not items:
+        raise ValueError("At least one result is required")
+    trajectories = {}
+    for label, result in items:
+        trajectory = result.get("desired_trajectory")
+        if trajectory is None and desired_trajectory is not None:
+            if "x_d" in desired_trajectory:
+                trajectory = desired_trajectory
+            else:
+                trajectory = desired_trajectory[label]
+        if trajectory is None:
+            raise ValueError(f"{label}: no desired trajectory is available")
+        trajectories[label] = trajectory
+    reference = max((result for _, result in items), key=lambda result: len(result["t"]))
+    for label, result in items:
+        if result is reference:
+            continue
+        if not np.allclose(result["x_hist"][0], reference["x_hist"][0]):
+            raise RuntimeError(f"{label}: comparison initial state does not match")
+        if not np.allclose(
+            result["uncertainty_schedule_values"], reference["uncertainty_schedule_values"]
+        ):
+            raise RuntimeError(f"{label}: comparison uncertainty schedule does not match")
 
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    color_map = {label: colors[index % len(colors)] for index, (label, _) in enumerate(items)}
+    maximum_time = max(float(result["t"][-1]) for _, result in items)
     figures = []
-    path = results_directory / f"quadrotor_9d_tracking.{file_format}"
-    fig = plt.figure(figsize=(12, 9), constrained_layout=True)
-    grid = fig.add_gridspec(3, 2)
-    axes = [fig.add_subplot(grid[j, 0]) for j in range(3)]
-    path3d = fig.add_subplot(grid[0, 1], projection="3d")
-    error = fig.add_subplot(grid[1, 1])
-    effort = fig.add_subplot(grid[2, 1])
-    first = max(results.values(), key=lambda result: len(result["t"]))
-    for label, result in results.items():
-        for j, ax in enumerate(axes):
-            ax.plot(result["t"], result["x_hist"][:, j], label=label)
-        path3d.plot(*result["x_hist"][:, :3].T, label=label)
-        error.plot(
-            result["t"],
-            np.linalg.norm(result["x_hist"][:, :3] - result["x_d_hist"][:, :3], axis=1),
-            label=label,
+    state_labels = (
+        "x (m)",
+        "y (m)",
+        "z (m)",
+        r"$v_x$",
+        r"$v_y$",
+        r"$v_z$",
+        r"$\phi$ (rad)",
+        r"$\theta$ (rad)",
+        r"$\psi$ (rad)",
+    )
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    figures.append(fig)
+    for label, result in items:
+        x_d_hist = result.get("x_d_hist")
+        if x_d_hist is None:
+            trajectory = trajectories[label]
+            x_d_hist = np.column_stack(
+                [np.interp(result["t"], trajectory["t_x"], state) for state in trajectory["x_d"]]
+            )
+        tracking_error = np.linalg.norm(result["x_hist"] - x_d_hist, axis=1)
+        ax.plot(result["t"], tracking_error, color=color_map[label], label=label)
+        if result["status"] != "completed":
+            ax.plot(result["t"][-1], tracking_error[-1], "x", color=color_map[label], markersize=9)
+    ax.set_xlabel("time (s)")
+    ax.set_ylabel(r"$\|x(t)-x_d(t)\|_2$")
+    ax.set_xlim(0.0, maximum_time)
+    ax.grid(True)
+    ax.legend()
+    fig.suptitle("Nine-state quadrotor tracking error comparison")
+    fig.set_label("quadrotor_9d_tracking_error")
+
+    fig, axs = plt.subplots(5, 1, sharex=True, figsize=(8, 10))
+    figures.append(fig)
+    for label, result in items:
+        color = color_map[label]
+        for input_index, ax in enumerate(axs[:4]):
+            ax.plot(
+                result["t"],
+                result["u_hist"][:, input_index],
+                color=color,
+                label=f"control: {label}",
+            )
+            ax.plot(
+                result["t"],
+                result["u_d_hist"][:, input_index],
+                "--",
+                color=color,
+                label=f"reference: {label}",
+            )
+        axs[4].semilogy(
+            result["t"], np.maximum(result["slack_hist"], 1e-12), color=color, label=label
         )
-        effort.plot(result["t"], result["correction_norm_hist"], label=label)
-    for j, ax in enumerate(axes):
-        ax.plot(first["t"], first["position_guide_hist"][:, j], ":", label="position cost guide")
-        ax.set_ylabel(f"{'xyz'[j]} [m]")
-        ax.grid(alpha=0.3)
-    axes[0].legend()
-    axes[-1].set_xlabel("Time [s]")
-    path3d.plot(*first["position_guide_hist"][:, :3].T, "k--", label="position cost guide")
-    path3d.set(xlabel="x [m]", ylabel="y [m]", zlabel="z [m]")
-    error.set(ylabel="Own reference error [m]", xlabel="Time [s]")
-    effort.set(ylabel="Control correction norm", xlabel="Time [s]")
-    for ax in (error, effort):
-        ax.grid(alpha=0.3)
-        ax.legend(fontsize=7)
-    fig.set_label("quadrotor_9d_tracking")
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
+    for input_index, ax in enumerate(axs[:4]):
+        ax.set_ylabel(rf"$u_{input_index + 1}$")
+    axs[4].set_ylabel("QP slack")
+    axs[4].set_xlabel("time (s)")
+    for ax in axs:
+        ax.set_xlim(0.0, maximum_time)
+        ax.grid(True)
+        ax.legend(fontsize="small")
+    fig.suptitle("Nine-state quadrotor controls and QP slack comparison")
+    fig.set_label("quadrotor_9d_control_slack")
+
+    for label, result in items:
+        color = color_map[label]
+        trajectory = trajectories[label]
+        setting_name = "".join(c if c.isalnum() else " " for c in label.lower())
+        setting_name = "_".join(setting_name.split())
+        fig, axs = plt.subplots(3, 3, sharex=True, figsize=(10, 8))
+        figures.append(fig)
+        for state_index, ax in enumerate(axs.flat):
+            ax.plot(trajectory["t_x"], trajectory["x_d"][state_index], "k--", label="desired")
+            ax.plot(result["t"], result["x_hist"][:, state_index], color=color, label="actual")
+            if result["status"] != "completed":
+                ax.plot(
+                    result["t"][-1],
+                    result["x_hist"][-1, state_index],
+                    "x",
+                    color=color,
+                    markersize=9,
+                )
+            ax.set_ylabel(state_labels[state_index])
+            ax.set_xlim(0.0, float(result["t"][-1]))
+            ax.grid(True)
+        axs[0, 0].legend()
+        axs[-1, 0].set_xlabel("time (s)")
+        axs[-1, 1].set_xlabel("time (s)")
+        axs[-1, 2].set_xlabel("time (s)")
+        fig.suptitle(f"{label}: Nine-state quadrotor state tracking comparison")
+        fig.set_label(f"quadrotor_9d_states_{setting_name}")
+
+        fig = plt.figure(figsize=(8, 6))
+        ax = fig.add_subplot(111, projection="3d")
+        figures.append(fig)
+        ax.plot(*trajectory["x_d"][:3], "k--", label="desired")
+        waypoints = trajectory.get("waypoints")
+        if waypoints is not None:
+            ax.plot(*waypoints.T, "ko", markersize=3, label="waypoints")
+        ax.plot(*result["x_hist"][:, :3].T, color=color, label="actual")
+        if result["status"] != "completed":
+            ax.plot(*result["x_hist"][-1, :3], "x", color=color, markersize=9)
+        ax.set_xlabel(state_labels[0])
+        ax.set_ylabel(state_labels[1])
+        ax.set_zlabel(state_labels[2])
+        ax.grid(True)
+        ax.legend()
+        fig.suptitle(f"{label}: Nine-state quadrotor position tracking comparison")
+        fig.set_label(f"quadrotor_9d_trajectory_{setting_name}")
+
+        fig, axs = plt.subplots(6, 1, sharex=True, figsize=(8, 10))
+        figures.append(fig)
+        for parameter_index, ax in enumerate(axs[:4]):
+            ax.plot(result["t"], result["a_hat_hist"][:, parameter_index], color=color)
+            ax.plot(result["t"], result["a_k_hist"][:, parameter_index], "--", color=color)
+            ax.set_ylabel(rf"$a_{parameter_index + 1}$")
+            ax.grid(True)
+        axs[4].plot(result["t"], result["rho_hist"], color=color)
+        axs[5].plot(result["t"], result["nu_hist"], color=color)
+        axs[4].set_ylabel(r"$\rho$")
+        axs[5].set_ylabel(r"$\nu$")
+        axs[5].set_xlabel("time (s)")
+        axs[4].grid(True)
+        axs[5].grid(True)
+        fig.suptitle(f"{label}: CRaCCM adaptation and OLACP identification")
+        fig.set_label(f"quadrotor_9d_adaptation_{setting_name}")
+
+        fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 7))
+        figures.append(fig)
+        axs[0].step(result["interval_times"], result["score_hist"], where="post", label=r"$s_k$")
+        axs[0].step(result["t"], result["quantile_hist"], where="post", label=r"$Q_k$")
+        axs[1].step(result["interval_times"], result["delta_hist"], where="post")
+        axs[2].step(result["interval_times"], result["miscoverage_hist"], where="post")
+        axs[0].set_ylabel("score")
+        axs[1].set_ylabel(r"$\delta_k$")
+        axs[2].set_ylabel("miscoverage")
+        axs[2].set_xlabel("time (s)")
+        for ax in axs:
+            ax.grid(True)
+        axs[0].legend()
+        fig.suptitle(f"{label}: Algorithm 1")
+        fig.set_label(f"quadrotor_9d_olacp_{setting_name}")
+
+    fig, axs = plt.subplots(5, 1, sharex=True, figsize=(8, 10))
     figures.append(fig)
-    path = results_directory / f"quadrotor_9d_control.{file_format}"
-    fig, axes = plt.subplots(4, 1, sharex=True, figsize=(12, 9), constrained_layout=True)
-    names = [
-        "Thrust acceleration [m/s$^2$]",
-        "Body rate $\\omega_x$ [rad/s]",
-        "Body rate $\\omega_y$ [rad/s]",
-        "Body rate $\\omega_z$ [rad/s]",
-    ]
-    for label, result in results.items():
-        for j, ax in enumerate(axes):
-            ax.plot(result["t"], result["u_hist"][:, j], label=label, linewidth=1.0)
-    for ax, name in zip(axes, names):
-        ax.set_ylabel(name)
-        ax.grid(alpha=0.3)
-    axes[0].legend(ncol=2, fontsize=8)
-    axes[-1].set_xlabel("Time [s]")
-    fig.set_label("quadrotor_9d_control")
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
-    figures.append(fig)
-    path = results_directory / f"quadrotor_9d_reference.{file_format}"
-    fig, axes = plt.subplots(3, 1, sharex=True, figsize=(10, 7), constrained_layout=True)
-    reference_data = max(results.values(), key=lambda data: len(data["t"]))
-    times = reference_data["t"]
-    guide = reference_data["position_guide_hist"].T
-    for i, ax in enumerate(axes):
-        ax.plot(times, guide[i], "k:", label="position cost guide")
-        ax.plot(
-            reference["times"], reference["positions"][:, i], "ko", markersize=3, label="waypoints"
-        )
-        for label, data in results.items():
-            ax.plot(data["t"], data["x_d_hist"][:, i], label=label)
-        ax.set_ylabel(f"{'xyz'[i]} [m]")
-        ax.grid(alpha=0.3)
-    axes[0].legend(fontsize=7, ncol=2)
-    axes[-1].set_xlabel("Time [s]")
-    fig.set_label("quadrotor_9d_reference")
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
-    figures.append(fig)
-    path = results_directory / f"quadrotor_9d_wind.{file_format}"
-    data = max(results.values(), key=lambda value: len(value["t"]))
-    fig, ax = plt.subplots(figsize=(9, 4), constrained_layout=True)
-    for index, axis in enumerate("xyz"):
-        ax.step(data["t"], data["wind_hist"][:, index], where="post", label=f"wind {axis}")
-    ax.set(xlabel="Time [s]", ylabel="Inertial wind [m/s]", title="Prescribed interval wind")
-    ax.grid(alpha=0.3)
-    ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0))
-    fig.set_label("quadrotor_9d_wind")
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
-    figures.append(fig)
+    for ax, component in zip(axs, (3, 4, 5, 6, 7)):
+        for label, result in items:
+            ax.plot(
+                result["t"],
+                result["true_uncertainty_hist"][:, component],
+                color=color_map[label],
+                label=f"true: {label}",
+            )
+            ax.plot(
+                result["t"],
+                result["fitted_uncertainty_hist"][:, component],
+                "--",
+                color=color_map[label],
+                label=rf"$Y_{{\Theta_j}}(x)a_k$: {label}",
+            )
+        ax.set_xlim(0.0, maximum_time)
+        ax.set_ylabel(rf"$w_{component + 1}$")
+        ax.grid(True)
+        ax.legend(fontsize="small")
+    axs[-1].set_xlabel("time (s)")
+    fig.suptitle(r"Nine-state quadrotor: $Y_{\Theta_j}(x)a_k$ versus true uncertainty")
+    fig.set_label("quadrotor_9d_uncertainty_fit")
+
+    plt.tight_layout()
+    results_directory = Path(__file__).resolve().parent / "results"
+    results_directory.mkdir(exist_ok=True)
+    for figure in figures:
+        filename = results_directory / f"{figure.get_label()}.{file_format}"
+        figure.savefig(filename, format=file_format, dpi=300, bbox_inches="tight")
     print(f"Saved {len(figures)} {file_format.upper()} figures to {results_directory}")
+    plt.show()
+
     return figures
 
 
@@ -981,7 +927,6 @@ def main():
         "mpc_horizon": 0.8,
         "mpc_dt": 0.02,
         "mpc_replan_interval": 0.4,
-        "online_theta": True,
         "physical_gamma": 3e-5,
         "payload_physical_boost": 9.7e-4,
         "gamma_regularization": 1e-5,
@@ -989,26 +934,24 @@ def main():
         "rho_divergence_threshold": 1e4,
         "geodesic_degree": 2,
         "geodesic_nodes": 4,
-        "quiet": False,
-        # Optionally reuse observations from a previous results pickle.
-        "pretraining_filename": None,
+        "use_qpsolvers": True,
+        "verify_geodesic": False,
+        "x_norm_divergence_threshold": 100.0,
     }
+    waypoint_times = interval_duration * np.arange(K + 1)
+    phase = 2 * np.pi * waypoint_times / config["spatial_period"]
+    amplitude = config["spatial_amplitude"]
     nominal_waypoints = (
-        ascending_figure_eight(interval_duration * np.arange(K + 1), config)
+        np.column_stack(
+            (
+                amplitude[0] * np.sin(phase),
+                amplitude[1] * np.sin(2 * phase),
+                config["spatial_climb_rate"] * waypoint_times,
+            )
+        )
         + config["reference_initial_state"][:3]
     )
     config["nominal_waypoints"] = nominal_waypoints
-
-    saved_pretraining = None
-    if config["pretraining_filename"] is not None:
-        with Path(config["pretraining_filename"]).open("rb") as stream:
-            saved = pickle.load(stream)
-        for key in ("dt", "I_length", "residual_scale"):
-            if not np.isclose(config[key], saved["config"][key]):
-                raise ValueError(f"Saved pretraining uses a different {key}")
-        for key in ("K_pre", "N_cal", "B", "representation_lr", "pretraining_seed", "theta_seed"):
-            config[key] = saved["config"][key]
-        saved_pretraining = saved["pretraining_history"]
 
     theta_lb, theta_ub = THETA_LOWER.copy(), THETA_UPPER.copy()
     theta_init = initial_representation(config["theta_seed"])
@@ -1029,8 +972,32 @@ def main():
         "u_max": np.array([20, 2, 2, 2]),
         "dt": dt,
     }
-    validate_experiment(config, base_params)
-    WaypointReference(config)
+    if K_pre < N_cal or K_pre % B or N_cal < 30:
+        raise ValueError("K_pre must fill N_cal and contain complete representation blocks")
+    if I_length < 10 or not np.isclose(I_length * dt, interval_duration):
+        raise ValueError("interval_duration must be an integer multiple of dt")
+    if (
+        min(config["pretraining_seed"], config["theta_seed"]) < 0
+        or not np.all(
+            np.isfinite(
+                [
+                    config["physical_gamma"],
+                    config["gamma_regularization"],
+                    config["payload_physical_boost"],
+                    config["residual_scale"],
+                ]
+            )
+        )
+        or min(
+            config["physical_gamma"],
+            config["gamma_regularization"],
+            config["representation_lr"],
+            config["residual_scale"],
+        )
+        <= 0
+        or config["payload_physical_boost"] < 0
+    ):
+        raise ValueError("Seeds, learning gains and disturbance scale must be valid")
     pretrain_params = dict(base_params, use_cp=False, use_adaptive=False)
     pretrain_system = QUADROTOR_9D(pretrain_params)
     olacp = OLACP(
@@ -1048,33 +1015,26 @@ def main():
         Y_Theta=pretrain_system.Y_Theta,
         representation_loss_gradient=pretrain_system.representation_loss_gradient,
     )
-    observations = None
-    if saved_pretraining is not None:
-        if (
-            saved_pretraining["metric_source_sha256"]
-            != pretrain_system.metric.metadata["source_sha256"]
-        ):
-            raise ValueError("Saved pretraining used a different neural metric")
-        if not np.array_equal(saved_pretraining["theta_lower"], theta_lb) or not np.array_equal(
-            saved_pretraining["theta_upper"], theta_ub
-        ):
-            raise ValueError("Saved pretraining used a different Theta box")
-        expected_wind = WindSchedule(
-            pretraining_wind_pattern(config["B"]), config["interval_duration"]
-        ).metadata()
-        if saved_pretraining["wind_schedule"] != expected_wind:
-            raise ValueError("Saved pretraining uses a different wind schedule")
-        observations = saved_pretraining["observations"]
     pretrained_olacp, pretraining_history = run_pretraining(
-        pretrain_system, olacp, config, data=observations
+        pretrain_system, olacp, config, plot=True
     )
     pretrained_theta = pretrained_olacp.Theta.copy()
-    base_params["Gamma_ccm"] = payload_boosted_gamma(
-        pretrained_theta,
-        config["physical_gamma"],
-        config["gamma_regularization"],
-        config["payload_physical_boost"],
-    )
+    pretrained_a_k = pretrained_olacp.a_k.copy()
+    pretrained_scores = np.asarray(pretrained_olacp.S_cal).copy()
+    pretrained_delta = float(pretrained_olacp.delta)
+    # Preserve the existing gain normalization and payload-direction boost.
+    gram = pretrained_theta.T @ pretrained_theta + config["gamma_regularization"] * np.eye(4)
+    gamma = config["physical_gamma"] * np.linalg.inv(gram)
+    gamma = 0.5 * (gamma + gamma.T)
+    np.linalg.cholesky(gamma)
+    direction = pretrained_theta[2]
+    norm_squared = float(direction @ direction)
+    if norm_squared <= np.finfo(float).eps:
+        raise ValueError("Theta has no payload direction")
+    gamma += config["payload_physical_boost"] * np.outer(direction, direction) / norm_squared**2
+    gamma = 0.5 * (gamma + gamma.T)
+    np.linalg.cholesky(gamma)
+    base_params["Gamma_ccm"] = gamma
     settings = (
         ("Proposed", True, True),
         ("No CP", False, True),
@@ -1090,14 +1050,20 @@ def main():
             use_adaptive=use_adaptive,
         )
         run_system = QUADROTOR_9D(run_params)
-        run_olacp = clone_learner(pretrained_olacp, run_system)
+        run_olacp = copy.deepcopy(pretrained_olacp)
+        if np.shares_memory(run_olacp.Theta, pretrained_olacp.Theta):
+            raise RuntimeError(f"{label}: online and pretrained OLACP share Theta memory")
         results[label] = run_craccm_simulation(
             run_system, run_olacp, config, use_cp, use_adaptive, label=label
         )
     if not np.array_equal(pretrained_olacp.Theta, pretrained_theta):
         raise RuntimeError("A controller run mutated the pretrained representation")
-    if not np.array_equal(pretrained_olacp.S_cal, pretraining_history["calibration_scores"]):
+    if not np.array_equal(pretrained_olacp.a_k, pretrained_a_k):
+        raise RuntimeError("A controller run mutated the pretrained interval estimate")
+    if not np.array_equal(np.asarray(pretrained_olacp.S_cal), pretrained_scores):
         raise RuntimeError("A controller run mutated the pretrained calibration scores")
+    if pretrained_olacp.delta != pretrained_delta:
+        raise RuntimeError("A controller run mutated the pretrained miscoverage level")
 
     desired_trajectories = {
         label: result["desired_trajectory"] for label, result in results.items()
@@ -1113,12 +1079,11 @@ def main():
                 "base_params": base_params,
                 "desired_trajectories": desired_trajectories,
                 "results": results,
-                "pretraining_history": pretraining_history,
-                "comparison": common_prefix_comparison(results),
             },
             stream,
         )
     print(f"Saved results to {results_filename}")
+    plot_craccm_results(results, desired_trajectories)
     return pretraining_history, desired_trajectories, results
 
 
