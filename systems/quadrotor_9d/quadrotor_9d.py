@@ -15,45 +15,34 @@ from systems.control_affine_system import ControlAffineSystem
 from .NeuralCCM.neural_metric import NeuralCCMMetric
 
 
-# Fixed entrywise bounds, independent of the sampled initial representation.
-# With a in [-1, 1]^4, |Theta @ a| <= [0.6, 0.6, 0.6, 0.16, 0.16],
-# which fits the physical-parameter domain of the bundled neural CCM.
-THETA_UPPER = np.broadcast_to(np.array([.15, .15, .15, .04, .04])[:, None], (5, 4)).copy()
-THETA_LOWER = -THETA_UPPER
-
-
-def initial_representation(seed=42):
-    """Draw all entries uniformly from the fixed box, as in planar_quad."""
-    return np.random.default_rng(seed).uniform(THETA_LOWER, THETA_UPPER)
-
-
-# Reproducible default for callers without an explicit Theta_init. Experiments
-# draw their initial representation using a separately recorded theta seed.
-THETA_INITIAL = initial_representation()
-
-
 class QUADROTOR_9D(ControlAffineSystem):
-    xdim, udim, adim = 9, 4, 4
+    """Nine-state quadrotor with a learned uncertainty model and neural CCM."""
+
     theta_shape = (5, 4)
+    xdim = 9
+    udim = 4
+    adim = 4
 
     def __init__(self, params=None):
-        params = dict(params or {})
+        if params is None:
+            params = {}
+        elif not isinstance(params, dict):
+            raise TypeError("Parameters must be a dictionary.")
+
+        self.Theta_hat = np.asarray(params.get("Theta_init"), dtype=float).reshape(self.theta_shape)
+        if not np.all(np.isfinite(self.Theta_hat)):
+            raise ValueError("Theta_init must be finite")
+        self.Theta_hat = self.Theta_hat.copy()
+
         self.grav = float(params.get("g", 9.81))
         if self.grav != 9.81:
             raise ValueError("The neural CCM uses g=9.81")
-        self.set_representation(params.get("Theta_init", THETA_INITIAL))
         self.true_uncertainty_fcn = params.get("true_uncertainty")
         if self.true_uncertainty_fcn is not None and not callable(self.true_uncertainty_fcn):
-            raise TypeError("true_uncertainty must be callable as w(x,t)")
-        params.setdefault("a_lb", -np.ones(self.adim))
-        params.setdefault("a_ub", np.ones(self.adim))
-        radius = 0.5*np.linalg.norm(np.asarray(params["a_ub"])-params["a_lb"])
-        params.setdefault("epsilon", .01)
-        params.setdefault("a_hat_norm_max", radius+params["epsilon"])
-        # Load the stored neural CCM before using its contraction rate.
+            raise TypeError("true_uncertainty must be callable as w(x, t)")
+
         checkpoint = Path(__file__).resolve().parent / "NeuralCCM/metrics/metric.npz"
         self.metric = NeuralCCMMetric(checkpoint)
-        params.setdefault("ccm_rate", self.metric.rate)
         super().__init__(params)
 
     def f(self, x):
@@ -130,55 +119,80 @@ class QUADROTOR_9D(ControlAffineSystem):
         """Map a four-component parameter to uncertainty using a 5x4 Theta."""
         theta = np.asarray(theta)
         if theta.shape != self.theta_shape:
-            raise ValueError("Theta must be finite with shape (5,4)")
-        if theta.dtype != object or all(np.isscalar(value) for value in theta.flat):
-            theta = np.asarray(theta,dtype=float)
+            raise ValueError(f"theta must have shape {self.theta_shape}")
+        if theta.dtype != object or all(np.isscalar(entry) for entry in theta.flat):
+            theta = np.asarray(theta, dtype=float)
             if not np.all(np.isfinite(theta)):
-                raise ValueError("Theta must be finite with shape (5,4)")
-        result = self.psi(x) @ theta
-        return result if result.dtype == object else self._validate_Y_shape(result)
+                raise ValueError("theta must be finite")
+        Y_theta = self.psi(x) @ theta
+        if Y_theta.dtype == object:
+            return Y_theta
+        return self._validate_Y_shape(Y_theta)
 
-    def dynamics_certainty_equivalent(self,x,u,a_hat):
-        return self.dynamics_nominal(x,u)+self.Y(x) @ np.asarray(a_hat).reshape(self.adim)
+    def dynamics_certainty_equivalent(self, x, u, a_hat):
+        """Return the certainty-equivalent dynamics f(x) + g(x)u + Y_Theta(x)a_hat."""
+        x = np.asarray(x, dtype=float).reshape(self.xdim)
+        u = np.asarray(u, dtype=float).reshape(self.udim)
+        a_hat = np.asarray(a_hat, dtype=float).reshape(self.adim)
+        return self.f(x) + self.g(x) @ u + self.Y(x) @ a_hat
 
     def representation_loss_gradient(self, x, theta, a, w):
-        """Differentiate ||Psi(x) Theta a - w||^2 with the fitted a held fixed."""
-        a = np.asarray(a, dtype=float).reshape(self.adim)
-        w = np.asarray(w, dtype=float).reshape(self.xdim)
-        error = self.Y_Theta(x, theta) @ a - w
-        return 2*np.outer(self.psi(x).T @ error, a)
+        """Return grad_Theta ||Y_Theta(x) @ a - w||_2**2"""
+        a = np.asarray(a, dtype=float).reshape(-1)
+        w = np.asarray(w, dtype=float).reshape(-1)
+        if a.size != self.adim:
+            raise ValueError(f"a must have length {self.adim}")
+        if w.size != self.xdim:
+            raise ValueError(f"w must have length {self.xdim}")
+        Psi_x = self.psi(x)
+        residual = self.Y_Theta(x, theta) @ a - w
+        return 2.0 * np.outer(Psi_x.T @ residual, a)
 
-    def set_representation(self, theta):
-        """Install an independent Theta copy for prediction, feedback and the CCM."""
-        theta = np.asarray(theta, dtype=float)
-        if theta.shape != self.theta_shape or not np.all(np.isfinite(theta)):
-            raise ValueError("Theta must be finite with shape (5,4)")
-        self.Theta_hat = theta.copy()
+    def set_representation(self, Theta_hat):
+        """Install the representation used by the controller and CCM"""
+        Theta_hat = np.asarray(Theta_hat, dtype=float)
+        if Theta_hat.shape != self.theta_shape:
+            raise ValueError(f"Theta_hat must have shape {self.theta_shape}")
+        if not np.all(np.isfinite(Theta_hat)):
+            raise ValueError("Theta_hat must be finite")
+        self.Theta_hat = Theta_hat.copy()
 
-    def true_uncertainty(self, x, t=0.):
+    def true_uncertainty(self, x, t=0.0):
+        """Return the true uncertainty. Set to zero by default"""
+        x = np.asarray(x, dtype=float).reshape(self.xdim)
         if self.true_uncertainty_fcn is None:
-            return np.zeros(self.xdim)
-        value = np.asarray(self.true_uncertainty_fcn(x, t), dtype=float)
-        if value.shape != (self.xdim,) or not np.all(np.isfinite(value)):
-            raise ValueError("true_uncertainty must return a finite vector of shape (9,)")
-        return value
-
-    def dynamics(self, x, u, t=0.):
-        """Evaluate the true simulated plant: nominal dynamics plus physical w."""
-        return self.dynamics_nominal(x, u)+self.true_uncertainty(x, t)
-
-    def ctrl_nominal(self, x):
-        return np.array([self.grav, 0., 0., 0.])
-
-    def dynamics_extended(self, state, x_d, u, geodesic_solver, t=0.):
-        """Integrate plant x and continuous a_hat/rho; Theta updates are external."""
-        state = np.asarray(state, dtype=float).reshape(self.xdim+self.adim+1)
-        x, a, rho = state[:9], state[9:13], state[-1]
-        if self.use_adaptive:
-            da, drho = self.adaptation_craccm(x, x_d, a, rho, geodesic_solver)
+            uncertainty = np.zeros(self.xdim)
         else:
-            da, drho = np.zeros(self.adim), 0.
-        return np.r_[self.dynamics(x, u, t), np.asarray(da).reshape(-1), drho]
+            uncertainty = np.asarray(self.true_uncertainty_fcn(x, t), dtype=float)
+        if uncertainty.shape != (self.xdim,):
+            raise ValueError(f"true_uncertainty(x, t) must return shape ({self.xdim},)")
+        if not np.all(np.isfinite(uncertainty)):
+            raise ValueError("true_uncertainty(x, t) must be finite")
+        return uncertainty
+
+    def dynamics(self, x, u, t=0.0):
+        """Evaluate the true simulated plant: nominal dynamics plus physical w."""
+        x = np.asarray(x, dtype=float).reshape(self.xdim)
+        u = np.asarray(u, dtype=float).reshape(self.udim)
+        return self.f(x) + self.g(x) @ u + self.true_uncertainty(x, t)
+
+    def dynamics_extended(self, x_ext, x_d, u, geodesic_solver, t=0.0):
+        """Integrate plant x and continuous a_hat/rho; Theta updates are external."""
+        x_ext = np.asarray(x_ext, dtype=float).reshape(self.xdim + self.adim + 1)
+        x = x_ext[: self.xdim]
+        a_hat = x_ext[self.xdim : self.xdim + self.adim]
+        rho = x_ext[-1]
+
+        dxdt_ext = np.zeros(self.xdim + self.adim + 1)
+        dxdt_ext[: self.xdim] = self.dynamics(x, u, t)
+        if self.use_adaptive:
+            a_hat_dot, rho_dot = self.adaptation_craccm(x, x_d, a_hat, rho, geodesic_solver)
+        else:
+            a_hat_dot = np.zeros(self.adim)
+            rho_dot = 0.0
+        dxdt_ext[self.xdim : self.xdim + self.adim] = a_hat_dot
+        dxdt_ext[-1] = rho_dot
+        return dxdt_ext
 
     def _metric_parameter(self, a):
         """Convert adaptive coordinates a(4) to the CCM's physical coordinates b(5)."""
@@ -190,16 +204,13 @@ class QUADROTOR_9D(ControlAffineSystem):
         return self.metric.W(x, self._metric_parameter(a))
 
     def dW_dxi_fcn(self, i, x, a):
-        if not 0 <= i < self.xdim:
-            raise IndexError(i)
+        if i < 0 or i >= self.xdim:
+            raise IndexError(f"state index must lie in [0, {self.xdim})")
         return self.metric.derivatives(x, self._metric_parameter(a))[0][:, :, i]
 
     def dW_dai_fcn(self, i, x, a):
-        if not 0 <= i < self.adim:
-            raise IndexError(i)
+        if i < 0 or i >= self.adim:
+            raise IndexError(f"parameter index must lie in [0, {self.adim})")
         derivative = self.metric.derivatives(x, self._metric_parameter(a))[1]
         # Chain rule: dW/da_i = sum_r (dW/db_r) * Theta[r, i].
         return derivative @ self.Theta_hat[:, i]
-
-    def metric_in_training_domain(self, x, a):
-        return self.metric.in_training_domain(x, self._metric_parameter(a))

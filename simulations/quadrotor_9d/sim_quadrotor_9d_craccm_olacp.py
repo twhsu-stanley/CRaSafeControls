@@ -17,12 +17,7 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from geodesic_solver import GeodesicSolver
 from motion_planner import MotionPlanner
 from olacp import OLACP
-from systems.quadrotor_9d.quadrotor_9d import (
-    QUADROTOR_9D,
-    THETA_LOWER,
-    THETA_UPPER,
-    initial_representation,
-)
+from systems.quadrotor_9d.quadrotor_9d import QUADROTOR_9D
 from systems.quadrotor_9d.nonlinear_uncertainty import (
     ONLINE_WIND_PATTERN,
     WindEnvironment,
@@ -953,8 +948,11 @@ def main():
     )
     config["nominal_waypoints"] = nominal_waypoints
 
-    theta_lb, theta_ub = THETA_LOWER.copy(), THETA_UPPER.copy()
-    theta_init = initial_representation(config["theta_seed"])
+    # With a in [-1, 1]^4, this box keeps Theta @ a within the neural CCM's domain.
+    theta_ub = np.broadcast_to(np.array([.15, .15, .15, .04, .04])[:, None], (5, 4)).copy()
+    theta_lb = -theta_ub
+    theta_rng = np.random.default_rng(config["theta_seed"])
+    theta_init = theta_rng.uniform(theta_lb, theta_ub)
     a_lb, a_ub = -np.ones(QUADROTOR_9D.adim), np.ones(QUADROTOR_9D.adim)
     projection_epsilon = 0.01
     base_params = {

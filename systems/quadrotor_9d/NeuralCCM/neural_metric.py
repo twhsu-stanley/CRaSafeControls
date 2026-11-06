@@ -31,11 +31,10 @@ class NeuralCCMMetric:
         self.parameterization = self.metadata["parameterization"]
         if self.parameterization != "physical":
             raise ValueError("The 9D metrics use five physical coefficients Theta@a")
-        # Historical API name: adim counts b's five entries, not a_hat's four.
-        self.adim = 5
+        self.bdim = 5
         hidden = len(self.weights[1])
         expected_shapes = (
-            (hidden, 6 + self.adim), (hidden,),
+            (hidden, 6 + self.bdim), (hidden,),
             (hidden, hidden), (hidden,),
             (81, hidden),
         )
@@ -66,7 +65,7 @@ class NeuralCCMMetric:
             name: np.asarray(domain[name], dtype=float).reshape(size)
             for name, size in (
                 ("x_min", 9), ("x_max", 9),
-                ("b_min", self.adim), ("b_max", self.adim),
+                ("b_min", self.bdim), ("b_max", self.bdim),
             )
         }
         if self.domain is not None:
@@ -79,7 +78,7 @@ class NeuralCCMMetric:
     def _features(self, x, parameter):
         """Validate inputs and return the eleven features as a hashable cache key."""
         x = np.asarray(x, dtype=float).reshape(9)
-        parameter = np.asarray(parameter, dtype=float).reshape(self.adim)
+        parameter = np.asarray(parameter, dtype=float).reshape(self.bdim)
         features = np.r_[x[3:9], parameter]
         if not np.all(np.isfinite(x)) or not np.all(np.isfinite(features)):
             raise ValueError("Metric state and parameters must be finite")
@@ -126,23 +125,3 @@ class NeuralCCMMetric:
         dW_dx[:, :, 3:9] = dW_dfeatures[:, :, :6]
         dW_db = dW_dfeatures[:, :, 6:]
         return dW_dx, dW_db
-
-    def in_training_domain(self, x, parameter, atol=1e-10):
-        """Check stored bounds; return None when domain metadata is unavailable.
-
-        Membership records the sampling scope, not a whole-domain C1/C2 proof.
-        """
-        if self.domain is None:
-            return None
-        x = np.asarray(x, dtype=float).reshape(9)
-        parameter = np.asarray(parameter, dtype=float).reshape(self.adim)
-        finite_inputs = np.all(np.isfinite(x)) and np.all(np.isfinite(parameter))
-        state_in_domain = (
-            np.all(x >= self.domain["x_min"] - atol)
-            and np.all(x <= self.domain["x_max"] + atol)
-        )
-        parameter_in_domain = (
-            np.all(parameter >= self.domain["b_min"] - atol)
-            and np.all(parameter <= self.domain["b_max"] + atol)
-        )
-        return bool(finite_inputs and state_in_domain and parameter_in_domain)
