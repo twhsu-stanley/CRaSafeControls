@@ -18,13 +18,7 @@ from geodesic_solver import GeodesicSolver
 from motion_planner import MotionPlanner
 from olacp import OLACP
 from systems.quadrotor_9d.quadrotor_9d import QUADROTOR_9D
-from systems.quadrotor_9d.nonlinear_uncertainty import (
-    ONLINE_WIND_PATTERN,
-    WindEnvironment,
-    WindSchedule,
-    nonlinear_uncertainty,
-    pretraining_wind_pattern,
-)
+from simulations.quadrotor_9d.true_uncertainty import true_uncertainty_fcn
 
 
 def pretraining_control(system, x, t, config):
@@ -65,8 +59,12 @@ def run_pretraining(system, olacp, config, plot=True):
 
     rng = np.random.default_rng(config["pretraining_seed"])
     pretrain_config = dict(config, pretrain_phases=rng.uniform(0, 2 * np.pi, 3))
-    winds = pretraining_wind_pattern(B)
-    schedule_values = np.asarray([winds[k % len(winds)] for k in range(K_pre)]).T
+    indices = np.arange(K_pre) % B
+    wind_phase = 2 * np.pi * indices / B
+    wind_x = 0.15 * np.sin(wind_phase)
+    wind_y = 0.15 * np.cos(wind_phase)
+    wind_z = 0.05 * np.sin(wind_phase + np.pi / 4)
+    schedule_values = np.vstack((wind_x, wind_y, wind_z))
     system.set_representation(olacp.Theta)
     x = config["pretrain_initial_state"].copy()
     x_hist = np.zeros((len(t_pre), system.xdim))
@@ -81,15 +79,13 @@ def run_pretraining(system, olacp, config, plot=True):
 
     for interval_index in range(K_pre):
         wind = schedule_values[:, interval_index]
-        environment = WindEnvironment(
-            *wind,
-            payload=rng.uniform(*config["pretrain_payload_range"]),
-            phase=rng.uniform(0, 2 * np.pi),
-            residual_scale=config["residual_scale"],
-        )
-        system.true_uncertainty_fcn = lambda state, tau, env=environment: nonlinear_uncertainty(
-            state, tau, env
-        )
+        payload = rng.uniform(*config["pretrain_payload_range"])
+        phase = rng.uniform(0, 2 * np.pi)
+
+        def true_uncertainty(x, t):
+            return true_uncertainty_fcn(x, t, wind, payload, phase, config["residual_scale"])
+
+        system.true_uncertainty_fcn = true_uncertainty
         for interval_sample_index in range(I_length):
             sample_index = interval_index * I_length + interval_sample_index
             t = float(t_pre[sample_index])
@@ -274,13 +270,19 @@ def run_craccm_simulation(system, online_olacp, config, use_cp, use_adaptive, la
     K = config["K"]
     interval_duration = config["interval_duration"]
 
-    plant = WindSchedule(
-        ONLINE_WIND_PATTERN,
-        interval_duration,
-        WindEnvironment(residual_scale=config["residual_scale"]),
-    )
-    schedule_values = np.asarray([plant.wind(k * interval_duration) for k in range(K)]).T
-    system.true_uncertainty_fcn = plant
+    wind_x = np.array([0.08, 0.12, 0.05, 0.10, 0.06])
+    wind_y = np.array([-0.06, -0.03, -0.10, -0.08, -0.04])
+    wind_z = np.array([0.02, 0.04, -0.02, 0.03, 0.00])
+    wind_pattern = np.vstack((wind_x, wind_y, wind_z))
+    schedule_values = wind_pattern[:, np.arange(K) % wind_pattern.shape[1]]
+
+    def true_uncertainty(x, t):
+        index = int(np.floor(max(float(t), 0.0) / interval_duration)) % wind_pattern.shape[1]
+        return true_uncertainty_fcn(
+            x, t, wind_pattern[:, index], residual_scale=config["residual_scale"]
+        )
+
+    system.true_uncertainty_fcn = true_uncertainty
     online_olacp.clear_buffers()
     if online_olacp._representation_intervals:
         raise RuntimeError("The pretrained OLACP contains an incomplete representation block")
@@ -1034,10 +1036,10 @@ def main():
     np.linalg.cholesky(gamma)
     base_params["Gamma_ccm"] = gamma
     settings = (
-        ("Proposed", True, True),
-        ("No CP", False, True),
-        ("Yes CP + no adaptation", True, False),
-        ("No CP + no adaptation", False, False),
+        ("CP + adaptive", True, True),
+        ("No CP + adaptive", False, True),
+        ("No CP + nonadaptive", False, False),
+        #("CP + nonadaptive", True, False),
     )
     results = {}
     for label, use_cp, use_adaptive in settings:
